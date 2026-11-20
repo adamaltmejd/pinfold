@@ -95,9 +95,11 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     }
 }
 
-/// Answer each `push SRC:DST` line: a branch DST lands in the box's
-/// `refs/remotes/host/*`, every one in one transaction. The host reads
-/// nothing from the box but whether it succeeded.
+/// Answer each `push SRC:DST` line: a branch lands in the box's
+/// `refs/remotes/host/*` and a tag in its `refs/tags/*`, every one in one
+/// transaction. A tag the box holds at another object needs `+`. The host
+/// reads nothing from the box but whether it succeeded and which unforced
+/// tags it left out.
 fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<String> {
     let cancel = AtomicBool::new(false);
     let repo = Path::new(".");
@@ -105,26 +107,37 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
     let mut report = String::new();
     for line in batch {
         let spec = &line["push ".len()..];
+        let forced = spec.starts_with('+');
         let spec = spec.strip_prefix('+').unwrap_or(spec);
         let (source, destination) = spec.split_once(':').unwrap_or(("", spec));
-        let target = format!(
-            "refs/remotes/host/{}",
-            destination.strip_prefix("refs/heads/").unwrap_or_default()
-        );
-        // Git names a pushed ref by its full name, so a stash, a tag or a
-        // commit expression mapped to a branch is not a host branch.
-        if !source.starts_with("refs/heads/")
-            || !crossing::valid_ref(repo, source, &cancel)?
-            || !destination.starts_with("refs/heads/")
-            || !crossing::valid_ref(repo, &target, &cancel)?
+        // Git names a pushed ref by its full name, so a stash or a commit
+        // expression is neither a host branch nor a host tag.
+        let target = if source.starts_with("refs/heads/")
+            && let Some(branch) = destination.strip_prefix("refs/heads/")
         {
+            Some(format!("refs/remotes/host/{branch}"))
+        } else if source.starts_with("refs/tags/") && destination.starts_with("refs/tags/") {
+            Some(destination.to_string())
+        } else {
+            None
+        };
+        let valid = match &target {
+            Some(target) => {
+                crossing::valid_ref(repo, source, &cancel)?
+                    && crossing::valid_ref(repo, target, &cancel)?
+            }
+            None => false,
+        };
+        let Some(target) = target.filter(|_| valid) else {
             report.push_str(&format!(
-                "error {destination} only branches can be pushed\n"
+                "error {destination} only a branch to a branch or a tag to a tag can be pushed\n"
             ));
             continue;
-        }
+        };
+        // A branch always moves `host/BRANCH`; a tag keeps Git's rule.
+        let force = forced || target.starts_with("refs/remotes/");
+        refspecs.push(format!("{}{source}:{target}", if force { "+" } else { "" }));
         sources.push(source.to_string());
-        refspecs.push(format!("+{source}:{target}"));
         accepted.push(destination.to_string());
     }
     if !accepted.is_empty() {
@@ -138,7 +151,10 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
         }
         for destination in accepted {
             report.push_str(&match &pushed {
-                Ok(()) => format!("ok {destination}\n"),
+                Ok(left) if left.contains(&destination) => format!(
+                    "error {destination} already exists in the box; push with + to replace it\n"
+                ),
+                Ok(_) => format!("ok {destination}\n"),
                 Err(_) => format!("error {destination} the box refused the push\n"),
             });
         }

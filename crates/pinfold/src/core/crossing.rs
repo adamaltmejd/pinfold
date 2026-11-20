@@ -1,12 +1,12 @@
-//! The branch crossing (Disks, Crossing): `push` and `fetch` move git
-//! branches between a host repository and a live box's as bundles. The
-//! box's side runs in the box as the box user. Neither touches a working
-//! tree, and nothing from the box runs on the host: the host only verifies
-//! a bundle and indexes its objects with fsck into a quarantine. Git,
-//! through the remote helper, writes the refs.
+//! The branch crossing (Disks, Crossing): `push` moves host branches and
+//! tags into a live box's repository, and `fetch` the box's branches out,
+//! as bundles. The box's side runs in the box as the box user. Neither
+//! touches a working tree, and nothing from the box runs on the host: the
+//! host only verifies a bundle and indexes its objects with fsck into a
+//! quarantine. Git, through the remote helper, writes the refs.
 
-use crate::core::process::{GroupChild, drain};
-pub(crate) use crate::core::process::{output_cancellable, output_discard_cancellable};
+pub(crate) use crate::core::process::output_cancellable;
+use crate::core::process::{GroupChild, drain, output_bounded_cancellable};
 
 use nix::fcntl::{Flock, FlockArg};
 use nix::poll::{PollFd, PollFlags, poll};
@@ -44,20 +44,39 @@ const QUARANTINE: &str = "pinfold-incoming-";
 const STDERR_KEPT: u64 = 16 << 10;
 
 /// `$1` is GUEST_REPO, `$2` the host's object format, the rest refspecs
-/// into `refs/remotes/host/*`. The bundle arrives on stdin. When GUEST_REPO
-/// has no `.git`, it first creates the repository, on Git's default unborn
-/// branch. Two pushes racing here may both init; a reinit keeps refs and
-/// objects.
+/// of full ref names: forced ones into `refs/remotes/host/*` or
+/// `refs/tags/*`, unforced ones into `refs/tags/*`. The bundle arrives on
+/// stdin. When GUEST_REPO has no `.git`, it first creates the repository,
+/// on Git's default unborn branch. Two pushes racing here may both init; a
+/// reinit keeps refs and objects. An unforced tag the box holds at another
+/// object is left out and its destination printed: Git would reject it and
+/// with it the whole atomic fetch.
 const PUSH_SCRIPT: &str = r#"
 repo=$1 format=$2; shift 2
 if [ ! -e "$repo/.git" ] && [ ! -L "$repo/.git" ]; then
-  git init -q --object-format="$format" "$repo" || exit
+  git init -q --object-format="$format" "$repo" >/dev/null || exit
 fi
 dir=$(git -C "$repo" rev-parse --absolute-git-dir) || exit 64
 bundle=$(mktemp "$dir/pinfold-push.XXXXXX") || exit
 trap 'rm -f "$bundle"' EXIT
-cat >"$bundle" &&
-  git -C "$repo" fetch -q --atomic --no-tags --no-write-fetch-head "$bundle" "$@"
+cat >"$bundle" || exit
+for spec do
+  shift
+  case $spec in
+  +*) ;;
+  *)
+    if old=$(git -C "$repo" show-ref --verify --hash "${spec#*:}" 2>/dev/null) &&
+      new=$(git -C "$repo" bundle list-heads "$bundle" "${spec%%:*}") &&
+      [ "$old" != "${new%% *}" ]; then
+      printf '%s\n' "${spec#*:}"
+      continue
+    fi ;;
+  esac
+  set -- "$@" "$spec"
+done
+# Only the lines above reach stdout; a box hook's output must not.
+[ $# -eq 0 ] ||
+  git -C "$repo" fetch -q --atomic --no-tags --no-write-fetch-head "$bundle" "$@" >/dev/null
 "#;
 
 /// `$1` is GUEST_REPO; stdin holds the commits the host already has, one
@@ -94,8 +113,9 @@ impl From<io::Error> for CrossingError {
 pub type Refs = BTreeMap<String, String>;
 
 /// Bundle REPO's SOURCES and fetch them in the box with REFSPECS, whose
-/// destinations the caller puts under `refs/remotes/host/`. Cancellation
-/// reaps each host helper before return.
+/// destinations the caller puts under `refs/remotes/host/` or `refs/tags/`.
+/// Returns the unforced destinations the box left out as held at another
+/// object. Cancellation reaps each host helper before return.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn push_cancellable(
     runtime: &dyn Runtime,
@@ -106,7 +126,7 @@ pub(crate) fn push_cancellable(
     sources: &[String],
     refspecs: &[String],
     cancel: &AtomicBool,
-) -> Result<(), CrossingError> {
+) -> Result<Vec<String>, CrossingError> {
     check_args(repo, guest_repo, cancel)?;
     let format = succeeded(git(repo, &["rev-parse", "--show-object-format"], cancel)?)?;
     let format = String::from_utf8_lossy(&format.stdout).trim().to_string();
@@ -147,13 +167,37 @@ pub(crate) fn push_cancellable(
                 .chain(refspecs.iter().map(String::as_str)),
         ),
     )?;
-    // The box's stderr is its own text; a push reports only its outcome.
+    // The box's stderr is its own text. Its stdout may only name, once
+    // each, destinations of the push's unforced refspecs.
+    let mut unforced: Vec<&str> = refspecs
+        .iter()
+        .filter(|spec| !spec.starts_with('+'))
+        .filter_map(|spec| Some(spec.split_once(':')?.1))
+        .collect();
+    let limit: usize = unforced.iter().map(|name| name.len() + 1).sum();
     command
         .stdin(File::open(&bundle.path)?)
-        .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let output = output_discard_cancellable(&mut command, None, cancel)?;
-    box_status(output.status.code(), "", guest_repo)
+    let output = output_bounded_cancellable(&mut command, None, cancel, limit + 1)?;
+    box_status(output.status.code(), "", guest_repo)?;
+    let named = || CrossingError::Failed("the box named a ref the push did not send".into());
+    let mut left = Vec::new();
+    if output.stdout.is_empty() {
+        return Ok(left);
+    }
+    let reply = output
+        .stdout
+        .strip_suffix(b"\n")
+        .filter(|_| output.stdout.len() <= limit)
+        .ok_or_else(named)?;
+    for name in reply.split(|&byte| byte == b'\n') {
+        let at = unforced
+            .iter()
+            .position(|ours| ours.as_bytes() == name)
+            .ok_or_else(named)?;
+        left.push(unforced.swap_remove(at).to_owned());
+    }
+    Ok(left)
 }
 
 /// The box's checked branches, their objects held in a quarantine inside

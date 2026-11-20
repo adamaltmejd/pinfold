@@ -529,13 +529,14 @@ pub(crate) fn output_cancellable(
     output_with_limit(command, input, cancel, None)
 }
 
-/// Drain helper stdout without retaining bytes that the caller discards.
-pub(crate) fn output_discard_cancellable(
+/// Capture at most LIMIT bytes of helper stdout, draining the rest.
+pub(crate) fn output_bounded_cancellable(
     command: &mut Command,
     input: Option<&[u8]>,
     cancel: &AtomicBool,
+    limit: usize,
 ) -> io::Result<Output> {
-    output_with_limit(command, input, cancel, Some(0))
+    output_with_limit(command, input, cancel, Some(limit))
 }
 
 fn output_with_limit(
