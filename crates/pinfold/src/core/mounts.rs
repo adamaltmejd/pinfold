@@ -59,6 +59,13 @@ fn protected_paths(
         dirs::artifacts_dir()?,
         super::ownership::host_dir()?,
     ];
+    // `artifacts/init` may be a symlink resolving elsewhere. Its top always
+    // resolves, even as a stray file; `prepare` names the init's own
+    // directory. On Linux the init is pinfold's own executable: protecting
+    // its directory would refuse a checkout holding a pinfold build.
+    if cfg!(target_os = "macos") {
+        paths.push(dirs::artifacts_dir()?.join("init"));
+    }
     paths.extend(extra);
     if let Some(profile) = profile {
         // Every profile in the chain configures the box.

@@ -2021,7 +2021,8 @@ Protected paths are pinfold's configuration, state or cache root, the
 project's configuration directory, file or Containerfile, the directory of
 the selected profile and of each base in its chain, their `pinfold.toml`,
 `Containerfile`, `home` or `share`, the selected profile's share mount,
-`artifacts/` and the lock directory. Resolution follows symlinked ancestors
+`artifacts/`, on macOS the init directory under it, and the lock
+directory. Resolution follows symlinked ancestors
 too, including missing suffixes and a dangling profile share symlink:
 box content crosses into the project and must not reach them.
 `-- CMD`, `start`, the Git remote, `build` and `config edit` check it, and `doctor`

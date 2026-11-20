@@ -373,6 +373,13 @@ impl Config {
     }
 }
 
+/// The protected paths no configuration selects, checked before admission
+/// opens a lock: a project holding the lock directory would get lock files.
+/// The configured check still runs under the locks.
+pub(crate) fn check_roots_outside(root: &Path) -> io::Result<()> {
+    check_paths_outside(root, None, false)
+}
+
 /// Refuse a project root that holds pinfold's own configuration, state or
 /// cache, the project's configuration, or what `profile` reads, before any
 /// project state is created: box content crosses into the project, so it

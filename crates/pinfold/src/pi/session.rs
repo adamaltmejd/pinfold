@@ -670,6 +670,7 @@ async fn admit(
     signals: &mut Signals,
     executable: &File,
 ) -> io::Result<Option<Lease>> {
+    crate::config::check_roots_outside(root)?;
     let _maintenance = maintenance(root, signals).await?;
     let mut noticed = false;
     loop {
@@ -2274,6 +2275,7 @@ pub(crate) async fn refuse_covering_share(cwd: &Path, signals: &mut Signals) -> 
         {
             continue;
         }
+        crate::config::check_roots_outside(root)?;
         let mut noticed = false;
         let _launch = launch_lock(root, signals, &mut noticed).await?;
         let Some(locator) = read_locator(root)? else {
@@ -2343,6 +2345,7 @@ impl CrossingLease {
 }
 pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<CrossingLease> {
     check_linux_mount(root)?;
+    crate::config::check_roots_outside(root)?;
     let maintenance = maintenance(root, signals).await?;
     let mut noticed = false;
     loop {
