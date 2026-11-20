@@ -3,4 +3,7 @@
 //! `container`, through scripts/run-mac-e2e.sh, or on Linux x64 with
 //! Firecracker.
 
+mod disk;
 mod network;
+mod owner;
+mod privilege;
