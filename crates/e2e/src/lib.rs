@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -113,22 +113,29 @@ pub fn run(command: &mut Command, timeout: Duration) -> Exec {
         }
     }
     // The pipes are closed; the command itself gets the rest of the deadline.
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("wait for a host command") {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("{command:?} did not exit within {timeout:?}");
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
+    let status = wait_until(&mut child, deadline)
+        .unwrap_or_else(|| panic!("{command:?} did not exit within {timeout:?}"));
     let [stdout, stderr] = streams.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
     Exec {
         code: exit_code(status),
         stdout,
         stderr,
+    }
+}
+
+/// Wait for `child` until `deadline`; past it, kill and reap it and return
+/// `None`.
+pub fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
+    loop {
+        if let Some(status) = child.try_wait().expect("wait for a host process") {
+            return Some(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -161,9 +168,21 @@ impl Roots {
     }
 }
 
+/// pinfold's daily maintenance pass, which a state root's first working
+/// command runs, prunes every dead box on the host. Each [`TestEnv`] spends
+/// its root's pass under this lock, so a test holding it (from an owner's
+/// SIGKILL to its own `box prune`) keeps its leftover until then. Never
+/// create a `TestEnv` while holding it: the same thread would deadlock.
+static MAINTENANCE: Mutex<()> = Mutex::new(());
+
+pub fn hold_maintenance() -> MutexGuard<'static, ()> {
+    MAINTENANCE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// One test's throwaway config and state roots, removed on drop unless a
 /// box failed to end cleanly. The cache root is the suite run's own (see
-/// [`suite_cache`]).
+/// [`suite_cache`]). Every disk in its state root is removed by name on
+/// drop, after the test's boxes, which are declared after it.
 pub struct TestEnv {
     root: PathBuf,
     roots: Roots,
@@ -178,9 +197,27 @@ impl TestEnv {
             cache: suite_cache().to_path_buf(),
             keep: Arc::default(),
         };
-        fs::create_dir_all(&roots.config).unwrap();
-        fs::create_dir_all(&roots.state).unwrap();
-        TestEnv { root, roots }
+        // A new directory, so cleanup never adopts an older run's state.
+        fs::create_dir(&root).unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
+        let env = TestEnv { root, roots };
+        fs::create_dir(&env.roots.config).unwrap();
+        fs::create_dir(&env.roots.state).unwrap();
+        // Spend this root's daily pass now (see MAINTENANCE).
+        let _hold = hold_maintenance();
+        let listed = run(env.command().args(["disk", "list", "--json"]), COMMAND);
+        assert_eq!(listed.code, 0, "pinfold disk list: {}", listed.stderr);
+        env
+    }
+
+    /// The test's own directory, holding its roots; files a test makes go
+    /// here too.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The `XDG_STATE_HOME` this test's commands use.
+    pub fn state_home(&self) -> &Path {
+        &self.roots.state
     }
 
     /// `pinfold` with this test's roots and no inherited `PINFOLD_*`.
@@ -201,6 +238,13 @@ impl TestEnv {
 
     /// Spawn `box up` with `spec` and wait for its `ready` line.
     pub fn up(&self, spec: &Value) -> BoxUp {
+        self.start(spec)
+            .unwrap_or_else(|line| panic!("box up {}: {line}", spec["name"]))
+    }
+
+    /// Spawn `box up` with `spec`: the running box, or the line it printed
+    /// instead of `ready` once `up` has exited 1.
+    pub fn start(&self, spec: &Value) -> Result<BoxUp, Value> {
         let name = spec["name"].as_str().expect("the spec names its box");
         let mut child = self
             .command()
@@ -240,22 +284,92 @@ impl TestEnv {
             .lines
             .recv_timeout(Duration::from_secs(600))
             .unwrap_or_else(|error| panic!("box up {name} printed no first line: {error}"));
-        let ready: Value = serde_json::from_str(&line)
+        let first: Value = serde_json::from_str(&line)
             .unwrap_or_else(|error| panic!("box up's first line {line:?}: {error}"));
-        assert_eq!(ready["event"], "ready", "box up {name}: {ready}");
-        up.ready = ready;
-        up
+        if first["event"] == "ready" {
+            up.ready = first;
+            return Ok(up);
+        }
+        // Not ready: `up` ends on its own and exits 1 (Process interface).
+        drop(up.stdin.take());
+        assert!(up.drain(COMMAND), "box up {name} did not end after {first}");
+        let status = up.reap(COMMAND);
+        assert_eq!(
+            status.map(exit_code),
+            Some(1),
+            "box up {name}'s exit after {first}"
+        );
+        Err(first)
     }
+
+    /// `pinfold box list` lines for the box whose generation is `run_id`.
+    pub fn listed(&self, run_id: &str) -> Vec<Value> {
+        let label = format!("dev.pinfold.generation={run_id}");
+        let out = run(
+            self.command().args(["box", "list", "--label", &label]),
+            COMMAND,
+        );
+        assert_eq!(out.code, 0, "box list: {out:?}");
+        json_lines(&out.stdout)
+    }
+}
+
+/// Remove every disk in `roots`' state root by name.
+fn remove_disks(roots: &Roots) -> Result<(), String> {
+    let command = |args: &[&str]| {
+        let mut command = roots.command();
+        command.current_dir(&roots.state).args(["disk"]).args(args);
+        run(&mut command, COMMAND)
+    };
+    let listed = command(&["list", "--json"]);
+    if listed.code != 0 {
+        return Err(format!("disk list: {listed:?}"));
+    }
+    let mut failed = Vec::new();
+    for disk in json_lines(&listed.stdout) {
+        let name = disk["name"].as_str().unwrap_or_default();
+        let removed = command(&["rm", name, "--json"]);
+        if removed.code != 0 {
+            failed.push(format!("disk rm {name}: {removed:?}"));
+        }
+    }
+    match failed.is_empty() {
+        true => Ok(()),
+        false => Err(failed.join("; ")),
+    }
+}
+
+/// Run `work` on its own thread, so a panic or a deadline in it never
+/// panics a Drop.
+fn in_drop(work: impl FnOnce() -> Result<(), String> + Send + 'static) -> Result<(), String> {
+    let (send, done) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = send.send(work());
+    });
+    done.recv_timeout(COMMAND * 3)
+        .unwrap_or_else(|_| Err("did not finish".to_string()))
 }
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
+        let roots = self.roots.clone();
+        if let Err(error) = in_drop(move || remove_disks(&roots)) {
+            eprintln!("e2e: DISKS LEFT in {}: {error}", self.root.display());
+            self.roots.keep.store(true, Ordering::SeqCst);
+        }
         if self.roots.keep.load(Ordering::SeqCst) {
             eprintln!("e2e: kept {} for recovery", self.root.display());
         } else {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
+}
+
+/// Each line of `text` as JSON.
+pub fn json_lines(text: &str) -> Vec<Value> {
+    text.lines()
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{line:?}: {e}")))
+        .collect()
 }
 
 /// The canonical temp dir: on macOS `/tmp` and `$TMPDIR` are symlinks, and
@@ -322,11 +436,7 @@ impl BoxUp {
         let path = self.ready["egress_log"]
             .as_str()
             .unwrap_or_else(|| panic!("ready names no egress log: {}", self.ready));
-        fs::read_to_string(path)
-            .unwrap_or_else(|error| panic!("read {path}: {error}"))
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{line:?}: {e}")))
-            .collect()
+        json_lines(&fs::read_to_string(path).unwrap_or_else(|error| panic!("read {path}: {error}")))
     }
 
     /// Read `up`'s stdout to EOF within `timeout`; whether it ended.
@@ -372,9 +482,43 @@ impl Drop for BoxUp {
 }
 
 impl BoxUp {
+    /// The `box up` process's pid, from the host.
+    pub fn pid(&self) -> u32 {
+        self.child.as_ref().expect("a running owner").id()
+    }
+
+    /// The `ready` line.
+    pub fn ready(&self) -> &Value {
+        &self.ready
+    }
+
+    /// SIGKILL the owner and reap it. On Apple the guest outlives it. On
+    /// Linux the VM ends with its owner: every host process below the
+    /// owner, the VMM among them, is gone before this returns.
+    pub fn kill_owner(mut self) -> Leftover {
+        let mut child = self.child.take().expect("a running owner");
+        let leftover = Leftover {
+            name: self.name.clone(),
+            run_id: self.ready["run_id"].as_str().expect("run_id").to_string(),
+            owner: child.id(),
+            roots: self.roots.clone(),
+        };
+        #[cfg(target_os = "linux")]
+        let below = Below::of(child.id());
+        child.kill().expect("SIGKILL box up");
+        self.child = Some(child);
+        let status = self.reap(COMMAND);
+        assert_eq!(status.map(exit_code), Some(128 + 9), "box up after SIGKILL");
+        #[cfg(target_os = "linux")]
+        below.wait_gone();
+        leftover
+    }
+
     fn teardown(&mut self) {
-        // Never kill the owner: on Apple the guest would outlive it, and
-        // only `box prune`, which acts host-wide, would remove it.
+        if self.child.is_none() {
+            return;
+        }
+        // Never kill the owner: on Apple the guest would outlive it.
         drop(self.stdin.take());
         if !self.drain(Duration::from_secs(120)) {
             self.fail("stdin EOF did not end box up within 120 s; trying box down");
@@ -399,6 +543,135 @@ impl BoxUp {
             Some(status) if status.success() => {}
             Some(status) => self.fail(&format!("box up exited {status}")),
             None => self.fail("box up was not reaped within 30 s"),
+        }
+    }
+}
+
+/// The host processes below an owner, the VMM among them, taken from
+/// /proc before the owner is killed.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub struct Below(Vec<(u32, String)>);
+
+#[cfg(target_os = "linux")]
+impl Below {
+    /// Every live process below `pid`, with its command name; at least one.
+    pub fn of(pid: u32) -> Below {
+        let mut parents = Vec::new();
+        for entry in fs::read_dir("/proc").expect("read /proc").flatten() {
+            let Some((child, state, parent, name)) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+                .and_then(stat)
+            else {
+                continue;
+            };
+            if state != "Z" {
+                parents.push((child, parent, name));
+            }
+        }
+        let mut found = Vec::new();
+        let mut frontier = vec![pid];
+        while let Some(parent) = frontier.pop() {
+            for (child, _, name) in parents.iter().filter(|(_, p, _)| *p == parent) {
+                found.push((*child, name.clone()));
+                frontier.push(*child);
+            }
+        }
+        assert!(!found.is_empty(), "no process below {pid}: no VMM");
+        Below(found)
+    }
+
+    /// Wait, bounded, until each process has exited: gone from /proc, or a
+    /// zombie no one has reaped yet.
+    pub fn wait_gone(&self) {
+        let deadline = Instant::now() + COMMAND;
+        while self
+            .0
+            .iter()
+            .any(|(pid, _)| stat(*pid).is_some_and(|(_, state, _, _)| state != "Z"))
+        {
+            assert!(Instant::now() < deadline, "outlived their owner: {self:?}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// `/proc/PID/stat`'s pid, state, parent pid and command name.
+#[cfg(target_os = "linux")]
+fn stat(pid: u32) -> Option<(u32, String, u32, String)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `PID (COMM) STATE PPID ...`; COMM may hold spaces and parentheses.
+    let (head, tail) = stat.rsplit_once(')')?;
+    let (_, name) = head.split_once('(')?;
+    let mut fields = tail.split_whitespace();
+    let state = fields.next()?.to_string();
+    let parent = fields.next()?.parse().ok()?;
+    Some((pid, state, parent, name.to_string()))
+}
+
+/// A box whose owner a test killed. Dropping it removes the box by name
+/// with `box down`, which removes only an orphan, if the runtime still
+/// lists its generation. Drop it before reusing the name.
+pub struct Leftover {
+    name: String,
+    run_id: String,
+    owner: u32,
+    roots: Roots,
+}
+
+impl Leftover {
+    /// A leftover found by `box list`, whose owner the test killed itself.
+    pub fn listed(env: &TestEnv, line: &Value) -> Leftover {
+        Leftover {
+            name: line["name"].as_str().expect("name").to_string(),
+            run_id: line["labels"]["dev.pinfold.generation"]
+                .as_str()
+                .expect("generation")
+                .to_string(),
+            owner: line["owner"].as_u64().expect("owner") as u32,
+            roots: env.roots.clone(),
+        }
+    }
+
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    /// The killed owner's pid.
+    pub fn owner(&self) -> u32 {
+        self.owner
+    }
+}
+
+impl Drop for Leftover {
+    fn drop(&mut self) {
+        let (name, run_id, roots) = (self.name.clone(), self.run_id.clone(), self.roots.clone());
+        let result = in_drop(move || {
+            let label = format!("dev.pinfold.generation={run_id}");
+            let listed = || {
+                let out = run(
+                    roots.command().args(["box", "list", "--label", &label]),
+                    COMMAND,
+                );
+                match out.code {
+                    0 => Ok(!out.stdout.trim().is_empty()),
+                    _ => Err(format!("box list: {out:?}")),
+                }
+            };
+            if !listed()? {
+                return Ok(());
+            }
+            let down = run(roots.command().args(["box", "down", &name]), COMMAND);
+            if down.code != 0 || listed()? {
+                return Err(format!("box down {name}: {down:?}"));
+            }
+            Ok(())
+        });
+        if let Err(error) = result {
+            eprintln!("e2e: LEFTOVER BOX {} NOT REMOVED: {error}", self.name);
+            self.roots.keep.store(true, Ordering::SeqCst);
         }
     }
 }
