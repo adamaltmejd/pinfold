@@ -670,6 +670,7 @@ async fn admit(
     signals: &mut Signals,
     executable: &File,
 ) -> io::Result<Option<Lease>> {
+    crate::config::check_roots_outside(root)?;
     let _maintenance = maintenance(root, signals).await?;
     let mut noticed = false;
     loop {
@@ -2343,6 +2344,7 @@ impl CrossingLease {
 }
 pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<CrossingLease> {
     check_linux_mount(root)?;
+    crate::config::check_roots_outside(root)?;
     let maintenance = maintenance(root, signals).await?;
     let mut noticed = false;
     loop {
