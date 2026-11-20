@@ -16,12 +16,15 @@ only as git branches you fetch and review.
 - Run from the project's main checkout. A git worktree is refused as
   `worktree`. This workflow needs branches to fetch: initialize Git and
   commit before delegating from a folder without a repository.
-- Only committed branches cross, always. The first start pushes the
-  checkout's branches into the box as `host/<branch>`, checks out the
-  current branch there and adds the Git remote `box` on the host. Later
-  host commits cross only by `git push box BRANCH`. Untracked, ignored
-  and uncommitted files never cross: commit work the box needs, on a
-  branch (a WIP commit will do), before the first start.
+- Only committed branches cross, always, and only when you push them. A
+  new project disk starts empty. After the first start has created it,
+  add the remote once with `git remote add box pinfold::"$(pwd -P)"` at
+  the project root, then `git push box BRANCH`: it lands as
+  `host/<branch>`. The first push into the empty disk creates an empty
+  repository with nothing checked out; tell the delegate to run
+  `git switch -c <branch> host/<branch>` first. Untracked, ignored and
+  uncommitted files never cross:
+  commit work the box needs, on a branch (a WIP commit will do).
 - Setup is the user's: `pinfold config edit`, `pinfold build`, and a
   model login (`/login` in pi, or a pi login route). Never run
   `pinfold config edit` or `pinfold build` yourself. If a run fails on one of these, stop and
@@ -35,9 +38,6 @@ pinfold -- pi -p "TASK" </dev/null
 
 pi prints its answer on stdout and the command exits with pi's code. A
 pinfold refusal prints `pinfold --: REASON: DETAIL` on stderr and exits 125.
-`pinfold: sync-failed: DETAIL` is not a refusal: pi ran, but the first
-start's push failed and is not retried. Check that `git remote get-url
-box` prints `pinfold::` and the project root, then `git push box BRANCH`.
 Tasks can take minutes: run the command in the background and wait for it
 to exit. Pass pi's own flags (`--provider`, `--model`) as usual.
 

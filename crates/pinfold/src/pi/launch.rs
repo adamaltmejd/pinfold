@@ -14,131 +14,11 @@ use crate::core::clean;
 use crate::core::crossing::CrossingError;
 use crate::core::image::{ImageInfo, service};
 use crate::core::plan::{Disk, Egress, Env, Mount, MountKind, Plan};
-use crate::core::runtime::{ExecContext, Runtime, runtime};
-use crate::core::{artifacts, crossing, disk, image, sha256_hex};
+use crate::core::runtime::Runtime;
+use crate::core::{artifacts, disk, image, sha256_hex};
 use crate::formatting::terminal_text;
 use crate::pi::context::Context;
 use crate::pi::state::{self, project_id};
-
-/// `$1` is the project's guest path, `$2` the host's object format, `$3`
-/// the host's branch or empty. Creates the box's repository there.
-const INIT_SCRIPT: &str = r#"
-exec git init -q --object-format="$2" ${3:+"--initial-branch=$3"} "$1"
-"#;
-
-/// `$1` is the project's new guest repository. Checks out the host's
-/// counterpart of its unborn branch, when the push brought one.
-const CHECKOUT_SCRIPT: &str = r#"
-cd "$1" || exit
-ref=$(git symbolic-ref -q HEAD) || exit 0
-host=$(git rev-parse -q --verify "refs/remotes/host/${ref#refs/heads/}") || exit 0
-exec git merge -q --ff-only "$host"
-"#;
-
-/// The start that created a Git project's disk (Git): create the box's repository, add the host's `box`
-/// remote unless one exists, push the checkout's branches in and check out
-/// the host's branch. A failure is reported, never retried, and never stops
-/// the command.
-pub(crate) fn first_push(
-    name: &str,
-    init: &Path,
-    root: &Path,
-    cancel: &std::sync::atomic::AtomicBool,
-) {
-    let Some(guest) = root.to_str() else { return };
-    let failed = |detail: &str| {
-        eprintln!(
-            "pinfold: sync-failed: {}; check that `git remote get-url box` prints pinfold::{} (or `git remote add box pinfold::{}`), then `git push box BRANCH`",
-            terminal_text(detail.trim()),
-            terminal_text(guest),
-            terminal_text(guest)
-        )
-    };
-    let Some(format) = git(root, &["rev-parse", "--show-object-format"], cancel) else {
-        return failed("the host's object format could not be read");
-    };
-    // `--short` would print `heads/<b>` when a tag shares the branch's name.
-    let branch = git(root, &["symbolic-ref", "-q", "HEAD"], cancel)
-        .and_then(|head| head.strip_prefix("refs/heads/").map(str::to_string))
-        .unwrap_or_default();
-    match in_box(name, init, INIT_SCRIPT, &[guest, &format, &branch], cancel) {
-        Ok(()) => {}
-        Err((_, detail)) => return failed(&detail),
-    }
-    if git(root, &["config", "--get", "remote.box.url"], cancel).is_none()
-        && git(
-            root,
-            &["remote", "add", "box", &format!("pinfold::{guest}")],
-            cancel,
-        )
-        .is_none()
-    {
-        return failed("the host's `box` remote could not be added");
-    }
-    let Some(branches) = git(
-        root,
-        &["for-each-ref", "--format=%(refname)", "refs/heads/"],
-        cancel,
-    ) else {
-        return failed("the host's branches could not be listed");
-    };
-    let sources: Vec<String> = branches.lines().map(str::to_string).collect();
-    // No branch: nothing to push.
-    if sources.is_empty() {
-        return;
-    }
-    let refspecs = ["+refs/heads/*:refs/remotes/host/*".to_string()];
-    if let Err(CrossingError::Refused(_, detail) | CrossingError::Failed(detail)) =
-        crossing::push_cancellable(
-            runtime(),
-            init,
-            name,
-            root,
-            guest,
-            &sources,
-            &refspecs,
-            cancel,
-        )
-    {
-        return failed(&detail);
-    }
-    if let Err((_, detail)) = in_box(name, init, CHECKOUT_SCRIPT, &[guest], cancel) {
-        failed(&detail);
-    }
-}
-
-/// Run `script` with `args` in the box as the box user; a failure carries
-/// its exit code and stderr.
-fn in_box(
-    name: &str,
-    init: &Path,
-    script: &str,
-    args: &[&str],
-    cancel: &std::sync::atomic::AtomicBool,
-) -> Result<(), (Option<i32>, String)> {
-    let argv: Vec<String> = ["sh", "-c", script, "sh"]
-        .iter()
-        .chain(args)
-        .map(|arg| arg.to_string())
-        .collect();
-    let mut command = runtime()
-        .exec_command(name, init, &ExecContext::default(), &argv)
-        .map_err(|error| (None, error.to_string()))?;
-    command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped());
-    let output = crossing::output_discard_cancellable(&mut command, None, cancel)
-        .map_err(|error| (None, error.to_string()))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err((
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-        ))
-    }
-}
 
 /// Refuse a root without `.git`, which has no branches to cross, and one
 /// whose `.git` is not a directory (a worktree's or a submodule's).
@@ -547,15 +427,4 @@ pub(crate) fn utf8<'a>(path: &'a Path, what: &str) -> io::Result<&'a str> {
             ),
         )
     })
-}
-
-/// Run git in `dir`: its UTF-8 stdout less one trailing newline, or `None`
-/// when it fails.
-fn git(dir: &Path, args: &[&str], cancel: &std::sync::atomic::AtomicBool) -> Option<String> {
-    let mut command = crossing::git_command(dir);
-    command.args(args).stdin(std::process::Stdio::null());
-    let output = crossing::output_cancellable(&mut command, None, cancel).ok()?;
-    let stdout = String::from_utf8(output.stdout).ok()?;
-    let stdout = stdout.strip_suffix('\n').unwrap_or(&stdout);
-    output.status.success().then(|| stdout.to_string())
 }

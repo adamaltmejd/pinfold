@@ -38,8 +38,6 @@ pub struct Box {
     _image_lease: nix::fcntl::Flock<std::fs::File>,
     /// The spec's disks, recorded clean once `down` removes the box.
     disks: Vec<Disk>,
-    /// The disks this `up` created.
-    pub created: Vec<String>,
     _project: Option<nix::fcntl::Flock<std::fs::File>>,
     child: Child,
     proxy: Option<proxy::Server>,
@@ -582,12 +580,6 @@ impl Box {
             #[cfg(target_os = "linux")]
             _image_lease: image_lease,
             disks: plan.disks.clone(),
-            created: progress
-                .claimed
-                .created
-                .iter()
-                .map(|disk| disk.name.clone())
-                .collect(),
             _project: project,
             proxy: progress.proxy,
             audit_done: progress.audit_done,

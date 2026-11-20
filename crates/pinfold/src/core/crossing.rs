@@ -43,12 +43,17 @@ const QUARANTINE: &str = "pinfold-incoming-";
 /// The bytes of a box command's stderr kept for a `failed` detail.
 const STDERR_KEPT: u64 = 16 << 10;
 
-/// `$1` is GUEST_REPO, the rest refspecs into `refs/remotes/host/*`. The
-/// bundle arrives on stdin.
+/// `$1` is GUEST_REPO, `$2` the host's object format, the rest refspecs
+/// into `refs/remotes/host/*`. The bundle arrives on stdin. When GUEST_REPO
+/// has no `.git`, it first creates the repository, on Git's default unborn
+/// branch. Two pushes racing here may both init; a reinit keeps refs and
+/// objects.
 const PUSH_SCRIPT: &str = r#"
-repo=$1; shift
-git -C "$repo" rev-parse --git-dir >/dev/null || exit 64
-dir=$(git -C "$repo" rev-parse --absolute-git-dir) || exit
+repo=$1 format=$2; shift 2
+if [ ! -e "$repo/.git" ] && [ ! -L "$repo/.git" ]; then
+  git init -q --object-format="$format" "$repo" || exit
+fi
+dir=$(git -C "$repo" rev-parse --absolute-git-dir) || exit 64
 bundle=$(mktemp "$dir/pinfold-push.XXXXXX") || exit
 trap 'rm -f "$bundle"' EXIT
 cat >"$bundle" &&
@@ -103,6 +108,8 @@ pub(crate) fn push_cancellable(
     cancel: &AtomicBool,
 ) -> Result<(), CrossingError> {
     check_args(repo, guest_repo, cancel)?;
+    let format = succeeded(git(repo, &["rev-parse", "--show-object-format"], cancel)?)?;
+    let format = String::from_utf8_lossy(&format.stdout).trim().to_string();
     if sources.is_empty() {
         return Err(spec(format!(
             "{} has no branches",
@@ -135,7 +142,9 @@ pub(crate) fn push_cancellable(
         &ExecContext::default(),
         &script(
             PUSH_SCRIPT,
-            std::iter::once(guest_repo).chain(refspecs.iter().map(String::as_str)),
+            [guest_repo, format.as_str()]
+                .into_iter()
+                .chain(refspecs.iter().map(String::as_str)),
         ),
     )?;
     // The box's stderr is its own text; a push reports only its outcome.
@@ -473,7 +482,7 @@ fn box_status(code: Option<i32>, stderr: &str, guest_repo: &str) -> Result<(), C
     match code {
         Some(0) => Ok(()),
         Some(NOT_A_REPO) => Err(spec(format!(
-            "{} is not a git repository in the box{detail}",
+            "{} is not a git repository in the box{detail}; a push creates one where `.git` is absent",
             terminal_text(guest_repo),
         ))),
         _ => Err(CrossingError::Failed(format!(

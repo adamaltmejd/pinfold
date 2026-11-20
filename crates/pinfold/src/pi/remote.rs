@@ -27,8 +27,8 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     // remote has refspecs the helper can check.
     if !valid_name(remote) {
         return Err(refused(&format!(
-            "remote-url: run `git fetch box` with the configured remote, not {}",
-            terminal_text(remote)
+            "remote-url: use a configured remote, not a URL: `git remote add box {}`, then `git push box BRANCH` or `git fetch box`",
+            url_word(remote)
         )));
     }
     let (input, mut output) = protocol()?;
@@ -147,6 +147,25 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
     Ok(report)
 }
 
+/// ROOT's remote URL as one shell word for a printed command.
+pub(crate) fn pinfold_url(root: &Path) -> String {
+    url_word(&format!("pinfold::{}", root.to_string_lossy()))
+}
+
+/// URL as one POSIX shell word: unquoted when every character is plain,
+/// else single-quoted. A URL holding a control character cannot be printed
+/// as pasteable text, so the placeholder `pinfold::ROOT` stands in.
+fn url_word(url: &str) -> String {
+    let plain = |ch: char| ch.is_ascii_alphanumeric() || "/._+:@%=,-".contains(ch);
+    if url.chars().any(char::is_control) {
+        "pinfold::ROOT".to_string()
+    } else if url.chars().all(plain) {
+        url.to_string()
+    } else {
+        format!("'{}'", url.replace('\'', r"'\''"))
+    }
+}
+
 /// Refuse a URL that names another project, a repository other than ROOT's
 /// own `.git`, and a configured fetch refspec that writes outside
 /// `refs/remotes/REMOTE/`. A refspec given on the command line never
@@ -154,9 +173,9 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
 fn check(root: &Path, remote: &str, address: &str) -> io::Result<()> {
     if Path::new(address) != root {
         return Err(refused(&format!(
-            "remote-url: {remote}'s URL names {}, not this project; run `git remote set-url {remote} pinfold::{}`",
+            "remote-url: {remote}'s URL names {}, not this project; run `git remote set-url {remote} {}`",
             terminal_text(address),
-            terminal_text(&root.to_string_lossy())
+            pinfold_url(root)
         )));
     }
     let git_dir = std::env::var_os("GIT_DIR").map(std::fs::canonicalize);
@@ -188,8 +207,8 @@ fn check(root: &Path, remote: &str, address: &str) -> io::Result<()> {
     // `.git/remotes` and `.git/branches` files carry refspecs unchecked here.
     let Some(_) = config(root, &["--get", &format!("remote.{remote}.url")])? else {
         return Err(refused(&format!(
-            "remote-url: set remote.{remote}.url; run `git remote add {remote} pinfold::{}`",
-            terminal_text(&root.to_string_lossy())
+            "remote-url: set remote.{remote}.url; run `git remote add {remote} {}`",
+            pinfold_url(root)
         )));
     };
     // Git writes through a symbolic ref to its target.
