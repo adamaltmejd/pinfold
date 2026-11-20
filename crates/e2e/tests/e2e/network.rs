@@ -38,9 +38,9 @@ fn vsock_to_host(env: &TestEnv, name: &str, port: u32) -> String {
 fn box_has_no_network_but_loopback() {
     // Sabotage (run): on Apple, drop `--network none` from `container run`
     // in runtime/apple.rs. The box gains an interface beside `lo` and
-    // reaches 1.1.1.1. Sabotage (Linux): listen on the host proxy port
-    // without `egress`; the no-egress box's vsock connect to 3128 is
-    // accepted. The route through the proxy is the positive control.
+    // reaches 1.1.1.1. Sabotage (Linux, not yet run): listen on the host
+    // proxy port without `egress`; the no-egress box's vsock connect to
+    // 3128 is accepted. The route through the proxy is the positive control.
     let env = TestEnv::new("network");
     let fixture = Fixture::start(418);
 
@@ -164,17 +164,9 @@ fn only_allowlisted_hosts_get_through() {
         )
     };
 
-    let github = curl(
-        &env,
-        &name,
-        &[
-            "-o",
-            "/dev/null",
-            "-w",
-            "%{http_code}",
-            "https://api.github.com/",
-        ],
-    );
+    // Control: the tunnel opens and TLS completes. GitHub's own status is
+    // not asserted: it may rate-limit a shared CI address.
+    let github = connect("https://api.github.com/");
     assert_eq!(
         (github.code, github.stdout.as_str()),
         (0, "200"),

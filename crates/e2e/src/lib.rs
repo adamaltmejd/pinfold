@@ -243,11 +243,6 @@ pub struct BoxUp {
 }
 
 impl BoxUp {
-    /// The parsed `ready` line.
-    pub fn ready(&self) -> &Value {
-        &self.ready
-    }
-
     /// The decisions in this run's egress log, at the path `ready` names.
     pub fn egress_log(&self) -> Vec<Value> {
         let path = self.ready["egress_log"]
