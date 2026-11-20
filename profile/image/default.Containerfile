@@ -1,13 +1,21 @@
 ARG TARGETARCH
 FROM debian:trixie-slim AS base
 
+# pinfold names the box user in /var/lib/extrausers. Groups are looked up
+# there first, so a gid the image already names is still pinfold's. Users
+# are not: libnss-extrausers 0.6 answers uid 0 with its own first entry.
 RUN set -eux; \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \
     apt-get upgrade -y; \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl git ripgrep fd-find jq less procps; \
+        ca-certificates curl git ripgrep fd-find jq less procps libnss-extrausers; \
     ln -s /usr/bin/fdfind /usr/local/bin/fd; \
+    sed -i -E -e 's/^(passwd:[[:space:]]+files)$/\1 extrausers/' \
+        -e 's/^(group:[[:space:]]+)files$/\1extrausers files/' /etc/nsswitch.conf; \
+    grep -Eq '^passwd:[[:space:]]+files extrausers$' /etc/nsswitch.conf; \
+    grep -Eq '^group:[[:space:]]+extrausers files$' /etc/nsswitch.conf; \
+    printf '%s\n' "PS1='pinfold:\\w\\\$ '" >> /etc/bash.bashrc; \
     git config --system user.name pi; \
     git config --system user.email pi@pinfold.invalid; \
     rm -rf /var/lib/apt/lists/*

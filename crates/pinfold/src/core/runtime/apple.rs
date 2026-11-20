@@ -68,6 +68,42 @@ fn volume(name: &str) -> io::Result<String> {
     Ok(format!("{}-{name}", dirs::state_root_key()?))
 }
 
+/// What [`prepare`] made for one start: the box user's account directory,
+/// unless the box runs as root or a mount or disk overlaps its place.
+#[cfg_attr(target_os = "linux", expect(dead_code))]
+pub struct Prepared(Option<std::path::PathBuf>);
+
+/// Write the box user's account files into the box's state dir. Init runs
+/// as the user under a read-only root, so the host provides them.
+#[cfg_attr(target_os = "linux", expect(dead_code))]
+pub fn prepare(plan: &Plan, state_dir: &Path) -> io::Result<Prepared> {
+    let target = Path::new(crate::init::ACCOUNT_DIR);
+    let overlaps = |guest: &Path| {
+        let guest = crate::core::plan::guest_path(guest);
+        guest.starts_with(target) || target.starts_with(&guest)
+    };
+    // Nested under a mount, the runtime would make the mount point in it.
+    if plan.mounts.iter().any(|mount| overlaps(&mount.guest))
+        || plan.disks.iter().any(|disk| overlaps(&disk.guest))
+    {
+        return Ok(Prepared(None));
+    }
+    let home = match plan.env.get("HOME") {
+        Some(crate::core::plan::Env::Exact(home)) => home.as_bytes(),
+        _ => b"",
+    };
+    let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
+    let Some(files) = crate::init::account(uid.as_raw(), gid.as_raw(), home) else {
+        return Ok(Prepared(None));
+    };
+    let dir = state_dir.join("account");
+    std::fs::create_dir(&dir)?;
+    for (name, contents) in files {
+        std::fs::write(dir.join(name), contents)?;
+    }
+    Ok(Prepared(Some(dir)))
+}
+
 /// Start the attached `container run` process that owns the box: stdin and
 /// stdout piped. When `proxy_socket` is set, carry that host unix socket
 /// into the box, where init relays to it.
@@ -78,7 +114,12 @@ fn volume(name: &str) -> io::Result<String> {
 /// `init` is a host path; it and its directory are mounted read-only at the
 /// same path, so it is also the path PID 1 runs.
 #[cfg_attr(target_os = "linux", expect(dead_code))]
-pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<Client> {
+pub fn up(
+    plan: &Plan,
+    init: &Path,
+    proxy_socket: Option<&Path>,
+    prepared: Prepared,
+) -> io::Result<Client> {
     let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
     let mut command = Command::new("container");
     command
@@ -163,6 +204,11 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
             value.push(",readonly");
         }
         command.arg("--mount").arg(value);
+    }
+    if let Some(account) = &prepared.0 {
+        command
+            .arg("--mount")
+            .arg(bind(account, Path::new(crate::init::ACCOUNT_DIR), true));
     }
     command
         .arg("--mount")

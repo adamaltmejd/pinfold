@@ -34,9 +34,8 @@ pub fn runtime() -> &'static dyn Runtime {
 #[cfg(target_os = "linux")]
 pub use firecracker::Prepared;
 
-/// What [`prepare`] made for one start. Apple needs nothing.
 #[cfg(not(target_os = "linux"))]
-pub struct Prepared;
+pub use apple::Prepared;
 
 /// The slow, cancellable part of a start, run on a blocking thread before
 /// [`start`]: on Linux the VMM's install, the root and init disks and the
@@ -54,8 +53,8 @@ pub fn prepare(
     return firecracker::prepare(plan, state_dir, sockets, image_id, cancel, generated);
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (plan, state_dir, sockets, image_id, cancel, generated);
-        Ok(Prepared)
+        let _ = (sockets, image_id, cancel, generated);
+        apple::prepare(plan, state_dir)
     }
 }
 
@@ -78,8 +77,8 @@ pub fn start(
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let (Prepared, _, _, _) = (prepared, fills, seeding, directories);
-        apple::up(plan, init, proxy_socket)
+        let _ = (fills, seeding, directories);
+        apple::up(plan, init, proxy_socket, prepared)
     }
 }
 

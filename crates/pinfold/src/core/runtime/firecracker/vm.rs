@@ -18,7 +18,7 @@ use super::vsock;
 use crate::core::artifacts;
 use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::image::{ImageService, linux};
-use crate::core::plan::Plan;
+use crate::core::plan::{Env, Plan};
 use crate::core::runtime::output;
 use crate::core::runtime::sockets::Sockets;
 use crate::formatting::terminal_text;
@@ -276,6 +276,12 @@ impl Vm {
             put(&mut request, directory.disk.as_os_str().as_bytes());
             put(&mut request, directory.relative.as_os_str().as_bytes());
         }
+        // Only a literal HOME is a path; a `from` value never enters the request.
+        let home = match plan.env.get("HOME") {
+            Some(Env::Exact(home)) => home.as_bytes(),
+            _ => b"",
+        };
+        put(&mut request, home);
 
         let root = state_dir.join("jail");
         fs::create_dir_all(&root)?;

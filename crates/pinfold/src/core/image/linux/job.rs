@@ -952,6 +952,7 @@ async fn run_job(
             }
             request.extend(0u32.to_be_bytes());
             request.extend(0u32.to_be_bytes());
+            put(&mut request, b""); // Root has no account entry, so no home.
             write_frame(&mut reader, BOOT, &request)?;
             let mut handoff = handoff;
             let mut lookup_open = matches!(phase, Phase::Build);

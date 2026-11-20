@@ -19,7 +19,8 @@
 //!   gid u32, relay u8 for a box with a proxy, root device, attachment
 //!   count u32, then device, guest path, writable u8, fresh u8, deferred u8 each; fill count
 //!   u32, then each fill's guest path and a missing u8; directory count u32,
-//!   then each directory's disk guest root and relative path), then each fill's
+//!   then each directory's disk guest root and relative path, then the box
+//!   user's home, empty without a literal HOME), then each fill's
 //!   copy stream: a new disk's `from`, or
 //!   with missing, the profile's seeds, each written only when absent. The
 //!   guest answers READY or FAILED (text).
@@ -154,6 +155,8 @@ struct Request {
     fills: Vec<(PathBuf, bool)>,
     /// Paths created as the box user before their read-only mount attaches.
     directories: Vec<(PathBuf, PathBuf)>,
+    /// The box user's home for its account entry, or empty.
+    home: Vec<u8>,
 }
 
 struct Attachment {
@@ -238,6 +241,7 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
             ));
         }
     }
+    let home = fields.bytes()?.to_vec();
     fields.end()?;
     attachments.sort_by_key(|attachment| attachment.guest.components().count());
     Ok(Request {
@@ -248,6 +252,7 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
         attachments,
         fills,
         directories,
+        home,
     })
 }
 
@@ -347,6 +352,19 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
     match fs::remove_file(etc.join("resolv.conf")) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
         _ => File::create(etc.join("resolv.conf")).map(drop)?,
+    }
+    // The name is not a control: an image whose tree refuses it starts with
+    // the uid unnamed. Replacing a file never writes through a symlink.
+    if let Some(files) = super::account(request.uid, request.gid, &request.home) {
+        let dir = root.join(super::ACCOUNT_DIR.trim_start_matches('/'));
+        let _ = fs::create_dir_all(&dir).and_then(|()| {
+            for (name, contents) in files {
+                let path = dir.join(name);
+                let _ = fs::remove_file(&path);
+                File::create_new(&path)?.write_all(&contents)?;
+            }
+            Ok(())
+        });
     }
 
     let noexec = nodev | MsFlags::MS_NOEXEC;
