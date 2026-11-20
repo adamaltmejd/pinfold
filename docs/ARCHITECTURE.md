@@ -2205,8 +2205,8 @@ project discovery. Inside a Git directory, the command refuses as `project-in-gi
 
 ## Guarantees
 
-The end-to-end proofs are suspended (`AGENTS.md`, Tests): the suite is
-removed, and no row is proven until it is rewritten. Each row is one test.
+The end-to-end suite is being rewritten row by row (`AGENTS.md`, Tests);
+a row is proven once its test lands. Each row is one test.
 "Shown by" names its hardest scenario and the positive control in the same
 run. Testing policy is in `AGENTS.md`. Row numbers are stable; gaps are
 cut rows.
