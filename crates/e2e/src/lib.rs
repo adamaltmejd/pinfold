@@ -112,8 +112,18 @@ pub fn run(command: &mut Command, timeout: Duration) -> Exec {
             }
         }
     }
-    // Both pipes are closed, so the command has exited or is exiting.
-    let status = child.wait().expect("wait for a host command");
+    // The pipes are closed; the command itself gets the rest of the deadline.
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for a host command") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{command:?} did not exit within {timeout:?}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
     let [stdout, stderr] = streams.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
     Exec {
         code: exit_code(status),
@@ -211,6 +221,7 @@ impl TestEnv {
             stdin,
             lines,
             ready: Value::Null,
+            failed: false,
         };
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -302,6 +313,7 @@ pub struct BoxUp {
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
     ready: Value,
+    failed: bool,
 }
 
 impl BoxUp {
@@ -340,7 +352,8 @@ impl BoxUp {
         status.recv_timeout(timeout).ok().and_then(Result::ok)
     }
 
-    fn fail(&self, what: &str) {
+    fn fail(&mut self, what: &str) {
+        self.failed = true;
         eprintln!(
             "e2e: BOX {} DID NOT END CLEANLY: {what}; its roots are kept",
             self.name
@@ -351,6 +364,15 @@ impl BoxUp {
 
 impl Drop for BoxUp {
     fn drop(&mut self) {
+        self.teardown();
+        if self.failed && !thread::panicking() {
+            panic!("box {} did not end cleanly (see stderr)", self.name);
+        }
+    }
+}
+
+impl BoxUp {
+    fn teardown(&mut self) {
         // Never kill the owner: on Apple the guest would outlive it, and
         // only `box prune`, which acts host-wide, would remove it.
         drop(self.stdin.take());

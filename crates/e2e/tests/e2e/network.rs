@@ -64,6 +64,21 @@ fn vsock_sweep(env: &TestEnv, name: &str) -> String {
     )
 }
 
+/// The box has only `lo`, and a direct connection to a documentation
+/// address, so a failing check contacts nothing real, has no route.
+fn assert_loopback_only(env: &TestEnv, name: &str) {
+    let dev = env.exec(name, &["cat", "/proc/net/dev"]);
+    assert_eq!(dev.code, 0, "{dev:?}");
+    let interfaces: Vec<&str> = dev
+        .stdout
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .map(|(name, _)| name.trim())
+        .collect();
+    assert_eq!(interfaces, ["lo"], "{name}'s interfaces: {}", dev.stdout);
+    assert_eq!(tcp_connect(env, name, "192.0.2.1", 80), ENETUNREACH);
+}
+
 #[test]
 fn box_has_no_network_but_loopback() {
     // Sabotage (run): on Apple, drop `--network none` from `container run`
@@ -78,6 +93,7 @@ fn box_has_no_network_but_loopback() {
     // Linux the host resets a vsock connect on every port, 3128 included.
     let name = box_name("no-egress");
     let up = env.up(&json!({ "name": name, "image": default_image() }));
+    assert_loopback_only(&env, &name);
     assert_eq!(tcp_connect(&env, &name, "127.0.0.1", 3128), ECONNREFUSED);
     #[cfg(target_os = "linux")]
     assert_eq!(vsock_sweep(&env, &name), "done");
@@ -89,17 +105,7 @@ fn box_has_no_network_but_loopback() {
         "image": default_image(),
         "egress": { "routes": { "fixture.internal": fixture.route() } },
     }));
-    let dev = env.exec(&name, &["cat", "/proc/net/dev"]);
-    assert_eq!(dev.code, 0, "{dev:?}");
-    let interfaces: Vec<&str> = dev
-        .stdout
-        .lines()
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, _)| name.trim())
-        .collect();
-    assert_eq!(interfaces, ["lo"], "the box's interfaces: {}", dev.stdout);
-    // A documentation address, so a failing check contacts nothing real.
-    assert_eq!(tcp_connect(&env, &name, "192.0.2.1", 80), ENETUNREACH);
+    assert_loopback_only(&env, &name);
     // Only the proxy's port reaches the host.
     #[cfg(target_os = "linux")]
     assert_eq!(vsock_sweep(&env, &name), "3128 0\ndone");
@@ -167,52 +173,86 @@ fn only_allowlisted_hosts_get_through() {
         curl(&env, &name, &argv)
     };
 
-    // Control: the tunnel opens and TLS completes. GitHub's own status is
-    // not asserted: it may rate-limit a shared CI address.
-    let github = connect(&["https://api.github.com/"]);
+    // Each request's log lines are those it added, so every entry is tied
+    // to its request. A refusal names the spec's token (Egress proxy, Log).
+    let logged = |request: &dyn Fn() -> Exec| -> (Exec, Vec<(String, String, String)>) {
+        let before = up.egress_log().len();
+        let out = request();
+        let lines = up.egress_log()[before..]
+            .iter()
+            .map(|line| {
+                let field = |key: &str| line[key].as_str().unwrap_or_default().to_string();
+                (field("host"), field("decision"), field("reason"))
+            })
+            .collect();
+        (out, lines)
+    };
+    let line = |host: &str, decision: &str, reason: &str| {
+        vec![(host.to_string(), decision.to_string(), reason.to_string())]
+    };
+    let plain = |url: &str| curl(&env, &name, &["-o", "/dev/null", "-w", "%{http_code}", url]);
+
+    // Controls: the tunnel opens and TLS completes, and plain HTTP is
+    // forwarded. GitHub's own status is not asserted: it may rate-limit a
+    // shared CI address.
+    let (github, lines) = logged(&|| connect(&["https://api.github.com/"]));
     assert_eq!(
         (github.code, github.stdout.as_str()),
         (0, "200"),
         "{github:?}"
     );
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].1, "allowed", "{lines:?}");
+    let (github, lines) = logged(&|| plain("http://api.github.com/"));
+    assert_eq!(github.code, 0, "{github:?}");
+    assert_ne!(
+        github.stdout, "403",
+        "the proxy refused plain HTTP: {lines:?}"
+    );
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(lines[0].1, "allowed", "{lines:?}");
 
     // curl exits 56 when the proxy answers CONNECT with an error status.
-    for target in ["localhost", host.as_str(), "example.com"] {
-        let refused = connect(&[&format!("https://{target}/")]);
+    for (target, reason) in [
+        ("localhost", "loopback"),
+        (host.as_str(), "ip literal"),
+        ("example.com", "not allowlisted"),
+    ] {
+        let (refused, lines) = logged(&|| connect(&[&format!("https://{target}/")]));
         assert_eq!(
             (refused.code, refused.stdout.as_str()),
             (56, "403"),
             "{target}'s CONNECT: {refused:?}"
         );
+        assert_eq!(lines, line(target, "refused", reason));
     }
-    let plain = curl(
-        &env,
-        &name,
-        &[
-            "-o",
-            "/dev/null",
-            "-w",
-            "%{http_code}",
-            "http://example.com/",
-        ],
+    let (refused, lines) = logged(&|| plain("http://example.com/"));
+    assert_eq!(
+        (refused.code, refused.stdout.as_str()),
+        (0, "403"),
+        "{refused:?}"
     );
-    assert_eq!((plain.code, plain.stdout.as_str()), (0, "403"), "{plain:?}");
+    assert_eq!(lines, line("example.com", "refused", "not allowlisted"));
 
     // The proxy accepts CONNECT to api.github.com, then reads a ClientHello
-    // naming example.com and drops it: curl's handshake fails (35).
-    let sni = connect(&[
-        "--connect-to",
-        "example.com:443:api.github.com:443",
-        "https://example.com/",
-    ]);
+    // naming example.com and drops it: curl's handshake fails (35). The
+    // refusal is logged under the CONNECT host.
+    let (sni, lines) = logged(&|| {
+        connect(&[
+            "--connect-to",
+            "example.com:443:api.github.com:443",
+            "https://example.com/",
+        ])
+    });
     assert_eq!(
         (sni.code, sni.stdout.as_str()),
         (35, "200"),
         "the mismatched SNI: {sni:?}"
     );
+    assert_eq!(lines, line("api.github.com", "refused", "sni mismatch"));
 
     // Control: a route reaches the fixture with the route's name as Host,
-    // whatever Host the box sent.
+    // whatever Host the box sent, and with the query the log leaves out.
     let sentinel = format!("pf-sentinel-{}", std::process::id());
     let route = curl(
         &env,
@@ -233,27 +273,10 @@ fn only_allowlisted_hosts_get_through() {
     let requests = fixture.requests();
     assert_eq!(requests.len(), 1, "the fixture's requests: {requests:?}");
     assert_eq!(requests[0].method, "DELETE");
+    assert_eq!(requests[0].target, format!("/a/b?{sentinel}"));
     assert_eq!(requests[0].header("host"), ["fixture.internal"]);
 
-    // Each refusal names the spec's token (Egress proxy, Log).
     let log = up.egress_log();
-    let refusals = |host: &str| -> Vec<&str> {
-        decisions(&log, host, "refused")
-            .iter()
-            .map(|line| line["reason"].as_str().unwrap_or_default())
-            .collect()
-    };
-    assert_eq!(refusals("localhost"), ["loopback"], "{log:?}");
-    assert_eq!(refusals(&host), ["ip literal"], "{log:?}");
-    assert_eq!(
-        refusals("example.com"),
-        ["not allowlisted", "not allowlisted"],
-        "{log:?}"
-    );
-    // The SNI refusal is logged under the CONNECT host.
-    assert_eq!(refusals("api.github.com"), ["sni mismatch"], "{log:?}");
-    assert_eq!(decisions(&log, "api.github.com", "allowed").len(), 1);
-
     let routed = decisions(&log, "fixture.internal", "allowed");
     assert_eq!(routed.len(), 1, "the route's lines in {log:?}");
     assert_eq!(
