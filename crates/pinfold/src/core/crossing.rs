@@ -86,7 +86,8 @@ git -C "$repo" fetch -q --atomic --no-tags --no-write-fetch-head --no-prune --no
 
 /// `$1` is GUEST_REPO; stdin holds the commits the host already has, one
 /// per line, read whole before any output. Prints every branch, and every
-/// tag at a commit or at a tag of a commit, as `OID REF`, an empty line,
+/// tag at a commit or at a tag of a commit whose name is printable ASCII
+/// and that is not a symbolic ref, as `OID REF`, an empty line,
 /// then a bundle of what the host lacks, or nothing when it lacks nothing.
 /// A branch or lightweight tag whose commit the host holds is left out of
 /// the bundle by git, so the listing names it; an annotated tag's object
@@ -96,8 +97,10 @@ repo=$1
 git -C "$repo" rev-parse --git-dir >/dev/null || exit 64
 held=$(git -C "$repo" cat-file --batch-check='%(objectname) %(objecttype)' |
   sed -n 's/^\([0-9a-f]*\) commit$/^\1/p') || exit
-tags=$(git -C "$repo" for-each-ref --format='%(objectname) %(refname) %(objecttype)%(*objecttype)' refs/tags/) || exit
-tags=$(printf '%s\n' "$tags" | sed -n '/ \(tag\)\{0,1\}commit$/p')
+# A symbolic tag's last field starts with its target's name, so it never
+# matches; the C locale makes the ASCII test byte-wise.
+tags=$(git -C "$repo" for-each-ref --format='%(objectname) %(refname) %(symref)%(objecttype)%(*objecttype)' refs/tags/) || exit
+tags=$(printf '%s\n' "$tags" | LC_ALL=C sed -n '/[^ -~]/d; / \(tag\)\{0,1\}commit$/p')
 git -C "$repo" for-each-ref --format='%(objectname) %(refname)' refs/heads/ || exit
 [ -z "$tags" ] || printf '%s\n' "$tags" | sed 's/ [a-z]*$//'
 echo
@@ -343,26 +346,33 @@ pub(crate) fn fetch_cancellable(
     // The host's own tags, read after the box's stream so a slow box widens
     // no window. A box tag the host has, by name ignoring case, is never
     // listed: loose refs are files, and on a case-insensitive file system
-    // Git would write the host's. Nor is a non-ASCII one, which could match
-    // a host name through Unicode normalization. Listing every host tag
-    // back at its own id leaves Git none to move or prune.
-    let host_tags = host_refs(repo, "refs/tags/", cancel)?;
-    let host_names: HashSet<String> = host_tags.keys().map(|name| name.to_lowercase()).collect();
+    // Git would write the host's. Nor is a non-ASCII one, and while any host
+    // tag's name is non-ASCII no box tag is, as Unicode normalization could
+    // match the two. Listing every host tag back at its own id leaves Git
+    // none to move or prune.
+    let host_tags = host_tags(repo, cancel)?;
+    let host_ascii = host_tags.keys().all(|name| name.is_ascii());
+    let host_names: HashSet<String> = host_tags
+        .keys()
+        .map(|name| name.to_ascii_lowercase())
+        .collect();
     let kept_out = |name: &str| {
         name.starts_with("refs/tags/")
-            && (!name.is_ascii() || host_names.contains(&name.to_lowercase()))
+            && (!host_ascii || !name.is_ascii() || host_names.contains(&name.to_ascii_lowercase()))
     };
     let mut refs = Refs::new();
+    let mut names = HashSet::new();
     for (name, oid) in listed {
+        if !names.insert(name.clone()) {
+            return Err(malformed_listing());
+        }
         if let Some(branch) = name.strip_prefix("refs/heads/") {
             check_branch(repo, &namespace, branch, cancel)?;
         } else if !host_tags.contains_key(&name) && !valid_ref(repo, &name, cancel)? {
             // Left out; a bundle head naming it fails below.
             continue;
         }
-        if refs.insert(name, oid).is_some() {
-            return Err(malformed_listing());
-        }
+        refs.insert(name, oid);
     }
 
     // The box's listing and bundle are untrusted. Every branch name passes
@@ -663,18 +673,34 @@ fn batch_check(
     Ok(lines)
 }
 
-/// REPO's refs under PREFIX and their ids.
-fn host_refs(repo: &Path, prefix: &str, cancel: &AtomicBool) -> Result<Refs, CrossingError> {
+/// REPO's tags and their ids. A name that is not UTF-8 could not be listed
+/// back as itself, so Git could prune it: the fetch refuses.
+fn host_tags(repo: &Path, cancel: &AtomicBool) -> Result<Refs, CrossingError> {
     let listed = succeeded(git(
         repo,
-        &["for-each-ref", "--format=%(objectname) %(refname)", prefix],
+        &[
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/tags/",
+        ],
         cancel,
     )?)?;
-    Ok(String::from_utf8_lossy(&listed.stdout)
-        .lines()
-        .filter_map(|line| line.split_once(' '))
-        .map(|(oid, name)| (name.to_owned(), oid.to_owned()))
-        .collect())
+    let mut tags = Refs::new();
+    for line in listed.stdout.split(|&byte| byte == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(line) = std::str::from_utf8(line) else {
+            return Err(spec(
+                "a host tag's name is not UTF-8, so a fetch from the box could delete it; rename it (`git for-each-ref refs/tags` shows it)".into(),
+            ));
+        };
+        let (oid, name) = line
+            .split_once(' ')
+            .ok_or_else(|| CrossingError::Failed("git on the host misread its tags".into()))?;
+        tags.insert(name.to_owned(), oid.to_owned());
+    }
+    Ok(tags)
 }
 
 fn spec(detail: String) -> CrossingError {

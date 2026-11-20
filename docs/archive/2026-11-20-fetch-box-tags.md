@@ -73,10 +73,8 @@ at B:
 
 An exact name check would have let a box tag move a host tag. APFS also
 ignores Unicode normalization. pinfold has no normalization code, so
-non-ASCII box tag names are left out. One gap remains: a host tag name
-holding a character whose canonical decomposition is ASCII, such as
-U+212A KELVIN SIGN, lowercases to that ASCII. A host tag named with
-U+037E GREEK QUESTION MARK, which decomposes to `;`, is not matched.
+non-ASCII box tag names are left out. Review fix 2 below closes the
+remaining host-side case.
 
 ## Setup
 
@@ -303,3 +301,93 @@ The box created 4100 lightweight tags with `update-ref`.
 - The disk image was detached. `R`, `W` and the probe repositories
   under `target/` were removed.
 - No image was built or removed.
+
+## Review fixes
+
+These are review findings on `ff2d2a9`. They were checked through a
+debug build of the fix commit, on a case-sensitive directory under
+`target/`, with the same harness and `tag.gpgSign=false`.
+
+1. **Non-UTF-8 host tag names.** The host read its tags with a lossy
+   conversion. A name that is not UTF-8 would then be listed back under
+   another name, and `--prune --prune-tags` could delete the real one.
+   - The host now splits the raw bytes and refuses the fetch as `spec`
+     if any host tag's name is not UTF-8. No listing is produced.
+   - Checked through the binary. APFS refuses such a file name, so the
+     name was appended to `.git/packed-refs` as
+     `OID refs/tags/bad\377`.
+   - `git fetch box` and `git fetch --prune --prune-tags box` each
+     exited 128 with `pinfold remote: spec: a host tag's name is not
+     UTF-8, so a fetch from the box could delete it; rename it (`git
+     for-each-ref refs/tags` shows it)`. Host tags were unchanged.
+   - After the line was removed, `git fetch box` exited 0.
+2. **Unicode normalization.** While any host tag's name is non-ASCII,
+   no box tag is listed. Host tags are still listed back, and branches
+   are unaffected. Case is compared in ASCII only.
+   - The host created tag `réf`. The box then committed and tagged
+     `newtag` (annotated) and `newlight`.
+   - `git fetch box` printed only `f96fdf0..3e52d7d main -> box/main`.
+   - `git fetch --tags box` printed nothing.
+   - `git ls-remote --tags box` listed only host tags, `réf` included.
+   - `-c fetch.prune=true -c fetch.pruneTags=true fetch box` left every
+     host tag in place.
+   - After the host deleted `réf`, `git fetch box` printed
+     `* [new tag] newlight -> newlight` and
+     `* [new tag] newtag -> newtag`.
+3. **Non-ASCII box tags.** The box script drops such tags, so one bad
+   name no longer aborts the fetch. Under `LC_ALL=C`, it drops any tag
+   line with a byte outside printable ASCII. The host-side check stays
+   as the backstop.
+   - The box made `boxann`, `boxlight`, `café` and the symbolic tag
+     below on a new commit.
+   - `git fetch box` printed `* [new tag] boxann -> boxann` and
+     `* [new tag] boxlight -> boxlight`, exit 0.
+   - `git ls-remote box` listed no `café`.
+4. **Symbolic tags.** The box's `for-each-ref` format now puts
+   `%(symref)` before the type field, so a symbolic tag never matches
+   the filter.
+   - The box ran `git symbolic-ref refs/tags/sym refs/heads/main`.
+   - `sym` was not listed by `git ls-remote box` and did not land.
+5. **Duplicates.** The duplicate check now runs on every listed name,
+   before the name is validated. This was checked by code reading only:
+   the box's own script cannot list a ref twice.
+6. **Docs.**
+   - Any command-line refspec that maps a ref to another tag name is
+     named as able to change or delete host tags.
+   - The claims that tags no branch reaches come only with `--tags` are
+     removed. Through the binary, the box made an annotated `detached`
+     on a commit no branch reaches, then committed on `main`. A plain
+     `git fetch box` printed `c0fcf52..f96fdf0 main -> box/main` and
+     `* [new tag] detached -> detached`. The whole bundle migrates, and
+     Git follows the tag in its second pass. The earlier "Tags no branch
+     reaches" case brought nothing only because no branch moved.
+   - Nested tags are said to cross only where the box's Git peels
+     `%(*objecttype)` fully.
+   - Row 10's bundled-tag failure now reads: the peeled commit is
+     neither carried by the box's pack nor reachable from `box/*`.
+
+Other checks in the same run:
+
+- **Collisions.** The box re-tagged `v1` and added `HOSTLIGHT`. Host
+  tags were unchanged after each of these:
+  - `git fetch --force --tags box`;
+  - `git fetch box '+refs/tags/*:refs/tags/*'`;
+  - `-c fetch.prune=true -c fetch.pruneTags=true fetch box`;
+  - `git fetch --prune --prune-tags box`.
+- **Push.** After the box deleted its `v1`:
+  - `git -c push.followTags=true push box main` printed
+    `ec4c436..3e52d7d main -> main` and `* [new tag] v1 -> v1`;
+  - the next two printed `Everything up-to-date`.
+- **End state.** `git fetch box` printed nothing. `git fsck` exited 0.
+  No quarantine or bundle file was left.
+
+Declined in review and unchanged here: `index-pack --fsck-objects`
+admitting a pack with broken links outside the advertised history, and
+`git bundle verify` running outside the quarantine. Both steps predate
+this change. Tag bundles pass through them unchanged.
+
+- `cargo fmt --check`, `cargo clippy` and the Linux-target clippy
+  passed.
+- The box was stopped, and `pi-repo-27b211e1ba26-{home,project}` were
+  removed by name.
+- `R` was removed. No image was built or removed.

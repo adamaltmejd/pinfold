@@ -284,10 +284,11 @@ Crossing never touches a working tree. The first push into a disk
 without a repository creates an empty one there. To check a branch out,
 run `git switch -c main host/main` in the box. Pushed tags (`--tags`,
 `push.followTags`) land as the box's own tags. `git fetch box` brings
-the box's tags on fetched commits back as yours, and `--tags` brings
-all. A fetch never changes or deletes a tag you have; a box tag by that
-name, in any case, stays in the box, and so does one with a non-ASCII
-name. A fetched tag is yours to publish, and one named
+the box's tags back as yours, as Git follows tags from any remote;
+`--tags` brings every one listed. A fetch never changes or deletes a tag
+you have; a box tag by that name, in any case, stays in the box, as do
+symbolic and non-ASCII box tags, and every box tag while one of yours
+has a non-ASCII name. A fetched tag is yours to publish, and one named
 like a branch makes `git push box BRANCH` ambiguous until you delete it.
 
 Every byte from the box is checked before Git sees a ref, but the
