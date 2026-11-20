@@ -1893,15 +1893,15 @@ cross. The helper:
   nothing of it is written to disk. pinfold then keeps only entries
   whose id is the id of a host `refs/heads/*` or `refs/tags/*` ref (a
   tag ref's own id), from one `git for-each-ref`; it looks up no
-  box-supplied id, and every id Git sees is one a host ref points at,
-  so host Git has nothing to fetch. Git plans the push from what
-  remains:
+  box-supplied id, and every id Git sees is one a host ref points at.
+  Git plans the push from what remains:
   - an unchanged branch or tag is up to date;
   - a box `host/NAME` at an older host commit that is no longer a ref
     tip looks absent, so Git prints `[new branch]` and pushes;
   - a box tag at an object no host ref points at looks absent, so
-    `push.followTags` sends the host's tag of that name and the box's
-    tag check fails the whole push unless forced;
+    `push.followTags` sends the host's tag of that name when Git
+    selects it (annotated, on a pushed commit), and the box's tag
+    check then fails the whole push unless forced;
   - a box tag of that name at another host tip is listed, so
     `push.followTags` skips it, and Git rejects an explicit push of it
     unless forced.
