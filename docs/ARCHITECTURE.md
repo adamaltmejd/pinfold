@@ -1473,8 +1473,8 @@ direction touches a working tree.
   `git check-ref-format` under `refs/remotes/NAME/` before git sees it; a
   new tag name that fails it as itself is left out. The bundle's heads
   are branches and tags the listing names, each at its listed object; any
-  other head fails. Symrefs, symbolic tags among them, and other refs
-  stay in the box. A nested annotated tag is listed only where the box's
+  other head fails. Symbolic tags and other refs stay in the box; a
+  symbolic branch is listed at the commit it resolves to. A nested annotated tag is listed only where the box's
   Git peels `%(*objecttype)` fully (2.43 does not). A bundle past 4 GiB is refused as `limit`, and the
   box's command is killed. On the host, pinfold runs `git bundle verify`;
   a filtered bundle fails. It then runs `git index-pack --fsck-objects`
@@ -1493,7 +1493,10 @@ direction touches a working tree.
   name. A bundle head that fails fails the fetch; a tag outside the
   bundle that fails is left out. A fetch never changes or deletes a host
   tag, but through a command-line refspec that maps a ref to another tag
-  name (threat model). A host tag whose name is not UTF-8 could not be
+  name (threat model); a host tag that is itself a symbolic ref to a
+  `refs/remotes/NAME/*` ref follows that ref, and a host tag listed back
+  under a branch's name makes the short name in `git fetch box NAME`
+  select the tag. A host tag whose name is not UTF-8 could not be
   listed back as itself, so the fetch refuses as `spec`. A box tag whose
   name matches a host tag's ignoring ASCII case is left out, as loose refs
   are files on a file system that may fold case, and so is a non-ASCII
