@@ -194,15 +194,18 @@ fn disk_export_writes_only_a_new_destination() {
     };
 
     // An existing empty directory: a plain rename would replace it. The
-    // spec names no reason token for this refusal; the CLI's failure exit
-    // is 1.
+    // spec names no reason token or exit code for this refusal, only that
+    // success exits 0 with an `exported` line.
     let existing = root.join("existing");
     fs::create_dir(&existing).unwrap();
     let inode = fs::metadata(&existing).unwrap().ino();
     let listing = names(&root);
     let (code, lines) = export(&existing);
-    assert_eq!(code, 1, "{lines:?}");
-    assert!(lines.is_empty(), "{lines:?}");
+    assert_ne!(code, 0, "{lines:?}");
+    assert!(
+        !lines.iter().any(|line| line["event"] == "exported"),
+        "{lines:?}"
+    );
     assert_eq!(fs::metadata(&existing).unwrap().ino(), inode);
     assert!(names(&existing).is_empty(), "{:?}", names(&existing));
     assert_eq!(names(&root), listing, "the export left something beside it");
