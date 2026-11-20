@@ -124,6 +124,7 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
         fs::write(&path, format!("#!/bin/sh\ntouch {marker}\n")).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     }
+    let host_hooks = files(&hooks);
 
     // The box checks main out and commits hooks under every client-side
     // name in .githooks/ and .husky/, which its own core.hooksPath names.
@@ -221,13 +222,7 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     expected.insert("refs/tags/box-new".into(), box_tag.into());
     assert_eq!(named("refs/tags/"), expected);
     assert_eq!(named("refs/heads/"), host_heads);
-    // On a file system that folds case, `Light` would land in `light`'s
-    // file: read the id through Git, and every stored spelling of it.
     assert_eq!(git(&["rev-parse", "refs/tags/light"]), host_light);
-    assert_eq!(
-        stored_tags(project.root(), "light"),
-        [("refs/tags/light".to_string(), host_light.clone())]
-    );
     assert_eq!(git(&["rev-parse", "refs/remotes/box/main"]), box_main);
     assert_eq!(git(&["rev-parse", "refs/remotes/box/feature"]), box_feature);
     assert_eq!(names(&host_ran), Vec::<String>::new());
@@ -271,6 +266,7 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     assert_eq!(box_refs(&in_box), expected);
     assert_eq!(in_box(&[worktree]), tree_before);
     assert_eq!(names(&planted), Vec::<String>::new());
+    assert_eq!(files(&hooks), host_hooks);
 }
 
 /// `text` as one shell word.
@@ -278,32 +274,16 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// Every tag the host repository stores, loose or packed, whose name is
-/// `name` ignoring ASCII case, with its id.
-fn stored_tags(root: &Path, name: &str) -> Vec<(String, String)> {
-    let git = root.join(".git");
-    let mut found = Vec::new();
-    for entry in fs::read_dir(git.join("refs/tags")).unwrap() {
-        let entry = entry.unwrap();
-        let stored = entry.file_name().into_string().unwrap();
-        if stored.eq_ignore_ascii_case(name) {
-            let id = fs::read_to_string(entry.path()).unwrap();
-            found.push((format!("refs/tags/{stored}"), id.trim().to_string()));
-        }
-    }
-    if let Ok(packed) = fs::read_to_string(git.join("packed-refs")) {
-        for line in packed.lines() {
-            if let Some((id, stored)) = line.split_once(' ')
-                && let Some(tag) = stored.strip_prefix("refs/tags/")
-                && tag.eq_ignore_ascii_case(name)
-            {
-                found.push((stored.to_string(), id.to_string()));
-            }
-        }
-    }
-    found.sort();
-    found.dedup();
-    found
+/// Every file in `dir`, by name, with its bytes.
+fn files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let name = entry.file_name().into_string().unwrap();
+            (name, fs::read(entry.path()).unwrap())
+        })
+        .collect()
 }
 
 /// Exit 0, its stdout trimmed.

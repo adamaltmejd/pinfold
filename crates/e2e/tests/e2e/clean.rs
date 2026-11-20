@@ -1,12 +1,16 @@
 //! Guarantee 15: cleanup removes only pinfold's garbage.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::thread;
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
-use e2e::{Exec, Project, TestEnv, default_image, hold_maintenance, json_lines, run, tree};
+use e2e::{
+    Exec, Project, TestEnv, default_image, detached_children, hold_maintenance, json_lines, run,
+    tree, wait_exited, wait_until,
+};
 use serde_json::Value;
 
 #[test]
@@ -38,20 +42,30 @@ fn cleanup_removes_only_pinfolds_garbage() {
         ]),
         "write",
     );
-    // An idle project: one run, ended, and a host file in its checkout. Its
-    // detached owner is gone before `clean`: the only processes left with
-    // this test's state root are the ones the kept project had before.
-    let kept = processes_of(env.state_home());
-    assert!(!kept.is_empty(), "the kept project's owner");
-    ok(idle.pinfold(&["--", "true"]), "idle run");
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while !processes_of(env.state_home()).is_subset(&kept) {
-        assert!(
-            Instant::now() < deadline,
-            "the idle project's owner outlived its run"
-        );
-        thread::sleep(Duration::from_millis(10));
-    }
+    // An idle project: one session, ended, and a host file in its
+    // checkout. Its detached owner, the client's child while the session
+    // runs, has exited before `clean`.
+    let mut client = Client(
+        idle.command(&["--", "sh", "-c", "echo started; read line; exit 0"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn the idle session"),
+    );
+    let mut stdout = BufReader::new(client.0.stdout.take().unwrap());
+    let mut line = String::new();
+    stdout
+        .read_line(&mut line)
+        .expect("the idle session's first line");
+    assert_eq!(line, "started\n");
+    let owners = detached_children(client.0.id());
+    assert_eq!(owners.len(), 1, "the idle client's children: {owners:?}");
+    drop(client.0.stdin.take());
+    let status = wait_until(&mut client.0, Instant::now() + Duration::from_secs(120))
+        .expect("the idle session ends");
+    assert!(status.success(), "the idle session: {status}");
+    wait_exited(owners[0]);
     fs::write(idle.root().join("host-file"), "host\n").unwrap();
 
     let (live, idle) = (Facts::of(&env, &live), Facts::of(&env, &idle));
@@ -62,6 +76,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
             assert!(path.exists(), "{} before clean", path.display());
         }
     }
+    let live_record = contents(&live.state_dir);
     let generation = live.generation(&env);
     assert!(generation.is_some(), "the kept project has a box");
 
@@ -82,6 +97,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     for path in live.state() {
         assert!(path.exists(), "{} after clean", path.display());
     }
+    assert_eq!(contents(&live.state_dir), live_record);
     assert_eq!(live.generation(&env), generation);
     let read = live
         .project
@@ -89,27 +105,26 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert_eq!(ok(read, "read back"), format!("kept\n{box_mark}"));
 }
 
-/// The host processes whose environment sets `XDG_STATE_HOME` to `state`.
-fn processes_of(state: &Path) -> BTreeSet<u32> {
-    let wanted = format!("XDG_STATE_HOME={}", state.display()).into_bytes();
-    let mut found = BTreeSet::new();
-    for entry in fs::read_dir("/proc").expect("read /proc").flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse().ok())
-        else {
-            continue;
-        };
-        // A process that exited meanwhile, or a zombie, has no environment.
-        let Ok(environ) = fs::read(entry.path().join("environ")) else {
-            continue;
-        };
-        if environ.split(|byte| *byte == 0).any(|var| var == wanted) {
-            found.insert(pid);
-        }
+/// Every file under `dir` and its bytes.
+fn contents(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    tree(dir)
+        .into_iter()
+        .filter(|(path, _, _)| fs::symlink_metadata(path).unwrap().is_file())
+        .map(|(path, _, _)| {
+            let bytes = fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect()
+}
+
+/// A project client, killed on drop.
+struct Client(Child);
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
-    found
 }
 
 /// One project's checkout, configuration file, state directory and disks.

@@ -15,20 +15,27 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
     // symlink removed are the positive controls.
     default_image();
     let env = TestEnv::new("protected");
-    let project = Project::new(&env, "protected");
-    // A user profile on default's image, which the project selects.
+    // A user profile on default's image, which each project selects.
     let profile = env.config_home().join("pinfold/profiles/e2e-base");
     fs::create_dir_all(&profile).unwrap();
     fs::write(profile.join("pinfold.toml"), "base = \"default\"\n").unwrap();
-    let file = project.config_dir().join("pinfold.toml");
-    let saved = fs::read_to_string(&file).unwrap();
-    fs::write(&file, format!("profile = \"e2e-base\"\n{saved}")).unwrap();
 
-    // Each protected directory in turn is moved into the checkout and
-    // linked from where pinfold reads it. Both commands are refused and
-    // change nothing under the state or config roots or the moved
-    // directory; with the link replaced by the directory, both succeed.
-    for protected in [project.config_dir(), profile.as_path()] {
+    // For each protected directory, a new project that has never run: the
+    // directory is moved into its checkout and linked from where pinfold
+    // reads it. Both commands are refused and change nothing under the
+    // state or config roots or the moved directory; with the link replaced
+    // by the directory, both succeed.
+    let mut projects = Vec::new();
+    for case in ["config", "profile"] {
+        let project = Project::new(&env, &format!("protected-{case}"));
+        let file = project.config_dir().join("pinfold.toml");
+        let saved = fs::read_to_string(&file).unwrap();
+        fs::write(&file, format!("profile = \"e2e-base\"\n{saved}")).unwrap();
+        let protected = match case {
+            "config" => project.config_dir().to_path_buf(),
+            _ => profile.clone(),
+        };
+        let protected = protected.as_path();
         let inside = project.root().join("linked");
         fs::rename(protected, &inside).unwrap();
         symlink(&inside, protected).unwrap();
@@ -63,10 +70,11 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
             let out = project.pinfold(args);
             assert_eq!(out.code, 0, "{args:?} with {protected:?} in place: {out:?}");
         }
+        projects.push(project);
     }
 
     #[cfg(target_os = "macos")]
-    share_reaches_only_its_folder(&env, &project);
+    share_reaches_only_its_folder(&env, &projects[1]);
 }
 
 /// In a running share, an outward symlink and paths outside it reach no

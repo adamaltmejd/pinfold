@@ -442,6 +442,13 @@ impl<'a> Project<'a> {
         run(pinfold_command(self.env, &self.root).args(args), COMMAND)
     }
 
+    /// `pinfold ARGS` in the project's root, to spawn.
+    pub fn command(&self, args: &[&str]) -> Command {
+        let mut command = pinfold_command(self.env, &self.root);
+        command.args(args);
+        command
+    }
+
     /// Host `git ARGS` in the project's root.
     pub fn git(&self, args: &[&str]) -> Exec {
         run(git_command(self.env, &self.root).args(args), COMMAND)
@@ -452,9 +459,25 @@ impl Drop for Project<'_> {
     fn drop(&mut self) {
         let mut stop = pinfold_command(self.env, &self.root);
         stop.arg("stop");
-        if let Err(error) = in_drop(move || match run(&mut stop, COMMAND) {
-            out if out.code == 0 => Ok(()),
-            out => Err(format!("{out:?}")),
+        let mut toplevel = git_command(self.env, &self.root);
+        toplevel.args(["rev-parse", "--show-toplevel"]);
+        let root = self.root.clone();
+        if let Err(error) = in_drop(move || {
+            // `stop` acts on the project it discovers from here: were this
+            // repository gone, that could be an enclosing one's.
+            let found = run(&mut toplevel, COMMAND);
+            if !root.join(".git").is_dir()
+                || found.code != 0
+                || Path::new(found.stdout.trim()) != root
+            {
+                return Err(format!(
+                    "not stopped: no longer its own repository: {found:?}"
+                ));
+            }
+            match run(&mut stop, COMMAND) {
+                out if out.code == 0 => Ok(()),
+                out => Err(format!("{out:?}")),
+            }
         }) {
             eprintln!(
                 "e2e: PINFOLD STOP FAILED in {}: {error}; its roots are kept",
@@ -572,6 +595,21 @@ fn temp() -> PathBuf {
 fn suite_cache() -> &'static Path {
     static CACHE: OnceLock<PathBuf> = OnceLock::new();
     CACHE.get_or_init(|| {
+        // A project discovers an enclosing repository; the suite's own
+        // must have none.
+        let mut git = Command::new("git");
+        remove_vars(&mut git, "GIT_");
+        let inside = run(
+            git.current_dir(temp())
+                .args(["rev-parse", "--show-toplevel"]),
+            COMMAND,
+        );
+        assert_ne!(
+            inside.code,
+            0,
+            "the temp dir {} is inside a Git work tree; set TMPDIR outside it",
+            temp().display()
+        );
         let cache = temp().join("pinfold-e2e-cache");
         fs::create_dir_all(&cache).unwrap();
         cache
@@ -797,6 +835,60 @@ fn stat(pid: u32) -> Option<(u32, String, u32, String)> {
     let state = fields.next()?.to_string();
     let parent = fields.next()?.parse().ok()?;
     Some((pid, state, parent, name.to_string()))
+}
+
+/// The live direct children of `pid` that lead a session of their own
+/// (`setsid`), from /proc: a client's detached owner, not the forks it
+/// has yet to exec.
+#[cfg(target_os = "linux")]
+pub fn detached_children(pid: u32) -> Vec<u32> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir("/proc").expect("read /proc").flatten() {
+        let Some(child) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(line) = fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // `PID (COMM) STATE PPID PGRP SESSION ...`
+        let Some((_, tail)) = line.rsplit_once(')') else {
+            continue;
+        };
+        let fields: Vec<&str> = tail.split_whitespace().take(4).collect();
+        if let [state, parent, _, session] = fields[..]
+            && state != "Z"
+            && parent.parse() == Ok(pid)
+            && session.parse() == Ok(child)
+        {
+            found.push(child);
+        }
+    }
+    found
+}
+
+/// Wait, bounded, until `pid` has exited: gone from /proc, or a zombie. A
+/// stat that cannot be read for another reason fails the test.
+#[cfg(target_os = "linux")]
+pub fn wait_exited(pid: u32) {
+    let deadline = Instant::now() + COMMAND;
+    loop {
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("read /proc/{pid}/stat: {error}"),
+            Ok(stat) => {
+                let (_, tail) = stat.rsplit_once(')').expect("a stat line");
+                if tail.split_whitespace().next() == Some("Z") {
+                    return;
+                }
+            }
+        }
+        assert!(Instant::now() < deadline, "{pid} did not exit");
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// A box whose owner a test killed. Dropping it removes the box by name
