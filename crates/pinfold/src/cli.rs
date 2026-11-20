@@ -19,6 +19,33 @@ use crate::dirs;
 use crate::formatting::terminal_text;
 use crate::pi::launch::utf8;
 
+/// Shadows std's `println!` for reports here and where imported. When the
+/// reader of stdout has gone, the process dies of SIGPIPE, as a Unix
+/// filter's writer does, where std's panics (#359). SIGPIPE stays ignored
+/// for everything else: owners, relays, sessions and the Git remote helper
+/// handle EPIPE on their own pipes and sockets.
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        $crate::cli::printed(writeln!(::std::io::stdout(), $($arg)*))
+    }};
+}
+pub(crate) use println;
+
+pub(crate) fn printed(result: io::Result<()>) {
+    match result {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+            use nix::sys::signal::{SigHandler, Signal, raise, signal};
+            // SAFETY: the default disposition installs no handler.
+            let _ = unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) };
+            let _ = raise(Signal::SIGPIPE);
+            unreachable!("SIGPIPE ends the process");
+        }
+        Err(error) => panic!("failed printing to stdout: {error}"),
+    }
+}
+
 pub fn print_intro() {
     let mut unconfigured = false;
     match project_intro(&mut unconfigured) {

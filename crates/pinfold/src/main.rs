@@ -12,6 +12,7 @@ mod update;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
+use crate::cli::println;
 use crate::pi::{remote, session};
 
 fn main() -> ExitCode {
