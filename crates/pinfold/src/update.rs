@@ -13,6 +13,7 @@ use std::time::Duration;
 use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 
+use crate::cli::println;
 use crate::formatting::terminal_text;
 use crate::{cli, core, dirs};
 

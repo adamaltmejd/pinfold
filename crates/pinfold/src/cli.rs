@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::config::Config;
@@ -18,6 +19,46 @@ use crate::core::{clean, disk, runs};
 use crate::dirs;
 use crate::formatting::terminal_text;
 use crate::pi::launch::utf8;
+
+/// Shadows std's `println!` here and where imported, which panics when the
+/// reader of stdout has gone (#359). A report then dies of SIGPIPE, as a
+/// Unix filter's writer does; a command that [`finishes_without_reader`]
+/// drops the line and carries on. SIGPIPE stays ignored for everything
+/// else: owners, relays, sessions and the Git remote helper handle EPIPE
+/// on their own pipes and sockets.
+macro_rules! println {
+    ($($arg:tt)*) => {{
+        use ::std::io::Write as _;
+        $crate::cli::printed(writeln!(::std::io::stdout(), $($arg)*))
+    }};
+}
+pub(crate) use println;
+
+static FINISHES: AtomicBool = AtomicBool::new(false);
+
+/// For commands that change state or answer the process interface: a
+/// closed stdout must not cut short their work or change their status.
+pub fn finishes_without_reader() {
+    FINISHES.store(true, Ordering::Relaxed);
+}
+
+pub(crate) fn printed(result: io::Result<()>) {
+    match result {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+            if FINISHES.load(Ordering::Relaxed) {
+                return;
+            }
+            use nix::sys::signal::{SigHandler, Signal, raise, signal};
+            // SAFETY: the default disposition installs no handler.
+            let _ = unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) };
+            let _ = raise(Signal::SIGPIPE);
+            // An inherited signal mask can block SIGPIPE.
+            std::process::exit(141);
+        }
+        Err(error) => panic!("failed printing to stdout: {error}"),
+    }
+}
 
 pub fn print_intro() {
     let mut unconfigured = false;
@@ -309,7 +350,7 @@ fn up(args: &[String]) -> io::Result<i32> {
         match hold_up(&plan, signals).await {
             Ok(code) => Ok(code),
             Err(error) => {
-                writeln!(
+                let written = writeln!(
                     io::stdout(),
                     "{}",
                     serde_json::json!({
@@ -317,8 +358,11 @@ fn up(args: &[String]) -> io::Result<i32> {
                         "box": &plan.name,
                         "detail": error.to_string(),
                     })
-                )?;
-                Ok(1)
+                );
+                match written {
+                    Err(error) if error.kind() != io::ErrorKind::BrokenPipe => Err(error),
+                    _ => Ok(1),
+                }
             }
         }
     });
