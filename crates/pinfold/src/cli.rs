@@ -70,17 +70,13 @@ fn project_intro() -> io::Result<()> {
     };
     check_report_mount(&context, config.mount)?;
     config.check_host_paths(root)?;
-    println!("Profile   {}", profile_description(&config));
-    let saved = config
-        .project_profile
-        .as_deref()
-        .unwrap_or(crate::config::DEFAULT_PROFILE);
-    if !preview && saved != config.profile.name {
-        println!(
-            "          Project selects {} without PINFOLD_PROFILE.",
-            terminal_text(saved)
-        );
-    }
+    // A preview has no saved profile for PINFOLD_PROFILE to override.
+    let profile = if preview {
+        terminal_text(&config.profile.name)
+    } else {
+        profile_description(&config)
+    };
+    println!("Profile   {profile}");
     println!("Files     {}", project_files(config.mount));
     let image = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(root));
     println!("Image     {}", terminal_text(&image));
@@ -1188,20 +1184,18 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
 }
 
 fn profile_description(config: &Config) -> String {
-    let source = if config.profile.built_in {
-        "bundled"
-    } else {
-        "saved profile"
-    };
-    let selection = if std::env::var_os("PINFOLD_PROFILE").is_some() {
-        ", selected by PINFOLD_PROFILE"
-    } else {
-        ""
-    };
-    format!(
-        "{} ({source}{selection})",
-        terminal_text(&config.profile.name)
-    )
+    let name = terminal_text(&config.profile.name);
+    match config.project_profile.as_deref() {
+        Some(saved)
+            if std::env::var_os("PINFOLD_PROFILE").is_some() && saved != config.profile.name =>
+        {
+            format!(
+                "{name} (PINFOLD_PROFILE overrides {})",
+                terminal_text(saved)
+            )
+        }
+        _ => name,
+    }
 }
 
 /// An unconfined profile that grants only `userns`, named for and attached

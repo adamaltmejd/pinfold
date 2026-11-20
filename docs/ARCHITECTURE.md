@@ -1996,8 +1996,9 @@ An unknown key in the project's file or a profile's `pinfold.toml` is
 refused, naming the file and the key. `mounts` in a profile's file and
 `base` in the project's file are refused.
 
-`pinfold config` summarizes the project folder, mount, selected profile and its
-source, image and its availability, and settings path. It reads configuration
+`pinfold config` summarizes the project folder, mount, selected profile (with
+the profile the project's file names when `PINFOLD_PROFILE` overrides it),
+image and its availability, and settings path. It reads configuration
 without changing state, even when the runtime is unavailable.
 `pinfold config --json` prints the effective configuration. `env` maps each
 box variable to its literal or its `{"from": VAR}`, a `PINFOLD_ENV_<NAME>`
