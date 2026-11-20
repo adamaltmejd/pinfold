@@ -20,8 +20,9 @@ only as git branches you fetch and review.
   new project disk starts empty. After the first start has created it,
   add the remote once with `git remote add box pinfold::"$(pwd -P)"` at
   the project root, then `git push box BRANCH`: it lands as
-  `host/<branch>`, and the first push into the empty disk also checks
-  that branch out. Untracked, ignored and uncommitted files never cross:
+  `host/<branch>`. The first push into the empty disk creates an empty
+  repository and prints a `git switch -c <branch> host/<branch>` hint;
+  tell the delegate to run it first. Untracked, ignored and uncommitted files never cross:
   commit work the box needs, on a branch (a WIP commit will do).
 - Setup is the user's: `pinfold config edit`, `pinfold build`, and a
   model login (`/login` in pi, or a pi login route). Never run

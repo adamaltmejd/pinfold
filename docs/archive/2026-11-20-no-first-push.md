@@ -242,3 +242,153 @@ disk starts empty.`, was not run: this host is macOS.
 No box was left running. Every disk this run created was removed by name
 with `pinfold disk rm` in the throwaway state root, and the temp dir was
 deleted.
+
+## Review fixes
+
+PR #362's review traced four problems to the first push's checkout:
+
+1. Two concurrent first pushes could each merge into whatever HEAD named.
+2. A merge into an unborn branch can overwrite an ignored guest file that
+   the incoming commit tracks.
+3. The README promised a checkout, yet a failed checkout still reported
+   success.
+4. The printed remote-add line broke for a root with a space.
+
+The owner removed the checkout. Crossing never touches a working tree,
+in either direction.
+
+### Built
+
+- The push script no longer merges. When the project folder has no
+  `.git`, it runs `git init`: the host's object format, and the first
+  pushed branch as the unborn branch. It then lands
+  `refs/remotes/host/*` and exits 65 to report that it created the
+  repository.
+- On that exit code, the helper prints one stderr line:
+  `pinfold: the box repository is new; in the box run: git switch -c BRANCH host/BRANCH`.
+  Later pushes print nothing. The host still reads only the box's exit
+  status; a box faking 65 changes nothing but that line.
+- Printed commands shell-quote the remote URL. This covers the intro's
+  remote-add line and the helper's three `remote-url` refusals. Plain
+  paths print unquoted; anything else is single-quoted, with `'\''` for
+  a quote. The helper in `remote.rs`, `shell_word`, is local to it:
+  `formatting.rs` is also compiled into `pinfold-init`. `--help` prints
+  only the placeholder ROOT.
+- The spec's Crossing statement, Push bullet and rows 10 and 13, the
+  README and the delegate skill now say there is no checkout and give the
+  switch command.
+
+### What the concurrent case relies on
+
+The design relies on Git itself. Nothing serializes pushes in the box.
+
+- `git init` on an existing repository is a reinit. It keeps HEAD, refs,
+  objects and config. It ignores `--initial-branch` and warns. A
+  different object format is refused.
+- In a simultaneous pair of inits, Git's lock files (`config.lock`, and
+  `mkdir` that fails with EEXIST) make one fail and leave the winner's
+  repository whole.
+- A push whose init fails exits nonzero, so Git reports it as rejected
+  and a retry lands.
+- A push that sees `.git` before its creator finished fails
+  `rev-parse` and refuses as `spec`.
+
+Either way the repository stays valid, and its HEAD names one of the two
+pushed branches, unborn.
+
+Measured with simultaneous pairs of `git init` on one path, 50 pairs per
+run:
+
+| Git | Where | One of the pair failed | Unusable repository |
+|---|---|---|---|
+| 2.54.0 (Apple Git-157) | host | 50 of 50 | none |
+| 2.47.3 | inside a box (default profile image) | 50 of 50 | none |
+
+"Unusable" was checked by reading the config, fetching a ref in and
+running fsck. Reinit inside the box left HEAD, refs and config
+byte-identical.
+
+### Verification
+
+The setup is the same as above: the debug binary, a fresh temp dir with
+throwaway XDG roots, links to `pinfold` and `git-remote-pinfold`, and
+`expect` for first runs.
+
+**First push into an empty disk** (no owner): the push exits 0 and prints
+the hint:
+
+```
+pinfold: the box repository is new; in the box run: git switch -c main host/main
+```
+
+The box then had `HEAD -> refs/heads/main`, `refs/remotes/host/main`,
+`## No commits yet on main`, and only `.git` in the folder. The hinted
+command run in the box exits 0, and leaves `## main` checked out with
+`a.txt`.
+
+**Second push** (`git push box dev`): it prints no hint and adds
+`host/dev`. A sha256 listing of every box file, plus `ls -A`, was
+identical before and after.
+
+**Two first pushes started together** (`git push box main &
+git push box dev &`) against a box under `pinfold start`, in 3 rounds. The
+box's `.git` was moved aside between rounds.
+
+- Both pushes exited 0 every round. In each round one printed the hint;
+  the other printed `pinfold: waiting for the project box to start`
+  first, so the two crossings did not overlap here.
+- Afterwards the box had both `host/` refs, HEAD unborn on the hinted
+  branch, an empty working tree, fsck ok and
+  `core.repositoryformatversion` 0.
+- Truly simultaneous inits were covered by the Git measurements above.
+
+**Stray and ignored files.** The host commit tracks `.gitignore`
+(`build/`) and, forced, `build/out`. Before any repository existed, the
+box wrote:
+
+- `a.txt` ("stray")
+- `notes.txt`
+- its own `.gitignore`
+- `build/out` ("guest")
+- `build/cache`
+
+After `git push box main` (exit 0, hint printed), the sha256 of every
+file was byte-identical. `git status --ignored` showed the three files
+untracked, `build/` ignored, and only `host/main` as a ref.
+
+A first scripted attempt at this case wrote no stray files: its
+first-run command was lost in that script. The case was re-run on its
+own, and the result above is from that run.
+
+**A root with a space** (`.../sp ace`). Bare `pinfold` printed:
+
+```
+Run a command    pinfold -- CMD
+Keep it running  pinfold start
+Add Git remote   git remote add box 'pinfold::$T/sp ace'
+Send a branch    git push box BRANCH
+Bring work back  git fetch box
+Change settings  pinfold config edit
+All commands     pinfold --help
+```
+
+- Running that printed line through `sh -c` exits 0, and
+  `remote.box.url` holds the path with its space.
+- `git push box main` exits 0 and prints the hint.
+- The bare-URL refusal for this root prints:
+
+```
+pinfold remote: remote-url: use a configured remote, not a URL: `git remote add box 'pinfold::$T/sp ace'`, then `git push box BRANCH` or `git fetch box`
+```
+
+**Checks:** `cargo fmt --check` and clippy pass on macOS and for
+`x86_64-unknown-linux-musl`, using the zig wrapper.
+
+**Cleanup:** no box was left running. Every disk was removed by name:
+
+- `gitproj`, `gitproj2`, `gitproj3`
+- `sp-ace`
+- `stray`
+- `probe`
+
+The temp dir was deleted.
