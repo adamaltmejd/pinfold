@@ -90,8 +90,10 @@ The rules below govern the rewrite.
   to match; rewriting is the exception.
 - **Tests must be able to fail:**
   1. Positive controls. Every "refused" test shows the allowed version
-     succeeding in the same box, or in the same project when the refusal
-     comes before any box exists.
+     succeeding in the same box. Where the refusal comes from the box's
+     or build's own configuration, or before any box exists, it succeeds
+     in a second one in the same project that differs only in that
+     setting.
   2. Assert the reason, not only the failure: a proxy 403 plus the log entry
      naming why. A timeout or DNS error is not a pass.
   3. Names its sabotage: the change to the binary that makes it fail, in

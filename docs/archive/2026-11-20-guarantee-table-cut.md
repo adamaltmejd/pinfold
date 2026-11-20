@@ -42,9 +42,9 @@ Numbers are kept; gaps are cut rows.
 | 4 | Merged: routing into 2, audit-log stop into 38. |
 | 5 | Shrunk to the fork+exec grandchild (`unshare -U` fails with `ENOSPC`), the setuid inventory of the built-in `default` image and the read-only root. The kernel check is two boxes' distinct `boot_id`, since a differing `uname -r` does not prove a separate kernel. |
 | 6 | Secret part merged into 26; the rest is prose (Process interface, Always applied). |
-| 8 | Shrunk to SIGKILL of `box up` and prune, plus a detached owner's client exiting 125. On Apple, `box exec` shows the request fails inside the surviving guest, so the failure is the proxy being gone, not a dead exec. |
+| 8 | Shrunk to SIGKILL of `box up` and prune, plus a detached owner's client exiting 125. On Apple, `box exec` shows the request gets no upstream response inside the surviving guest, so the failure is the proxy being gone, not a dead exec. The guest's loopback relay may still accept the connection. |
 | 9 | Cut. Lifecycle contract stays in Process interface prose. |
-| 10 | Shrunk to two fetch steps (a listing naming a host-only commit fails; a valid tag colliding with a host tag leaves host tags in place under force and prune), planted hooks, a `push.followTags` push to `host/*`, fresh disk and first push (from 13). The statement covers only the host's own branches and tags, as the threat model does. Parser edges, quarantine races, promisor and wording dropped. One test with several steps. |
+| 10 | Shrunk to two fetch steps (a listing naming a host-only commit fails; a valid tag colliding with a host tag leaves host tags in place under force and prune), planted hooks, a `push.followTags` push to `host/*`, fresh disk and first push (from 13). The statement covers only the host's own branches and tags, with the exceptions the threat model lists. Parser edges, quarantine races, promisor and wording dropped. One test with several steps. |
 | 11 | Shrunk to the writable race, `disk-in-use` then `disk-unclean` after owner death (the dead claim pins the disk until `box prune` retires it, per `core/disk.rs`), and `disk rm` in use. |
 | 13 | Protected paths into 48; disk first start and first push into 10; the rest is prose. |
 | 15 | Shrunk to one `clean --unused 0s` beside a kept live project. |
@@ -63,18 +63,19 @@ Numbers are kept; gaps are cut rows.
 | 42 | Merged into 38. |
 | 43 | Kept, without the fds check (moved to prose). |
 | 44 | Shrunk to one build with deny and allow, plus a direct connection from RUN that bypasses the proxy and fails (no NIC), which tells the build VM from a host build behind the proxy. |
-| 45 | Shrunk to symlink, executability (export normalizes modes to 0644 or 0755) and existing destination. |
+| 45 | Shrunk to symlink, executability (export normalizes modes to 0644 or 0755) and existing destination. Retitled "Disk export writes only a new destination": `box exec` output also leaves a disk, so export is not the only way. |
 | 47 | Shrunk. Absorbed 39's command contract and fixed policy and 18's no-config refusal. One test with several steps. |
-| 48 | Shrunk. Absorbed 13's protected paths, as two separate refusals (configuration directory, profile directory) so neither masks the other. The statement names the hard-link exception. The hard-link scenario, which asserted a listed non-protection, is gone. |
-| 49 | Cut. Rex prose in the pi layer unchanged. |
+| 48 | Shrunk. Absorbed 13's protected paths, as two separate refusals (configuration directory, profile directory) so neither masks the other. The statement names the hard-link exception, and the title no longer claims no project reaches pinfold's configuration. The hard-link scenario, which asserted a listed non-protection, is gone. |
+| 49 | Cut. The pi layer's Rex prose gained two sentences (below): concurrent starts share one server and socket, and owner death ends every dial exec. |
 | 50 | Shrunk to a three-link chain. Absorbed 23's identity. The "`full` is an unknown profile" absence check dropped. |
 
 ## Sentences moved to prose
 
 These behaviours were stated only in a dropped scenario:
 
-- Process interface: "`down` of an absent, empty or flag-like name exits
-  0, prints nothing and leaves any live box alone." (from 9)
+- Process interface: "`down` of an absent, empty or flag-like name other
+  than `--help` and `-h`, which print help, exits 0, prints nothing and
+  leaves any live box alone." (from 9)
 - Always applied, closing paragraph: "On Linux box work cannot list the
   exec service's `/proc/<pid>/fd`." (from 5)
 - VMM jail: "The VMM's standard descriptors are `/dev/null`." (from 43)
@@ -96,9 +97,13 @@ scenarios. Each was checked against the code or a dated record:
 - Configuration, `config --json`: "On Linux it reads only the local
   catalog, so it needs neither KVM nor a runtime on PATH, and an absent
   catalog reports false." (from 18; `catalog::resolve`)
-- Process interface, `stat`: "A workload the guest kernel OOM-kills exits
-  137, and `oom_kills` rises. On Linux the guest's `MemTotal` is within
-  64 MiB below `memory`." (from 20)
+- Process interface, `stat`: "A command the guest kernel OOM-kills exits
+  137 itself; on Linux `oom_kills` then rises." (from 20; Apple reports
+  `oom_kills` null. The old row's 64 MiB `MemTotal` margin was observed
+  for one 256 MiB box and is dropped.)
+- Always applied, Apple: PID 1 "sets `no_new_privs` on itself first;
+  failing to set it fails startup." (from 5; `init.rs` calls
+  `set_no_new_privs` before the user-namespace check)
 - Process supervision, OOM score: "-1000 and legacy -17 fail with `EACCES`
   and leave the score unchanged, while legacy 15 succeeds." (from 20; the
   exec service sets the -999 floor)
@@ -120,8 +125,9 @@ scenarios. Each was checked against the code or a dated record:
 - AGENTS.md Tests: guarantee 36's namespace sentences and the Codex live
   login are gone from the public-endpoints rule. `example.com` is denied
   by default and allowed only as guarantee 44's control. A positive
-  control runs in the same box, or in the same project when the refusal
-  comes before any box exists.
+  control succeeds in the same box. Where the refusal comes from the box's
+  or build's own configuration, or before any box exists, it succeeds in a
+  second one in the same project that differs only in that setting.
 - Deleted `scripts/slow-proxy.sh`, `scripts/connect_tunnels_share_activity.py`
   and `scripts/connect-tls.Containerfile`. They served only row 36, and
   nothing else used them.
@@ -131,4 +137,4 @@ scenarios. Each was checked against the code or a dated record:
 
 ## Size
 
-ARCHITECTURE.md: 2270 lines before, 2264 after.
+ARCHITECTURE.md: 2270 lines before, 2266 after.
