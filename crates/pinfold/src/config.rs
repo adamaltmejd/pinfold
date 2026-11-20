@@ -55,9 +55,9 @@ impl ProjectMount {
         }
     }
 
-    /// A new project file: this mount and, from first-run setup, the chosen
-    /// profile as active lines, then each other key a project file accepts
-    /// as a commented example.
+    /// A new project file: from first-run setup, the chosen profile, then
+    /// this mount, as active lines, then each other key a project file
+    /// accepts as a commented example.
     fn template(self, profile: Option<&str>) -> String {
         let kinds = if cfg!(target_os = "macos") {
             "\"share\" lets the box edit this folder directly; \"disk\" gives it its own isolated disk"
@@ -77,9 +77,9 @@ impl ProjectMount {
             ),
         };
         format!(
-            "mounts = [{{ host = \".\", kind = \"{}\" }}]
+            "{chosen}mounts = [{{ host = \".\", kind = \"{}\" }}]
 # kind: {kinds}.
-{chosen}
+
 # Optional settings: uncomment a line to set it.
 {example}# Local image to run instead of the profile's (not with a Containerfile beside this file):
 # image = \"localhost/pinfold/image-my-image:latest\"
@@ -129,6 +129,22 @@ impl ProjectMount {
 /// and its optional recipe. A moved project has another id, so no file.
 pub fn project_dir(root: &Path) -> io::Result<PathBuf> {
     Ok(dirs::config_dir()?.join("projects").join(project_id(root)))
+}
+
+/// First-run setup's summary: the file it saves and that file's active
+/// lines, filtered from the template it writes.
+pub(crate) fn setup_summary(
+    root: &Path,
+    profile: &str,
+    mount: ProjectMount,
+) -> io::Result<(PathBuf, Vec<String>)> {
+    let lines = mount
+        .template(Some(profile))
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect();
+    Ok((project_dir(root)?.join("pinfold.toml"), lines))
 }
 
 /// The project's configuration file, written when it is missing: by

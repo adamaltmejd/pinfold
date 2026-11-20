@@ -1731,9 +1731,9 @@ project; executable replacement remains `update-busy`.
   whose reply may follow for five seconds before the exec is ended; the
   guest's end ends the connection. A repeated start reuses the relay while
   its server exec runs; after that exec exits, the next start sets the
-  relay up again. `start` prints on stderr one line, `pinfold start: rex:
-  add unix://PATH in the Rex app under Add Remote Host… (once). It works
-  only while this box runs.` Remote Control
+  relay up again. `start` prints on stderr two lines: `pinfold start: rex:
+  add this address in the Rex app under Add Remote Host…`, then
+  `unix://PATH` alone. Remote Control
   on or unreadable, at either read, sets up nothing, closes a relay already
   up, and prints one `rex-remote-control` line. A failed setup prints one
   `rex-relay-failed` line. Without `rex` in the box, outside Rex or without
@@ -1898,14 +1898,18 @@ recipe, when it has one, is `Containerfile` beside it. Nothing in the
 project folder configures pinfold. Setup I/O is interactive when stdin,
 stdout and stderr are terminals and stdin's is already in canonical mode;
 pinfold never changes its mode for a prompt. When the file is missing and
-I/O is interactive, `-- CMD` and `start` run one setup. It offers a profile,
-initially `default`.
+I/O is interactive, `-- CMD` and `start` run one setup. It takes each
+setting it saves in turn, the profile and then the project mount; one the
+environment decides is stated with its source, not asked.
+Setup offers a profile, initially `default`.
 A set `PINFOLD_PROFILE` selects the profile without asking, and setup
-names it. On macOS setup then asks for the project mount, `share` (the
+names it and the variable. On macOS setup then asks for the project mount, `share` (the
 default) or `disk`; another answer refuses. The question names the
 project root and describes each kind: a disk is isolated, and a new one
 starts empty (First start); a retained disk is reused as it is. Linux has only `disk`,
-does not ask, and states it once. Setup never runs host Git. Before saving, it runs the chosen mount's checks that need
+does not ask, and states it once. Setup then prints the settings file's
+path and the active lines it will hold, from the template that writes
+it, and asks to save. Setup never runs host Git. Before saving, it runs the chosen mount's checks that need
 no host Git; a refusal there saves nothing. The disk's Git verification
 and the comparison with a live owner happen at the start that follows,
 so their refusals leave the saved file. Confirmation saves the profile

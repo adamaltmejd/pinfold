@@ -69,10 +69,14 @@ pub(crate) async fn report(
     signals: &mut Signals,
 ) -> io::Result<()> {
     let lines = match status {
-        Some(Status::Relayed) => vec![format!(
-            "pinfold start: rex: add unix://{} in the Rex app under Add Remote Host… (once). It works only while this box runs.",
-            ownership::host_dir()?.join(leaf(key)).display()
-        )],
+        // The address alone on its line, so it selects and copies cleanly.
+        Some(Status::Relayed) => vec![
+            "pinfold start: rex: add this address in the Rex app under Add Remote Host…".into(),
+            format!(
+                "unix://{}",
+                ownership::host_dir()?.join(leaf(key)).display()
+            ),
+        ],
         Some(Status::RemoteControl) => vec![
             "pinfold start: rex-remote-control: Remote Control is on or unreadable in the Rex app; no Rex host was set up.".into(),
         ],
