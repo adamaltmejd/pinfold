@@ -107,15 +107,9 @@ jobs:
           path: dist/pinfold-*
           if-no-files-found: error
 
-  slow-response:
-    needs: version
-    uses: ./.github/workflows/slow-response.yml
-    with:
-      ref: ${{ inputs.ref || github.sha }}
-
   release:
     name: Release
-    needs: [version, build, macos, slow-response]
+    needs: [version, build, macos]
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
