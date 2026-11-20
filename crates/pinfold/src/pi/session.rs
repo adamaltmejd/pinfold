@@ -1100,10 +1100,12 @@ async fn confirm_setup(message: String, signals: &mut Signals) -> io::Result<boo
 }
 
 /// First-run setup for `-- CMD` (`command`) and `start` (`None`): the
-/// profile, then where both kinds exist, the project mount. `None` when
-/// the user declines or closes the terminal.
+/// profile, then where both kinds exist, the project mount. `repository`
+/// is discovery's marker check; setup runs no host Git. `None` when the
+/// user declines or closes the terminal.
 async fn confirm_first_run(
     root: &Path,
+    repository: bool,
     command: Option<&str>,
     signals: &mut Signals,
 ) -> io::Result<Option<(String, ProjectMount)>> {
@@ -1125,30 +1127,32 @@ async fn confirm_first_run(
             name
         }
     };
-    let profile = crate::core::profile::Profile::load(&name)?;
-    let source = if profile.built_in {
-        "bundled profile"
-    } else {
-        "saved user profile"
-    };
-    let selected_by = if forced.is_some() {
-        ", selected by PINFOLD_PROFILE"
-    } else {
-        ""
-    };
-    forward_diagnostics(
-        format!("Using {name} ({source}{selected_by}).").into_bytes(),
-        signals,
-    )
-    .await?;
+    crate::core::profile::Profile::load(&name)?;
+    if forced.is_some() {
+        forward_diagnostics(format!("Profile: {name}").into_bytes(), signals).await?;
+    }
+    let path = terminal_text(&root.to_string_lossy());
     // Linux has only disks, so there is nothing to ask.
     let mount = if cfg!(target_os = "macos") {
-        let Some(answer) = setup_answer(
-            "Files: share this folder with the box, or use an isolated disk? [share/disk] (share)"
-                .into(),
-            signals,
-        )
-        .await?
+        let (share, disk) = if repository {
+            (
+                "  share  the box edits this folder directly, including .git",
+                "  disk   the box gets its own Git clone on an isolated disk (committed files only)",
+            )
+        } else {
+            (
+                "  share  the box edits this folder directly",
+                "  disk   the box starts with an empty isolated disk",
+            )
+        };
+        for line in [
+            format!("Files for the box in {path}:"),
+            share.into(),
+            disk.into(),
+        ] {
+            forward_diagnostics(line.into_bytes(), signals).await?;
+        }
+        let Some(answer) = setup_answer("Choose [share/disk] (share)".into(), signals).await?
         else {
             return Ok(None);
         };
@@ -1163,18 +1167,15 @@ async fn confirm_first_run(
             }
         }
     } else {
+        // A Linux project is always a Git checkout.
+        forward_diagnostics(
+            format!("Files for the box in {path}: its own Git clone on an isolated disk (committed files only).")
+                .into_bytes(),
+            signals,
+        )
+        .await?;
         ProjectMount::default_kind()
     };
-    let path = terminal_text(&root.to_string_lossy());
-    let statement = match mount {
-        ProjectMount::Share => {
-            format!("The box can edit files in {path}, including its Git metadata.")
-        }
-        ProjectMount::Disk => {
-            format!("The box has its own files on an isolated disk, separate from {path}.")
-        }
-    };
-    forward_diagnostics(statement.into_bytes(), signals).await?;
     let question = match command {
         Some(command) => format!("Save these settings and run {}?", terminal_text(command)),
         None => "Save these settings and start the box?".into(),
@@ -1323,9 +1324,9 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         {
             // Admission has released its locks. Validate the invoking worktree before
             // offering the share, then rediscover it after the user answers.
-            discover()?;
+            let repository = discover()?.repository;
             let command = args.and_then(|args| args.first()).map(String::as_str);
-            let Some((profile, mount)) = confirm_first_run(&root, command, &mut signals).await? else {
+            let Some((profile, mount)) = confirm_first_run(&root, repository, command, &mut signals).await? else {
                 return Ok(125);
             };
             let current = discover()?;

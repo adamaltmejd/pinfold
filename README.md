@@ -125,7 +125,9 @@ to check for problems or `pinfold --help` to list the commands.
 
 For scripts, prepare the project first with `pinfold config edit` and
 `pinfold build`. `config edit` opens
-`~/.config/pinfold/projects/<id>/pinfold.toml`. A project recipe is a
+`~/.config/pinfold/projects/<id>/pinfold.toml`. When the file is missing
+it first creates it with the default mount (share on macOS, disk on
+Linux) and commented examples of the other keys. A project recipe is a
 `Containerfile` beside it. Moving or renaming a project gives it a new
 configuration path.
 
