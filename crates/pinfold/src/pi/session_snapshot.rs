@@ -246,7 +246,9 @@ impl Snapshot {
         }
         let mut config = Config::load(root)?;
         if expected_mount.is_some_and(|mount| mount != config.mount) {
-            return Err(mount_changed());
+            return Err(io::Error::other(
+                "config-changed: the project mount kind changed (project.mount). Restore the previous mount kind or finish active sessions and run `pinfold stop` before retrying.",
+            ));
         }
         if config.repository != context.repository {
             return Err(io::Error::other(
@@ -435,10 +437,4 @@ impl Snapshot {
         fields.sort();
         fields
     }
-}
-
-pub(crate) fn mount_changed() -> io::Error {
-    io::Error::other(
-        "config-changed: the project mount kind changed (project.mount). Restore the previous mount kind or finish active sessions and run `pinfold stop` before retrying.",
-    )
 }

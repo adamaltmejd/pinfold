@@ -1328,37 +1328,13 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             let Some((profile, mount)) = confirm_first_run(&root, command, &mut signals).await? else {
                 return Ok(125);
             };
-            let mut current = discover()?;
-            // The launch lock keeps an owner from starting until the file is saved.
-            let launch = launch_lock(&root, &mut signals, &mut false).await?;
-            match read_locator(&root)? {
-                Some(locator) if ownership::name_alive(&locator.name)? => {
-                    // Host Git never runs beside a live owner, which may share `.git`;
-                    // readmission checks the join as for a configured project.
-                    if locator.mount.is_some_and(|live| live != mount) {
-                        return Err(crate::pi::session_snapshot::mount_changed());
-                    }
-                }
-                _ => {
-                    // The chosen mount's full check, so a refusal leaves no file.
-                    let cancel = Arc::new(AtomicBool::new(false));
-                    let worker_cancel = cancel.clone();
-                    let mut worker = tokio::task::spawn_blocking(move || {
-                        crate::core::process::with_cancellation(worker_cancel, || {
-                            current.verify(mount).map(|()| current)
-                        })
-                    });
-                    current = tokio::select! {
-                        biased;
-                        _ = signals.recv() => { cancel.store(true, Ordering::Release); let _ = worker.await; Err(io::ErrorKind::Interrupted.into()) },
-                        result = &mut worker => result.map_err(|_| io::Error::other("configuration worker failed"))?,
-                    }?;
-                }
-            }
+            let current = discover()?;
+            // No host Git here: a live owner's box may write `.git`. Admission
+            // runs the disk's Git check and compares the owner after the save.
+            current.check_metadata(mount)?;
             if !crate::config::create(&root, Some((&profile, mount)))?.1 {
                 return Err(io::Error::other("project configuration appeared during setup; run the command again"));
             }
-            drop(launch);
             set_up = true;
             admitted = admit(&root, &Ok(current), intent, &mut signals, &executable).await;
         }

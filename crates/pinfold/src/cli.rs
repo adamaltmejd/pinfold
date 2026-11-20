@@ -86,7 +86,7 @@ fn project_intro() -> io::Result<Option<bool>> {
         println!("\nThe first run asks you to confirm:");
         Config::first_run_preview(root)?
     };
-    check_report_mount(&context, config.mount)?;
+    context.check_metadata(config.mount)?;
     config.check_host_paths(root)?;
     // A preview has no saved profile for PINFOLD_PROFILE to override.
     let profile = if configured {
@@ -1253,18 +1253,8 @@ pub fn apparmor_profile(args: &[String]) -> io::Result<i32> {
 fn project_config(cwd: &Path) -> io::Result<(PathBuf, Config)> {
     let context = crate::pi::context::Context::discover(cwd)?;
     let config = Config::load(&context.root)?;
-    check_report_mount(&context, config.mount)?;
+    context.check_metadata(config.mount)?;
     Ok((context.root, config))
-}
-
-fn check_report_mount(
-    context: &crate::pi::context::Context,
-    mount: crate::config::ProjectMount,
-) -> io::Result<()> {
-    match mount {
-        crate::config::ProjectMount::Share => context.verify(mount),
-        crate::config::ProjectMount::Disk => context.check_worktree(mount),
-    }
 }
 
 /// Read-only: do not materialize profiles or record project state.

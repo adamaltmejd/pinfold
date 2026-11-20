@@ -1911,12 +1911,12 @@ A set `PINFOLD_PROFILE` selects the profile and is identified in the prompt.
 Setup identifies whether the selected profile is bundled or user-defined.
 On macOS it then asks for the project mount, `share` (the default) or
 `disk`; another answer refuses. Linux has only `disk` and does not ask.
-Setup names the project root and describes the chosen mount. After
-confirmation, holding the launch lock, it verifies the chosen mount as
-admission does, before saving. Beside a live owner it runs no host Git:
-a mount other than the owner's refuses as `config-changed` before
-saving, and readmission checks the rest. A refusal or signal there saves
-nothing. Confirmation saves the profile and mount. `-- CMD` continues with the original command and
+Setup names the project root and describes the chosen mount. It never
+runs host Git. Before saving, it runs the chosen mount's checks that need
+no host Git; a refusal there saves nothing. The disk's Git verification
+and the comparison with a live owner happen at the start that follows,
+so their refusals leave the saved file. Confirmation saves the profile
+and mount. `-- CMD` continues with the original command and
 arguments; `start` starts the box. Both then offer a missing managed image's
 build (Images). A chosen disk follows First start (Git).
 Refusal or EOF before confirmation exits 125 without creating the file.
