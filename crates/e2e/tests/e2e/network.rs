@@ -83,7 +83,7 @@ fn assert_loopback_only(env: &TestEnv, name: &str) {
 fn box_has_no_network_but_loopback() {
     // Sabotage (run): on Apple, drop `--network none` from `container run`
     // in runtime/apple.rs. The box gains an interface beside `lo`.
-    // Sabotage (Linux, not yet run): start the proxy's vsock listener even without
+    // Sabotage (Linux, run): start the proxy's vsock listener even without
     // `egress`; the no-egress sweep then shows port 3128 connected.
     // The route through the proxy is the positive control.
     let env = TestEnv::new("network");
