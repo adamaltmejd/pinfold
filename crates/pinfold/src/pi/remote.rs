@@ -58,8 +58,12 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                 )?)?;
                 // Git reads a listing's object ids as SHA-1 unless told.
                 let mut listing = format!(":object-format {}\n", object_format()?);
-                for (branch, oid) in &landing.refs {
-                    listing.push_str(&format!("{oid} refs/heads/{branch}\n"));
+                for (name, oid) in &landing.refs {
+                    listing.push_str(&format!("{oid} {name}\n"));
+                    // Git follows an annotated tag only by its commit.
+                    if let Some(commit) = landing.peeled.get(name) {
+                        listing.push_str(&format!("{commit} {name}^{{}}\n"));
+                    }
                 }
                 listing.push('\n');
                 fetched = Some(landing);

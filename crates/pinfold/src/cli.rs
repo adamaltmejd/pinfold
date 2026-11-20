@@ -196,7 +196,7 @@ Project
 Disk projects
   git push box    Send host branches (as host/*) and tags into the box
                   In the box: git switch -c BRANCH host/BRANCH
-  git fetch box   Bring guest branches back as box/*
+  git fetch box   Bring guest branches back as box/*, and new tags
                   Once first: git remote add box pinfold::ROOT
                   (needs git-remote-pinfold on PATH)
   disk export     Copy a stopped disk's files into a new directory

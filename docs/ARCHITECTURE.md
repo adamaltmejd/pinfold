@@ -111,14 +111,20 @@ Not protected:
   or opening them runs the box's content as the user. A merged
   `.husky/pre-commit`, editor config or planted `sub/.git`
   is the user's from then on.
-- The Git remote's guarantee ends at refs under `refs/remotes/box/*`, and
-  Git writes them:
-  - A refspec on the command line (`git fetch box main:other`) and
-    `git pull box` write the user's own branches, and `git pull` checks out
-    box content.
+- The Git remote's guarantee ends at refs under `refs/remotes/box/*` and
+  new tags under `refs/tags/*`, and Git writes them:
+  - A refspec on the command line that maps a ref to another name
+    (`git fetch box main:other`, a branch to a tag, a tag to another tag)
+    and `git pull box` write, and with prune delete, the user's own
+    branches or tags, and `git pull` checks out box content.
   - With `--prune` or `fetch.prune`, the box deletes `box/*` branches by
-    deleting its own; `fetch.pruneTags` with prune deletes the user's
-    tags, as the box lists none.
+    deleting its own.
+  - A fetched box tag is the user's tag: `push.followTags` may publish it
+    to another remote. One named like a host branch makes that short name
+    ambiguous, so `git push box main` fails until it is deleted.
+  - The fetch lists host tags as they stood when the helper read them: a
+    host tag created or moved during a pruning or tag-forcing fetch may be
+    deleted or reset.
   - A box branch named `HEAD` lands as `refs/remotes/box/HEAD`, so `box`
     names a commit the box chose.
   - A fetch may update some `box/*` refs and fail others, such as `x/y`
@@ -1435,8 +1441,7 @@ gets its own.
 
 A disk's `from` copies host files in once, when pinfold creates the
 disk; the pi layer's disks name none. Otherwise data crosses only as git
-branches, and host tags into the box, through a disk project's Git
-remote (Git), against a live box and run in it as the box user. Neither
+branches and tags, through a disk project's Git remote (Git), against a live box and run in it as the box user. Neither
 direction touches a working tree.
 
 - **Push** bundles the host refs Git names and fetches them in the box,
@@ -1456,16 +1461,21 @@ direction touches a working tree.
   The push reads nothing from the box but its exit status, and prints
   none of the box's text; Git's push plan reads the checked listing
   (Git).
-- **Fetch** has the box bundle its repository's branches, less what the
-  host's `refs/remotes/NAME/*` already hold, where NAME is the remote.
-  The box first lists its branches: lines of at most 4096 bytes, each
-  `OID refs/heads/BRANCH` with a full object id of the host repository's
-  width (40 hex digits for SHA-1, 64 for SHA-256), then an empty line. More
-  than 4096 listed branches, or one listed twice, fail the fetch. Every
-  listed name must pass `git check-ref-format` under `refs/remotes/NAME/`
-  before git sees it. The bundle's heads are branches the listing names,
-  each at its listed commit; any other head fails. Tags, symrefs and
-  other refs stay in the box. A bundle past 4 GiB is refused as `limit`, and the
+- **Fetch** has the box bundle its repository's branches and tags, less
+  what the host's `refs/remotes/NAME/*` already hold, where NAME is the
+  remote; an annotated tag's object is bundled every time. The box first
+  lists its branches and its tags that peel to a commit, whose names are
+  printable ASCII and that are not symbolic refs: lines of at most
+  4096 bytes, each `OID refs/heads/BRANCH` or `OID refs/tags/TAG` with a
+  full object id of the host repository's width (40 hex digits for
+  SHA-1, 64 for SHA-256), then an empty line. More than 4096 listed refs,
+  or one listed twice, fail the fetch. Every listed branch name must pass
+  `git check-ref-format` under `refs/remotes/NAME/` before git sees it; a
+  new tag name that fails it as itself is left out. The bundle's heads
+  are branches and tags the listing names, each at its listed object; any
+  other head fails. Symbolic tags and other refs stay in the box; a
+  symbolic branch is listed at the commit it resolves to. A nested annotated tag is listed only where the box's
+  Git peels `%(*objecttype)` fully (2.43 does not). A bundle past 4 GiB is refused as `limit`, and the
   box's command is killed. On the host, pinfold runs `git bundle verify`;
   a filtered bundle fails. It then runs `git index-pack --fsck-objects`
   of the bundle's pack and `git fetch` of the bundle, both into a
@@ -1476,9 +1486,29 @@ direction touches a working tree.
   names a commit, never another object type: a bundle head the box's
   pack carries itself (not a base `--fix-thin` added from the host),
   which the quarantined fetch checked connected, or one
-  `refs/remotes/NAME/*` already reaches. An object the host holds
-  otherwise is never the box's to name. A bundle carries
-  no hook or config, and nothing is checked out. Only branches that pass
+  `refs/remotes/NAME/*` already reaches. A listed tag names such a
+  commit, or an annotated tag object that is a bundle head the box's pack
+  carries and that peels on the host, read through the quarantine, to
+  such a commit. An object the host holds otherwise is never the box's to
+  name. A bundle head that fails fails the fetch; a tag outside the
+  bundle that fails is left out. A fetch never changes or deletes a host
+  tag, but through a command-line refspec that maps a ref to another tag
+  name (threat model); a host tag that is itself a symbolic ref to a
+  `refs/remotes/NAME/*` ref follows that ref, and a host tag listed back
+  under a branch's name makes the short name in `git fetch box NAME`
+  select the tag. A host tag whose name is not UTF-8 could not be
+  listed back as itself, so the fetch refuses as `spec`. A box tag whose
+  name matches a host tag's ignoring ASCII case is left out, as loose refs
+  are files on a file system that may fold case, and so is a non-ASCII
+  one. While any host tag's name is non-ASCII, no box tag is listed, as
+  Unicode normalization could match an ASCII name to it. Every host tag
+  is listed back at its own id, so
+  neither `--force`, a `+refs/tags/*` refspec nor pruning
+  (`fetch.pruneTags`, `--prune-tags`, `--prune --tags`) finds a host tag
+  to move or delete. A left-out tag's objects may still enter the object
+  store, unreferenced, with the rest of the bundle. Each new annotated tag is listed with its peeled commit, so
+  Git follows tags as from any remote. A bundle carries
+  no hook or config, and nothing is checked out. Only refs that pass
   every check reach Git, and the quarantine's packs move into the
   repository only when Git asks for their objects: each index after its
   pack, a partial move undone, and a quarantine another fetch swept away
@@ -1858,9 +1888,11 @@ the resolved executable, relative, only where no file or link exists;
 setup prints the `ln -s` command, or names the taken path, when none is
 then on PATH, and `doctor` reports a disk project's missing or foreign
 one. `git fetch box` is
-Crossing's fetch into `refs/remotes/box/*`, and no box tag reaches the
-host; `git push box BRANCH` is Crossing's push into the box's
-`refs/remotes/host/*`, and a pushed tag lands as the box's tag. The user merges;
+Crossing's fetch: branches into `refs/remotes/box/*`, and the box's new
+tags into `refs/tags/*` by Git's tag rules (followed tags, or every
+listed one with `--tags`); no tag it lists changes or deletes a host tag. `git push box
+BRANCH` is Crossing's push into the box's `refs/remotes/host/*`, and a
+pushed tag lands as the box's tag. The user merges;
 signing and host hooks are the user's. Uncommitted host edits do not
 cross. The helper:
 
@@ -1878,7 +1910,9 @@ cross. The helper:
   configured `remote.NAME.fetch`, from a file or `git -c`, whose
   destination lies outside `refs/remotes/NAME/`;
 - does the whole box exchange and every check at Git's `list`, answers
-  with the repository's object format and the checked branches only, and moves the quarantine's packs in at
+  with the repository's object format, the checked branches and new
+  tags, each new annotated tag's peeled commit, and every host tag at its
+  own id, and moves the quarantine's packs in at
   Git's `fetch`; it serves one listing per process;
 - pushes each `refs/heads/SRC:refs/heads/BRANCH` Git sends to the box's
   `refs/remotes/host/BRANCH`, and each `refs/tags/SRC:refs/tags/TAG` to
@@ -2084,7 +2118,7 @@ pinfold config [ROOT] [--json]   selected project settings and image
 pinfold config edit              create this project's configuration file if missing, and open it in $VISUAL or $EDITOR
 pinfold box …                    the process interface
 pinfold init                     PID 1 in the box (Linux builds)
-git fetch box / git push box     a disk project's branches (and host tags in), through git-remote-pinfold (Git)
+git fetch box / git push box     a disk project's branches and tags, through git-remote-pinfold (Git)
 ```
 
 `doctor --artifacts --json` prints one JSON array: the host `codex` helper, then on Linux
@@ -2169,7 +2203,7 @@ what the rewritten suite must show. Testing policy is in `AGENTS.md`.
 | 6 | The environment follows the spec and always-applied values | A caller box whose `up` has unprefixed proxy variables does not get them. Guest PATH, HOME, `XDG_RUNTIME_DIR`, `LD_PRELOAD`, multiline values and a transport-prefixed name arrive exactly while local list/exec/down still manage the box. Always-applied values win. Apple shares append exact-root Git ownership entries through `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n`, preserving declared Git entries. PINFOLD_ALLOW defaults to the spec allowlist without routes and an explicit spec value wins. Guarantee 39 shows PINFOLD_ENV_SECRET's path. On Apple no box variable is passed as environment through `container run`: while the box runs, neither `container inspect` nor any file in Apple's container directory for the box holds a `from` or `PINFOLD_ENV_` value, plain or hex. A literal `HOME` is also a path: it places generated mounts, such as a Pi login route's, so it appears in their `container run --mount`, Apple's configuration and the launch record, and a refusal of such a mount may name it. A literal holding NUL is refused as `spec`, naming only the variable. |
 | 8 | Losing the owner fails closed | After SIGKILL of `box up`, egress fails closed; another XDG root sees the owner dead, prunes the box and reuses its name. The run's launch record stays `available` and its terminal `not-observed`, also after the prune. An abandoned partial claim is reclaimable. On Linux the VM ends with its owner (guarantee 43), so the egress half runs on Apple. Repeat owner death with a detached project owner, including a kept owner without clients. Surviving clients report 125 unless they already observed command completion. Prune and restart preserve the missing terminal record and existing dirty-disk recovery rules. Owner death during gated startup or retirement remains recoverable, including after identity deletion and before claim unlink. An Apple orphan may retain share access until checked removal; replacement waits for removal and retirement. |
 | 9 | The lifecycle works for a caller | Before startup completes, public `exec` exits 3 without starting a caller command; after `ready`, the same command succeeds. `exec` immediately after `ready` streams both streams and returns the exit code, and exits 3 on an absent box; `ready` and `list` name the image's id, and without egress `ready`'s `egress_log` is null; `down` of an absent, empty or flag-like name exits 0, prints nothing and leaves the live box alone; closing `up`'s stdin tears the box down with reason `stdin-closed`. A real terminal exec preserves the caller's input file flags, whether initially blocking or nonblocking. On Apple, a container pinfold did not create is absent to `list`, `exec`, `stat` and `down`. |
-| 10 | Disk-project branches cross only through the Git remote, and end at refs | For disk projects, a box’s writes on its disk leave the host project's bytes, modes and mtimes unchanged. A populated copied Git tree has sampled caller uid/gid ownership, no effective `safe.directory` exemption, and a clean ordinary-user status before mutation. `git fetch box` lands only the box's branches, under `refs/remotes/box/*`, and no tag, two that shadow a branch's names included; after a merge and two checkouts on the host, nothing the box planted (hooks under every client-side name, `core.hooksPath`, `core.fsmonitor`, tracked `.githooks/` and `.husky/`) has run; control: a host hook runs. From a box that sends its own bytes, each of five hostile bundles, a bundle past 4 GiB, a symref or tag line, a malformed or control-character branch name, more than 4096 branches, a `.git` tree entry, a missing tree, a filtered bundle, a listed branch at a commit `box/*` does not reach, the same with a bundle that names that host commit as its head, a branch at an annotated tag, a bundle head the listing does not name, a listed branch at a commit the pack carries but the bundle does not name, and an object id of the other hash's width fails the fetch naming its cause and changes no host ref and nothing under `.git/objects`; control: a listed branch at a reached commit lands. With `fetch.prune` and `fetch.pruneTags` set, a bundle carrying a tag leaves every host tag as it was. A configured fetch refspec outside `refs/remotes/box/`, from the file or `git -c`, a `pinfold::` URL on the command line, a remote named only by `.git/remotes/box`, a symbolic ref under `refs/remotes/box/`, and `GIT_OBJECT_DIRECTORY` or `GIT_CONFIG` in the environment are refused the same way. SIGKILL of the helper during the box's stream or after `list` changes no ref; the next fetch removes the left quarantine and bundle file, while another project's stalled fetch keeps its own, and against a transient box starts on the disk the dead box left unclean and leaves it clean. Two concurrent fetches of the same commits both succeed and leave a repository fsck accepts. `git push box BRANCH` lands in the box's `refs/remotes/host/*` only and changes no box working-tree file; with `push.followTags`, `git push box main` also lands main's annotated tags as box tags and exits 0; a repeat `push.followTags` push prints `Everything up-to-date`; with a box tag `v1` at a box-only object, a followTags push fails every ref with the tag reason and changes no box ref, and `--force` replaces it; a box tag at a box-only commit leaves the host's refs and objects unchanged, and in a partial clone runs no fetch from the promisor remote; a box hook writing to stdout changes no outcome; a branch to a tag, a tag to a branch, a deletion and a stash source are rejected, and a failed push prints none of the box's stderr. Box tags, one named like a branch, one at a blob and a nested one included, are listed by neither `git fetch --tags box` nor `git ls-remote box`, and the host's `refs/tags` stay byte-identical. |
+| 10 | Disk-project branches and tags cross only through the Git remote, and end at refs | For disk projects, a box’s writes on its disk leave the host project's bytes, modes and mtimes unchanged. A populated copied Git tree has sampled caller uid/gid ownership, no effective `safe.directory` exemption, and a clean ordinary-user status before mutation. `git fetch box` lands the box's branches only under `refs/remotes/box/*`, and its annotated and lightweight tags on a fetched commit under `refs/tags/*`, one named like a branch included; `git fetch --tags box` also lands a tag on a commit no branch reaches, and a repeat fetch prints nothing; after a merge and two checkouts on the host, nothing the box planted (hooks under every client-side name, `core.hooksPath`, `core.fsmonitor`, tracked `.githooks/` and `.husky/`) has run; control: a host hook runs. From a box that sends its own bytes, each of five hostile bundles, a bundle past 4 GiB, a symref line, a malformed or control-character branch name, more than 4096 refs, a `.git` tree entry, a missing tree, a filtered bundle, a listed branch at a commit `box/*` does not reach, the same with a bundle that names that host commit as its head, a branch at an annotated tag, a bundle head the listing does not name, a bundled tag at a blob, a bundled tag peeling to a commit neither the box's pack carries nor `box/*` reaches, a listed branch at a commit the pack carries but the bundle does not name, and an object id of the other hash's width fails the fetch naming its cause and changes no host ref and nothing under `.git/objects`; control: a listed branch at a reached commit lands. A fetch changes or deletes no host tag: with box tags of host tags' names at other objects, after `git fetch box`, `--tags`, `--force --tags` and `+refs/tags/*:refs/tags/*`, with box tags differing from host tags' names only in case on a case-insensitive file system, with a non-ASCII host tag present (no box tag is listed, branches land), and with host-only tags under `fetch.prune` with `fetch.pruneTags` and `--prune --prune-tags`, each host tag is where it was. A configured fetch refspec outside `refs/remotes/box/`, from the file or `git -c`, a `pinfold::` URL on the command line, a remote named only by `.git/remotes/box`, a symbolic ref under `refs/remotes/box/`, and `GIT_OBJECT_DIRECTORY` or `GIT_CONFIG` in the environment are refused the same way. SIGKILL of the helper during the box's stream or after `list` changes no ref; the next fetch removes the left quarantine and bundle file, while another project's stalled fetch keeps its own, and against a transient box starts on the disk the dead box left unclean and leaves it clean. Two concurrent fetches of the same commits both succeed and leave a repository fsck accepts. `git push box BRANCH` lands in the box's `refs/remotes/host/*` only and changes no box working-tree file; with `push.followTags`, `git push box main` also lands main's annotated tags as box tags and exits 0; a repeat `push.followTags` push prints `Everything up-to-date`; with a box tag `v1` at a box-only object, a followTags push fails every ref with the tag reason and changes no box ref, and `--force` replaces it; a push with a box tag at a box-only commit leaves the host's refs and objects unchanged, and in a partial clone runs no fetch from the promisor remote; a box hook writing to stdout changes no outcome; a branch to a tag, a tag to a branch, a deletion and a stash source are rejected, and a failed push prints none of the box's stderr. A box tag at a blob or a tree is listed by neither `git fetch --tags box` nor `git ls-remote box`, and neither it nor its blob or tree enters the host's object store; nor is a symbolic box tag, and a non-ASCII box tag beside an ASCII one leaves the ASCII one landing. A host tag whose name is not UTF-8 refuses the fetch as `spec`. |
 | 11 | Disks persist and attach exclusively | A disk created with `from` holds the host tree's files, exec bits and symlink; after its owner is SIGKILLed during the copy and its box pruned, the next `up` naming it holds the whole tree. A file one box writes is read by the next box that attaches it; another state root naming the same disk gets its own. While a box attaches a disk writable, another `up` naming it and `disk rm` (including `--all`) are refused as `disk-in-use` and create nothing; of two writable `up`s racing for one new disk exactly one runs and the other is refused as `disk-in-use`; two boxes attaching a disk read-only cannot write it or a read-only host mount. A sparse `from` past the disk's `size` is refused as `limit`. After the runtime kills a writer's box, or the writer's owner is SIGKILLed, a read-only attachment is refused as `disk-unclean` until a writable one has run, and then reads the disk. On macOS, a dead owner's box the runtime created but never started holds its disk. `disk rm ../escape` is refused as `spec`; after writers stop, `disk rm --all` removes the remaining disks. On Linux, a nested disk whose mount point is a symlink the box planted ends the start `failed` and leaves nothing at the link's target. A fresh home whose source contains `.pi/agent/settings.json` starts with a Pi login route and retains those settings; a reused home ignores changed initial-source content. On both platforms, generated parents on a fresh or reused home are created as the numeric box user through descriptor-relative no-follow traversal; an existing symlink fails startup without writing through it, and its corrected directory succeeds without changing existing ownership. |
 | 13 | Project state persists and stays separate | Nested Git metadata and bare-repository paths refuse as `project-in-git`; a linked worktree beneath a shared main root uses that root’s configuration and owner at its invoking cwd; external worktrees and separate Git directories refuse before project state. The main checkout runs. State, config or cache roots inside the project, reached through a symlinked ancestor whose suffix does not exist, and the project's configuration file, directory or Containerfile or the profile's `pinfold.toml` symlinked into the checkout, make build and project commands refuse as `host-path-in-project` and create no project state; `config edit` refuses the selected profile's directory symlinked into the checkout, whether `PINFOLD_PROFILE` or the existing file selects it, and writes no file; with external roots the same project runs. Guest writes in two same-named projects remain separate on A/B/A runs. For disk projects, the first start leaves the project disk empty and the host's `.git/config` byte-identical, and runs no host Git beyond admission's verification. The first `git push box BRANCH` into it creates a box repository with `host/BRANCH`, an unborn branch and an empty working tree; `git switch -c BRANCH host/BRANCH` in the box then checks out BRANCH clean at the pushed commit, holding its committed file and none of the host's untracked `.env`, unstaged blob, stash, remote URL or hook. A later push changes no box working-tree file, and a push whose box step fails is reported failed to host Git. A pushed host tag persists as a box tag across owners, and `git describe` in the box names it. A sha256 host repository gets a sha256 box repository. Into a disk holding stray and ignored files, that push leaves every file byte-identical. Two first pushes started together against a running box leave one repository holding the refs of each push that succeeded, with HEAD unborn. For disk projects, with no identity in the repository or home, the box's commits arrive authored `pi <pi@pinfold.invalid>`. For disk projects, no start pushes: a host commit made after a push leaves the box's `host/main` where it was across owners, and fetch from a disk without a repository refuses as `spec`. A non-Git macOS share exposes existing host files and retains its home across owners; another canonical folder has a separate owner and home. These folders receive the same protected-path checks and project maintenance ownership as Git projects. Each protected-path refusal creates no project state or configuration, and external roots permit the same project. On Linux the non-Git folder is refused as `not-git`; a configured Git checkout runs. A long valid project basename launches. |
 | 15 | Cleanup removes only pinfold's garbage | One project image supplies a live box alongside an idle project's state and disk. Both projects' state bytes and disks survive `clean --dry-run --unused 0s`; plain `clean` keeps both disks. Real `clean --unused 0s` removes idle state and disk while preserving live state bytes and a write read back through the live box's disk. On Apple an externally started container and an unlabeled external image survive cleanup. One caller image held by a running box survives `image rm`, reports `in_use` and still serves its fixture bytes; after the box stops the same removal reclaims its refs and, on Linux, its observed root disk. A kept project with no clients retains its state bytes, disks and readable guest writes through cleanup; after stop, the same eligible cleanup removes them. Share-project cleanup never removes host shared files. |
