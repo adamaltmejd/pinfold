@@ -1103,7 +1103,7 @@ async fn confirm_setup(message: String, signals: &mut Signals) -> io::Result<boo
 /// profile, then where both kinds exist, the project mount. `None` when
 /// the user declines or closes the terminal.
 async fn confirm_first_run(
-    root: &Path,
+    context: &Context,
     command: Option<&str>,
     signals: &mut Signals,
 ) -> io::Result<Option<(String, ProjectMount)>> {
@@ -1165,14 +1165,17 @@ async fn confirm_first_run(
     } else {
         ProjectMount::default_kind()
     };
-    let path = terminal_text(&root.to_string_lossy());
+    let path = terminal_text(&context.root.to_string_lossy());
     let statement = match mount {
         ProjectMount::Share => {
             format!("The box can edit files in {path}, including its Git metadata.")
         }
-        ProjectMount::Disk => format!(
-            "The box uses an isolated project disk for {path}. Host files stay separate from edits in the box."
+        ProjectMount::Disk if context.repository => format!(
+            "The box has its own repository on an isolated disk, separate from {path}. git fetch box and git push box move branches."
         ),
+        ProjectMount::Disk => {
+            format!("The box has its own files on an isolated disk and does not see {path}.")
+        }
     };
     forward_diagnostics(statement.into_bytes(), signals).await?;
     let question = match command {
@@ -1323,13 +1326,14 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         {
             // Admission has released its locks. Validate the invoking worktree before
             // offering the share, then rediscover it after the user answers.
-            discover()?;
+            let context = discover()?;
             let command = args.and_then(|args| args.first()).map(String::as_str);
-            let Some((profile, mount)) = confirm_first_run(&root, command, &mut signals).await? else {
+            let Some((profile, mount)) = confirm_first_run(&context, command, &mut signals).await? else {
                 return Ok(125);
             };
             let current = discover()?;
-            current.check_worktree(mount)?;
+            // The chosen mount's full check, so a refusal leaves no file.
+            current.verify(mount)?;
             if !crate::config::create(&root, Some((&profile, mount)))?.1 {
                 return Err(io::Error::other("project configuration appeared during setup; run the command again"));
             }

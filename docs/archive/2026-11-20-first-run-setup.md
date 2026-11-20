@@ -150,3 +150,61 @@ Both disks were removed by name with `pinfold disk rm`, `pinfold disk
 list` was empty, no pinfold container remained in `container ls -a`, and
 `container volume ls` was empty, as it was before the run. The temporary
 root was deleted.
+
+## Review fixes
+
+Same host, a debug build of the fix commit, a fresh throwaway root
+`/tmp/pf.NOZv` laid out as above (wrapper `run DIR ARGS...` exporting the
+three XDG roots, `PATH`, `PINFOLD_PROFILE=default` and
+`PINFOLD_NO_UPDATE_CHECK=1`). Projects: `g` and `gd`, Git repositories
+with one committed file; `bad`, a fresh Git repository whose
+`.git/commondir` is `../../other`; `plain`, a non-Git folder. Prompts
+were driven by `expect`. `cargo fmt --check` and `cargo clippy
+--all-targets --locked -- -D warnings` pass.
+
+**Refused topology leaves no file.** Setup now runs the chosen mount's
+full verification (`Context::verify`) before writing the file. In `bad`,
+`pinfold -- true` with `share`, `y`:
+
+    pinfold: worktree: .git is not a directory; run pinfold from the main checkout
+
+exit 125. `pinfold start` with `disk`, `y`:
+
+    pinfold start: git-discovery: Git could not verify the project root
+
+exit 125. After each, `find` over the three XDG roots listed only the
+roots themselves.
+
+**Controls.** In `g`, `pinfold -- true` with `share`, `y`: exit 0, the
+file holds `kind = "share"` and `profile = "default"`. In `gd`, `pinfold
+-- true` with `disk`, `y`: the statement read
+
+    The box has its own repository on an isolated disk, separate from /private/tmp/pf.NOZv/gd. git fetch box and git push box move branches.
+
+exit 0, the file holds `kind = "disk"`, and the host gained remote `box`
+at `pinfold::/private/tmp/pf.NOZv/gd`.
+
+**Disk Files lines.** Bare `pinfold` in `gd`, stopped:
+
+    Files     Isolated disk: the box has its own repository. git fetch box and git push box move branches.
+
+In `plain`, `pinfold -- true` with `disk`, declined, read
+
+    The box has its own files on an isolated disk and does not see /private/tmp/pf.NOZv/plain.
+
+and exited 125 with no file. After `pinfold config edit` (it created the
+file; the user's `VISUAL` failed to start, exit 127) and the kind
+changed to `disk` by hand, bare `pinfold` (exit 0) and `pinfold config`
+printed
+
+    Files     Isolated disk: the box has its own files and does not see /private/tmp/pf.NOZv/plain.
+
+"Starts empty" was not used: the line prints on every later start, when
+a retained disk holds the box's files.
+
+**Cleanup.** The three disks `config --json` named
+(`pi-g-14a75d7caca6-home`, `pi-gd-2fa657de1e39-home`,
+`pi-gd-2fa657de1e39-project`) were removed by name with `pinfold disk
+rm`; `pinfold disk list` and `container volume ls` were empty and
+`container ls -a` held only the runtime's builder, as before the run. The
+temporary root was deleted. No image was built or removed.

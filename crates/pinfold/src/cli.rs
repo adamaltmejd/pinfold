@@ -64,7 +64,10 @@ fn project_intro() -> io::Result<bool> {
                 None => println!("Box       running"),
             }
             if let Some(mount) = mount {
-                println!("Box files {}", project_files(*mount, root));
+                println!(
+                    "Box files {}",
+                    project_files(*mount, root, context.repository)
+                );
             }
         }
         Ok(ProjectStatus::Unavailable) | Err(_) => println!("Box       status unavailable"),
@@ -90,7 +93,10 @@ fn project_intro() -> io::Result<bool> {
         terminal_text(&config.profile.name)
     };
     println!("Profile   {profile}");
-    println!("Files     {}", project_files(config.mount, root));
+    println!(
+        "Files     {}",
+        project_files(config.mount, root, context.repository)
+    );
     let reference = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(root));
     // Only a definite absence earns a line; an unknown answer stays quiet.
     if image_built(&image::service().resolve_image(&reference)).0 == Some(false) {
@@ -113,13 +119,16 @@ fn project_intro() -> io::Result<bool> {
 }
 
 /// The project mount as the intro, a running box and `pinfold config` state it.
-fn project_files(mount: crate::config::ProjectMount, root: &Path) -> String {
+fn project_files(mount: crate::config::ProjectMount, root: &Path, repository: bool) -> String {
     let root = terminal_text(&root.to_string_lossy());
     match mount {
         crate::config::ProjectMount::Share => format!("Shared: the box edits {root}"),
-        crate::config::ProjectMount::Disk => format!(
-            "Isolated disk: the box keeps its own copy of {root}. git fetch box and git push box move branches."
-        ),
+        crate::config::ProjectMount::Disk if repository => {
+            "Isolated disk: the box has its own repository. git fetch box and git push box move branches.".into()
+        }
+        crate::config::ProjectMount::Disk => {
+            format!("Isolated disk: the box has its own files and does not see {root}.")
+        }
     }
 }
 
@@ -1296,7 +1305,10 @@ pub fn config(args: &[String]) -> io::Result<i32> {
         return Ok(0);
     }
     println!("Project   {}", terminal_text(&root.to_string_lossy()));
-    println!("Files     {}", project_files(config.mount, &root));
+    println!(
+        "Files     {}",
+        project_files(config.mount, &root, config.repository)
+    );
     println!("Profile   {}", profile_description(&config));
     let availability = match report["image_built"].as_bool() {
         Some(true) => "available locally",
