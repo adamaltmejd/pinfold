@@ -3,7 +3,7 @@
 Run a coding agent in a disposable micro-VM: Apple `container` on macOS,
 Firecracker on Linux. New macOS project configurations share host files
 directly, `.git` included, so an agent commits with ordinary Git. Linux projects use a private
-disk copy of committed branches; macOS also supports an explicit disk.
+disk, which starts empty; macOS also supports an explicit disk.
 Network egress uses the box’s allowlisting proxy.
 
 - **Interactive:** `pinfold -- pi`, `pinfold -- claude` or `pinfold -- bash`.
@@ -111,8 +111,8 @@ choose the profile and confirm the project folder. If your shell sets
 `PINFOLD_PROFILE`, that selects the profile. Unset it to choose a
 different one. On macOS you also choose how the box sees the folder:
 share it (the default), so the box edits it and its Git metadata, or use
-an isolated project disk with its own files; in a Git project, `git fetch
-box` and `git push box` move branches. Linux always uses a project disk. If the selected
+an isolated project disk, which starts empty; in a Git project, `git push
+box` and `git fetch box` move branches. Linux always uses a project disk. If the selected
 managed image is missing, Pinfold offers to build it and then starts your
 command. A build needs network access. An explicit `image` must already
 be available locally. Rebuild with `pinfold build` if a later launch
@@ -176,8 +176,8 @@ comparison. Mount kind and canonical paths are startup configuration;
 working files, HEAD, refs, index and mtimes are not. Host and box edits and
 commits permit joining. A share whose root `.git` appears, disappears or
 becomes a non-directory refuses new joins and starts as `config-changed`
-until stop; the owner checks it on every join. Joining does not reseed,
-synchronize Git or refresh login.
+until stop; the owner checks it on every join. Joining does not reseed
+or refresh login.
 
 Arguments after `--` pass literally to the command, including `--help`. Command exit codes
 pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
@@ -257,8 +257,8 @@ Host and box Git at the same moment can lose commits or record files as
 deleted (see the threat model). Export `GIT_OPTIONAL_LOCKS=0` in the shell
 that runs `pinfold` and in host tools that poll `git status`; unless it is
 exactly `0`, `pinfold -- CMD` warns `git-optional-locks` on stderr. It does not cover
-host `git diff` or host commits while the box commits. There is no startup synchronization
-or crossing; the Git remote refuses as `share-no-crossing`. A share launch never
+host `git diff` or host commits while the box commits. There is no crossing;
+the Git remote refuses as `share-no-crossing`. A share launch never
 deletes an old project disk or copies it back. To select disk behavior on
 macOS, set this in the project’s configuration:
 
@@ -266,16 +266,19 @@ macOS, set this in the project’s configuration:
 mounts = [{ host = ".", kind = "disk" }]
 ```
 
-A disk project keeps its own repository. Only committed branches enter it;
-commit local work (a WIP commit is enough) to send it in. Its first start
-pushes every host branch in as `host/*`, checks out the current one, and
-adds the Git remote `box` (`pinfold::` and the project root) to the host
-repository unless a `box` remote exists. After that:
+A new project disk starts empty; no start copies code into it or changes
+your repository. Clone inside the box, or send branches yourself. Only
+committed branches cross; commit local work (a WIP commit is enough) to
+send it in. After the first start has created the disk:
 
 ```sh
-git fetch box             # guest branches as box/*, to inspect and merge
-git push box main         # a host branch into the box as host/main
+git remote add box pinfold::"$(pwd -P)"   # once, at the project root
+git push box main                         # a host branch into the box as host/main
+git fetch box                             # guest branches as box/*, to merge
 ```
+
+The first push into a disk without a repository creates one there and
+checks out the pushed branch.
 
 Every byte from the box is checked before Git sees a ref, but the
 remote ends at refs: `git pull box`, a refspec on the command line
@@ -423,10 +426,6 @@ Outside Git in an explicit macOS disk project, save wanted files with
 Disk removal refuses attached disks. The two removals are separate operations;
 serialize access to the project. Use `disk rm`, never delete state or volume
 files directly. Profiles, project configuration and the selected image remain intact.
-For disk projects, a `sync-failed` warning means the first start's push
-failed even if the command starts, and it is not retried. Check that
-`git remote get-url box` prints `pinfold::` and the project root (or
-`git remote add box pinfold::ROOT`), then `git push box BRANCH`.
 
 ## Configuration
 

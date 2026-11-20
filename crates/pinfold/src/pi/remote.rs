@@ -27,7 +27,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     // remote has refspecs the helper can check.
     if !valid_name(remote) {
         return Err(refused(&format!(
-            "remote-url: run `git fetch box` with the configured remote, not {}",
+            "remote-url: use a configured remote, not a URL: `git remote add box {}`, then `git push box BRANCH` or `git fetch box`",
             terminal_text(remote)
         )));
     }

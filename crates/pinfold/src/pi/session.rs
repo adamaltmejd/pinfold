@@ -1134,21 +1134,15 @@ async fn confirm_first_run(
     let path = terminal_text(&root.to_string_lossy());
     // Linux has only disks, so there is nothing to ask.
     let mount = if cfg!(target_os = "macos") {
-        let (share, disk) = if repository {
-            (
-                "  share  the box edits this folder directly, including .git",
-                "  disk   the box works on an isolated disk; a new disk starts with your committed branches",
-            )
+        let share = if repository {
+            "  share  the box edits this folder directly, including .git"
         } else {
-            (
-                "  share  the box edits this folder directly",
-                "  disk   the box works on an isolated disk; a new disk starts empty",
-            )
+            "  share  the box edits this folder directly"
         };
         for line in [
             format!("Files for the box in {path}:"),
             share.into(),
-            disk.into(),
+            "  disk   the box works on an isolated disk; a new disk starts empty".into(),
         ] {
             forward_diagnostics(line.into_bytes(), signals).await?;
         }
@@ -1169,7 +1163,7 @@ async fn confirm_first_run(
     } else {
         // A Linux project is always a Git checkout.
         forward_diagnostics(
-            format!("Files for the box in {path}: an isolated disk; a new disk starts with your committed branches.")
+            format!("Files for the box in {path}: an isolated disk; a new disk starts empty.")
                 .into_bytes(),
             signals,
         )
@@ -1566,37 +1560,16 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let box_ = owned_box.insert(box_);
         locator.generation = Some(box_.run_id.clone());
         locator.publish()?;
-        let sync_cancel = Arc::new(AtomicBool::new(false));
-        let worker_cancel = sync_cancel.clone();
-        // Only a Git project's disk this start created gets the push.
-        let [_, project_disk] = state::disk_names(&state::project_id(&root));
-        let fresh = resolved.config.repository && resolved.config.mount == crate::config::ProjectMount::Disk && box_.created.contains(&project_disk);
-        let (name, sync_root, sync_init) = (plan.name.clone(), root.clone(), init.clone());
-        let mut syncing = tokio::task::spawn_blocking(move || {
-            if fresh { launch::first_push(&name, &sync_init, &sync_root, &worker_cancel); }
-        });
-        let stopped = loop { tokio::select! {
-            biased;
-            _ = received.recv() => break Some(Ok(Shutdown::Signal)),
-            reason = box_.ended() => break Some(reason),
-            _ = signals.recv() => break Some(Ok(Shutdown::Signal)),
-            _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
-            result = &mut syncing => { result.map_err(|_| io::Error::other("project synchronization worker failed"))?; break None },
-        }};
-        let sync_pending = stopped.is_some();
-        let stopped = match stopped {
-            Some(reason) => Some(reason),
-            None => {
-                let checking = timeout_at(Instant::now() + CONTROL, box_.ended_if_ready());
-                tokio::pin!(checking);
-                loop { tokio::select! {
-                    biased;
-                    _ = received.recv() => break Some(Ok(Shutdown::Signal)),
-                    _ = signals.recv() => break Some(Ok(Shutdown::Signal)),
-                    _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
-                    result = &mut checking => break result.map_err(|_| timed_out()).and_then(|result| result).transpose(),
-                }}
-            }
+        let stopped = {
+            let checking = timeout_at(Instant::now() + CONTROL, box_.ended_if_ready());
+            tokio::pin!(checking);
+            loop { tokio::select! {
+                biased;
+                _ = received.recv() => break Some(Ok(Shutdown::Signal)),
+                _ = signals.recv() => break Some(Ok(Shutdown::Signal)),
+                _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
+                result = &mut checking => break result.map_err(|_| timed_out()).and_then(|result| result).transpose(),
+            }}
         };
         let relay = rex::Rex::new(&plan.name, init.clone(), &key(&root));
         // A first start's Rex setup yields to stop, box exit, a signal or the client leaving.
@@ -1615,8 +1588,6 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         if let Some(reason) = stopped {
             relay.close().await;
             let _ = wire::write_reply(&mut writer, Reply::Draining { generation: box_.run_id.clone() }).await;
-            sync_cancel.store(true, Ordering::SeqCst);
-            if sync_pending { let _ = syncing.await; }
             let reason_name = reason.as_ref().map_or("owner-unavailable", |reason| {
                 if *reason == Shutdown::Signal { "stopped" } else { reason.as_str() }
             });

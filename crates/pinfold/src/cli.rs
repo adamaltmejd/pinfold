@@ -22,10 +22,13 @@ use crate::pi::launch::utf8;
 pub fn print_intro() {
     let mut unconfigured = false;
     match project_intro(&mut unconfigured) {
-        Ok(Some(branches)) => {
+        Ok(Some(git_disk)) => {
             println!("\nRun a command    pinfold -- CMD\nKeep it running  pinfold start");
-            if branches {
-                println!("Move branches    git fetch box / git push box");
+            if let Some(root) = git_disk {
+                println!(
+                    "Add Git remote   git remote add box pinfold::{}\nSend a branch    git push box BRANCH\nBring work back  git fetch box",
+                    terminal_text(&root.to_string_lossy())
+                );
             }
             println!("Change settings  pinfold config edit\nAll commands     pinfold --help");
         }
@@ -46,10 +49,10 @@ pub fn print_intro() {
     }
 }
 
-/// `None` without a configuration; otherwise whether it is a Git disk
-/// project, whose branches cross by `git fetch box` and `git push box`.
+/// `None` without a configuration; otherwise the root of a Git disk
+/// project, whose branches cross through the remote `box`.
 /// `unconfigured` is set once known, so a later failure's footer has it.
-fn project_intro(unconfigured: &mut bool) -> io::Result<Option<bool>> {
+fn project_intro(unconfigured: &mut bool) -> io::Result<Option<Option<PathBuf>>> {
     use crate::pi::session::{ProjectStatus, project_status};
 
     let context = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
@@ -121,8 +124,8 @@ fn project_intro(unconfigured: &mut bool) -> io::Result<Option<bool>> {
             terminal_text(&config.path.to_string_lossy())
         );
     }
-    Ok(configured
-        .then_some(config.mount == crate::config::ProjectMount::Disk && context.repository))
+    let git_disk = config.mount == crate::config::ProjectMount::Disk && context.repository;
+    Ok(configured.then(|| git_disk.then(|| root.clone())))
 }
 
 /// The project mount as the intro, a running box and `pinfold config` state it.
@@ -150,8 +153,10 @@ Project
   stop            Shut down the project box
 
 Disk projects
-  git fetch box   Bring guest branches back as box/* (needs git-remote-pinfold)
   git push box    Send a host branch into the box as host/*
+  git fetch box   Bring guest branches back as box/*
+                  Once first: git remote add box pinfold::ROOT
+                  (needs git-remote-pinfold on PATH)
   disk export     Copy a stopped disk's files into a new directory
 
 Maintenance
