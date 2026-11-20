@@ -65,7 +65,22 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                 fetched = Some(landing);
                 send(&mut output, &listing)?;
             }
-            "list for-push" => send(&mut output, "\n")?,
+            "list for-push" => {
+                // Only Git's push plan reads this; `fetched` stays empty, so
+                // nothing listed here can land. A box without a repository,
+                // or a listing that fails its checks, lists nothing and the
+                // push goes ahead.
+                let pushed = launch::cross(guard, |runtime, init, name, root, guest, cancel| {
+                    crossing::pushed_cancellable(runtime, init, name, root, guest, cancel)
+                })?
+                .unwrap_or_default();
+                let mut listing = format!(":object-format {}\n", object_format()?);
+                for (name, oid) in &pushed {
+                    listing.push_str(&format!("{oid} {name}\n"));
+                }
+                listing.push('\n');
+                send(&mut output, &listing)?;
+            }
             line if line.starts_with("fetch ") => {
                 while !read_line(&mut input)?.is_empty() {}
                 if let Some(fetched) = &fetched {

@@ -50,13 +50,46 @@ only.
 - A first version had the box print the conflicting destinations so
   the rest of the push could land. The operator vetoed it, because it
   added a reply channel from the box.
-- `list for-push` answers with an empty list. Listing box tags there
-  would mean reading box data on the host, so Git believes the box has
-  no refs. With `push.followTags`, each push therefore resends every
-  reachable annotated tag and prints `* [new tag]` for it. Identical
-  tags pass the check, so the repeat exits 0, but it is not quiet.
-  Making it quiet needs a box listing on the host, which this design
-  does not have. The fetch direction is unaffected either way.
+- `list for-push` first answered with an empty list, so every
+  followTags push resent every reachable tag. The operator then asked
+  for quiet repeats, reusing the fetch listing.
+- Final design: `list for-push` runs one more box command,
+  `PUSHED_SCRIPT`. It prints `OID REF` lines for the box's
+  `refs/remotes/host/` and `refs/tags/`, then an empty line, which is
+  the fetch listing's format.
+- That output goes through the same `receive` and `Receiver`. The
+  checks are the same:
+  - lines of at most 4096 bytes;
+  - full-width object ids;
+  - at most 4096 refs;
+  - UTF-8.
+  The only new parameter is the allowed prefixes. Fetch passes
+  `refs/heads/` only, and its behaviour is unchanged.
+- Any bundle bytes after the empty line fail the listing.
+- The host maps `refs/remotes/host/NAME` to `refs/heads/NAME`. Every
+  name must pass `check-ref-format` and appear once.
+- `pushed_cancellable` returns a plain map, with no quarantine and no
+  objects. The helper never stores it in `fetched`, so it cannot feed a
+  fetch.
+- Failure handling: a box without a repository (exit 64), a listing
+  that fails a check, or any other crossing error gives an empty list,
+  and the push goes ahead as before. I chose this over refusing because
+  the push itself still runs every check and reports a real failure.
+  Errors before the box is reached, such as a refused remote, still
+  stop the helper as they did.
+- Git now plans the push from the box's state, which has these effects:
+  - unchanged refs print `Everything up-to-date`;
+  - `push.followTags` sends only tags the box lacks, so a box tag that
+    differs is skipped silently;
+  - Git itself rejects an explicit changed tag (`already exists`) and a
+    host branch that is not a fast-forward of the box's `host/NAME`
+    (`non-fast-forward`) unless forced, while other refs of that push
+    land, per Git's own rule.
+- The box script's exit-65 check still covers a push Git attempts
+  without knowing about the tag: an empty listing, or a tag created
+  after the listing.
+- Object ids the host lacks are harmless: Git only compares them and
+  never fetches them during a push.
 
 ## Commands
 
@@ -153,9 +186,70 @@ found only in `R/bin`.
 - Later owner: after `pf pinfold stop`, a transient box listed `v1` and
   `v2` at the same ids.
 
-### Final behaviour (A)
+### With the for-push listing (A, final)
 
-These ran on a fresh disk project with the final build. The repo had
+These ran on fresh disk projects with the final build. The first repo
+had `main`, annotated `v1` and `v2`, and lightweight `light`.
+
+- First `pf git -c push.followTags=true push box main`, into a box
+  without a repository: exit 0. It printed `* [new branch] main ->
+  main`, `* [new tag] v1 -> v1` and `* [new tag] v2 -> v2`.
+- The second and third identical pushes each printed `Everything
+  up-to-date` and exited 0.
+- After a new host commit, the push printed only
+  `afc7201..f0856f0  main -> main`.
+- After a new annotated tag `v3`, it printed only
+  `* [new tag] v3 -> v3`.
+- The box then created a commit with `commit-tree` (`4c11fa7`) and an
+  annotated tag `boxonly` on it (`a5a5011`).
+  - The followTags push printed `Everything up-to-date`, exit 0.
+  - `git push box --tags` printed only `* [new tag] light -> light`.
+  - The host's `git for-each-ref` output and its list of files under
+    `.git/objects` were identical before and after.
+  - `git cat-file -t` found neither box-only id on the host.
+- The box re-tagged `v2` at `v1`, and the host committed:
+  - `pf git -c push.followTags=true push box main` exited 0 and printed
+    only `f0856f0..468eb38  main -> main`. The box kept its own `v2`,
+    because followTags sends only tags the box lacks.
+  - `pf git push --force --follow-tags box main` printed `Everything
+    up-to-date`, for the same reason.
+- In a second repo, with the box's `v2` changed:
+  - `pf git push box main v2` exited 1. It printed `c773b7b..12cdb7b
+    main -> main` and `! [rejected] v2 -> v2 (already exists)`. The
+    branch landed and the box's `v2` was unchanged.
+  - `pf git push box +refs/tags/v2:refs/tags/v2` exited 0 with
+    `+ 7bb473a...c8f5d5e v2 -> v2 (forced update)`.
+  - After the box changed `v2` again, `pf git push --force box main v2`
+    exited 0 and replaced it.
+- Host rewrite of `main` (reset, then a new commit):
+  - `pf git push box main` exited 1 with `! [rejected] main -> main
+    (non-fast-forward)`.
+  - `pf git push --force box main` exited 0 with `+ 468eb38...09b750a
+    main -> main (forced update)`.
+  - Before this change, branches were always forced.
+- Fetch direction, after the box made a branch `work`, a tag `boxwork`
+  and an annotated tag `main`:
+  - `pf git fetch box` printed `* [new branch] work -> box/work`, exit 0.
+  - `pf git fetch --tags box` printed nothing, exit 0.
+  - `pf git ls-remote box` listed only `refs/heads/work`.
+  - The host's `refs/tags` were identical before and after.
+- Timing, wall clock for `git push box main`, three runs each:
+
+  | Case | Before | After |
+  | --- | --- | --- |
+  | Owner running, nothing new | 0.70–1.63 s, a full push | 1.72–1.84 s, listing only, `Everything up-to-date` |
+  | Owner running, new commit | — | 2.85 s, listing plus push |
+  | No owner, nothing new | 2.76–3.22 s, a full push | 3.47–3.49 s, one transient box |
+  | No owner, new commit | — | 6.09 s, two transient boxes |
+
+  So a push that sends something costs one extra box exec: about 1 to
+  2 s with a running owner, and about 3 s without one, where the
+  listing starts its own transient box.
+
+### Exit-65 behaviour (A, before the listing)
+
+These ran before `list for-push` listed anything, so Git attempted every
+ref. The repo had
 `main` (three commits), annotated `v1` and `v2`, and lightweight
 `light`.
 
@@ -163,7 +257,7 @@ These ran on a fresh disk project with the final build. The repo had
   `* [new branch] main -> main`, `* [new tag] v1 -> v1` and
   `* [new tag] v2 -> v2`.
 - Running the same push again printed the same three lines and exited 0.
-  It was not quiet; see Design.
+  It was not quiet; the listing above fixed that.
 - The box installed a `reference-transaction` hook that echoes
   `hook-stdout`; run by hand, it printed that. The box also re-tagged
   `v2` at `v1`. The host then committed `00b3f87`.
@@ -184,7 +278,7 @@ These ran on a fresh disk project with the final build. The repo had
   - `pf git push box refs/tags/light:refs/tags/light` exited 1 with the
     same reason.
   - `pf git push box +refs/tags/light:refs/tags/light` exited 0.
-- Branches are always forced. After `side` was moved back to
+- Branches were then always forced. After `side` was moved back to
   `main~2`, `pf git push box side` without `--force` exited 0, and the
   box's `host/side` followed it back to `3798e89`.
 - The hook was present for every push after it was installed. No
@@ -240,7 +334,7 @@ before this change, and the change leaves it as it was.
 ### Cleanup
 
 - Every box started was stopped.
-- Thirteen disks were removed by name: `pi-repo-8800e3f439bd-{home,project}` (three times),
+- Seventeen disks were removed by name: `pi-repo-8800e3f439bd-{home,project}` (five times),
   `pi-r-{file,link,ro}-…-{home,project}` and
   `pi-r-share-7e8205bba800-home`.
 - `R` was removed.

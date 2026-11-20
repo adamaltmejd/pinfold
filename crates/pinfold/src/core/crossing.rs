@@ -101,6 +101,15 @@ revs() { git -C "$repo" for-each-ref --format='%(refname)' refs/heads/; printf '
 revs | exec git -C "$repo" -c core.warnAmbiguousRefs=false bundle create -q - --stdin
 "#;
 
+/// `$1` is GUEST_REPO. Prints, in the fetch listing's format, the refs a
+/// push writes, then an empty line and nothing after it.
+const PUSHED_SCRIPT: &str = r#"
+repo=$1
+git -C "$repo" rev-parse --git-dir >/dev/null || exit 64
+git -C "$repo" for-each-ref --format='%(objectname) %(refname)' refs/remotes/host/ refs/tags/ || exit
+echo
+"#;
+
 pub enum CrossingError {
     Refused(RefusalReason, String),
     Failed(String),
@@ -181,6 +190,69 @@ pub(crate) fn push_cancellable(
     }
 }
 
+/// What the box holds where a push writes, for Git's push plan only: its
+/// `refs/remotes/host/NAME` as `refs/heads/NAME` and its `refs/tags/NAME`,
+/// read through the fetch listing's checks. It carries no objects and
+/// never feeds a fetch; a lying box can only make Git skip or attempt a
+/// ref.
+pub(crate) fn pushed_cancellable(
+    runtime: &dyn Runtime,
+    init: &Path,
+    name: &str,
+    repo: &Path,
+    guest_repo: &str,
+    cancel: &AtomicBool,
+) -> Result<Refs, CrossingError> {
+    check_args(repo, guest_repo, cancel)?;
+    let width = object_width(repo, cancel)?;
+    let mut command = runtime.exec_command(
+        name,
+        init,
+        &ExecContext::default(),
+        &script(PUSHED_SCRIPT, [guest_repo]),
+    )?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let bundle = Bundle::new()?;
+    let listed = receive(
+        &mut command,
+        b"",
+        &bundle.path,
+        width,
+        &["refs/remotes/host/", "refs/tags/"],
+        guest_repo,
+        cancel,
+    )?;
+    if fs::metadata(&bundle.path)?.len() != 0 {
+        return Err(malformed_listing());
+    }
+    let mut refs = Refs::new();
+    for (name, oid) in listed {
+        let name = match name.strip_prefix("refs/remotes/host/") {
+            Some(branch) => format!("refs/heads/{branch}"),
+            None => name,
+        };
+        if !valid_ref(repo, &name, cancel)? || refs.insert(name, oid).is_some() {
+            return Err(malformed_listing());
+        }
+    }
+    Ok(refs)
+}
+
+/// REPO's object id length in hex, which every id the box sends has.
+fn object_width(repo: &Path, cancel: &AtomicBool) -> Result<usize, CrossingError> {
+    let format = succeeded(git(repo, &["rev-parse", "--show-object-format"], cancel)?)?;
+    match String::from_utf8_lossy(&format.stdout).trim() {
+        "sha1" => Ok(40),
+        "sha256" => Ok(64),
+        format => Err(CrossingError::Failed(format!(
+            "unknown object format {format:?}"
+        ))),
+    }
+}
+
 /// The box's checked branches, their objects held in a quarantine inside
 /// REPO's object store until [`Fetched::land`] moves them in.
 pub(crate) struct Fetched {
@@ -211,17 +283,7 @@ pub(crate) fn fetch_cancellable(
         )));
     }
     check_args(repo, guest_repo, cancel)?;
-    // Every object id the box sends has REPO's hash width exactly.
-    let format = succeeded(git(repo, &["rev-parse", "--show-object-format"], cancel)?)?;
-    let width = match String::from_utf8_lossy(&format.stdout).trim() {
-        "sha1" => 40,
-        "sha256" => 64,
-        format => {
-            return Err(CrossingError::Failed(format!(
-                "unknown object format {format:?}"
-            )));
-        }
-    };
+    let width = object_width(repo, cancel)?;
     let namespace = format!("refs/remotes/{remote}/");
     let held = String::from_utf8_lossy(
         &succeeded(git(
@@ -243,14 +305,18 @@ pub(crate) fn fetch_cancellable(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let bundle = Bundle::new()?;
-    let listed = receive(
+    let listed: Vec<(String, String)> = receive(
         &mut command,
         held.as_bytes(),
         &bundle.path,
         width,
+        &["refs/heads/"],
         guest_repo,
         cancel,
-    )?;
+    )?
+    .into_iter()
+    .map(|(name, oid)| (name["refs/heads/".len()..].to_owned(), oid))
+    .collect();
     for (branch, _) in &listed {
         check_branch(repo, &namespace, branch, cancel)?;
     }
@@ -520,6 +586,9 @@ struct Receiver {
     file: File,
     /// The repository's object id length in hex.
     width: usize,
+    /// The ref name prefixes a listed name may have.
+    prefixes: &'static [&'static str],
+    /// Full ref names and their object ids.
     listed: Vec<(String, String)>,
     line: Vec<u8>,
     listing: bool,
@@ -531,10 +600,11 @@ fn malformed_listing() -> CrossingError {
 }
 
 impl Receiver {
-    fn new(bundle: &str, width: usize) -> io::Result<Self> {
+    fn new(bundle: &str, width: usize, prefixes: &'static [&'static str]) -> io::Result<Self> {
         Ok(Self {
             file: File::create(bundle)?,
             width,
+            prefixes,
             listed: Vec::new(),
             line: Vec::new(),
             listing: true,
@@ -568,13 +638,12 @@ impl Receiver {
                 }
                 let line = std::str::from_utf8(line).map_err(|_| malformed_listing())?;
                 let (oid, name) = line.split_once(' ').ok_or_else(malformed_listing)?;
-                let branch = name
-                    .strip_prefix("refs/heads/")
-                    .ok_or_else(malformed_listing)?;
-                if !object_id(oid, self.width) {
+                if !self.prefixes.iter().any(|prefix| name.starts_with(prefix))
+                    || !object_id(oid, self.width)
+                {
                     return Err(malformed_listing());
                 }
-                self.listed.push((branch.to_owned(), oid.to_owned()));
+                self.listed.push((name.to_owned(), oid.to_owned()));
             }
             self.line.clear();
         }
@@ -600,12 +669,13 @@ impl Receiver {
     }
 }
 
-/// Read the branch listing and bounded bundle, reaping the helper on cancellation.
+/// Read the ref listing and bounded bundle, reaping the helper on cancellation.
 fn receive(
     command: &mut Command,
     mut input: &[u8],
     bundle: &str,
     width: usize,
+    prefixes: &'static [&'static str],
     guest_repo: &str,
     cancel: &AtomicBool,
 ) -> Result<Vec<(String, String)>, CrossingError> {
@@ -625,7 +695,7 @@ fn receive(
     if let Some(pipe) = &stderr {
         super::pipe::nonblocking(pipe, "crossing")?;
     }
-    let mut receiver = Receiver::new(bundle, width)?;
+    let mut receiver = Receiver::new(bundle, width, prefixes)?;
     let mut failed = None;
     let mut errors = Vec::new();
     let mut exited = None;
