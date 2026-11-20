@@ -197,9 +197,11 @@ impl TestEnv {
             cache: suite_cache().to_path_buf(),
             keep: Arc::default(),
         };
-        fs::create_dir_all(&roots.config).unwrap();
-        fs::create_dir_all(&roots.state).unwrap();
+        // A new directory, so cleanup never adopts an older run's state.
+        fs::create_dir(&root).unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
         let env = TestEnv { root, roots };
+        fs::create_dir(&env.roots.config).unwrap();
+        fs::create_dir(&env.roots.state).unwrap();
         // Spend this root's daily pass now (see MAINTENANCE).
         let _hold = hold_maintenance();
         let listed = run(env.command().args(["disk", "list", "--json"]), COMMAND);
@@ -211,6 +213,11 @@ impl TestEnv {
     /// here too.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The `XDG_STATE_HOME` this test's commands use.
+    pub fn state_home(&self) -> &Path {
+        &self.roots.state
     }
 
     /// `pinfold` with this test's roots and no inherited `PINFOLD_*`.
@@ -318,14 +325,18 @@ fn remove_disks(roots: &Roots) -> Result<(), String> {
     if listed.code != 0 {
         return Err(format!("disk list: {listed:?}"));
     }
+    let mut failed = Vec::new();
     for disk in json_lines(&listed.stdout) {
         let name = disk["name"].as_str().unwrap_or_default();
         let removed = command(&["rm", name, "--json"]);
         if removed.code != 0 {
-            return Err(format!("disk rm {name}: {removed:?}"));
+            failed.push(format!("disk rm {name}: {removed:?}"));
         }
     }
-    Ok(())
+    match failed.is_empty() {
+        true => Ok(()),
+        false => Err(failed.join("; ")),
+    }
 }
 
 /// Run `work` on its own thread, so a panic or a deadline in it never
@@ -476,20 +487,41 @@ impl BoxUp {
         &self.ready
     }
 
-    /// SIGKILL the owner and reap it. On Apple the guest outlives it.
+    /// SIGKILL the owner and reap it. On Apple the guest outlives it. On
+    /// Linux the VM ends with its owner: every host process below the
+    /// owner, the VMM among them, is gone before this returns.
     pub fn kill_owner(mut self) -> Leftover {
         let mut child = self.child.take().expect("a running owner");
-        let owner = child.id();
+        let leftover = Leftover {
+            name: self.name.clone(),
+            run_id: self.ready["run_id"].as_str().expect("run_id").to_string(),
+            owner: child.id(),
+            roots: self.roots.clone(),
+        };
+        #[cfg(target_os = "linux")]
+        let below = descendants(child.id());
+        #[cfg(target_os = "linux")]
+        assert!(!below.is_empty(), "box up {} has no VMM", self.name);
         child.kill().expect("SIGKILL box up");
         self.child = Some(child);
         let status = self.reap(COMMAND);
         assert_eq!(status.map(exit_code), Some(128 + 9), "box up after SIGKILL");
-        Leftover {
-            name: self.name.clone(),
-            run_id: self.ready["run_id"].as_str().expect("run_id").to_string(),
-            owner,
-            roots: self.roots.clone(),
+        #[cfg(target_os = "linux")]
+        {
+            let deadline = Instant::now() + COMMAND;
+            while below
+                .iter()
+                .any(|(pid, _)| Path::new(&format!("/proc/{pid}")).exists())
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "processes below box up {} outlived it: {below:?}",
+                    self.name
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
         }
+        leftover
     }
 
     fn teardown(&mut self) {
@@ -523,6 +555,35 @@ impl BoxUp {
             None => self.fail("box up was not reaped within 30 s"),
         }
     }
+}
+
+/// Every live host process below `pid`, with its command name, from /proc.
+#[cfg(target_os = "linux")]
+fn descendants(pid: u32) -> Vec<(u32, String)> {
+    let mut parents = Vec::new();
+    for entry in fs::read_dir("/proc").expect("read /proc").flatten() {
+        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // `PID (COMM) STATE PPID …`; COMM may hold spaces and parentheses.
+        let (Some((head, tail)), Some(open)) = (stat.rsplit_once(')'), stat.find('(')) else {
+            continue;
+        };
+        let child = stat[..open].trim().parse::<u32>();
+        let parent = tail.split_whitespace().nth(1).map(str::parse::<u32>);
+        if let (Ok(child), Some(Ok(parent))) = (child, parent) {
+            parents.push((child, parent, head[open + 1..].to_string()));
+        }
+    }
+    let mut found: Vec<(u32, String)> = Vec::new();
+    let mut frontier = vec![pid];
+    while let Some(parent) = frontier.pop() {
+        for (child, _, name) in parents.iter().filter(|(_, p, _)| *p == parent) {
+            found.push((*child, name.clone()));
+            frontier.push(*child);
+        }
+    }
+    found
 }
 
 /// A box whose owner a test killed. Dropping it removes the box by name

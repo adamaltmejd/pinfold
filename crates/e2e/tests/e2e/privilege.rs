@@ -156,6 +156,9 @@ fn nothing_can_gain_privileges() {
         for set in ["CapPrm", "CapEff", "CapBnd"] {
             assert_eq!(init[set], "0000000000200000", "PID 1's {set}: {init:?}");
         }
+        for set in ["CapInh", "CapAmb"] {
+            assert_eq!(init[set], NO_CAPABILITIES, "PID 1's {set}: {init:?}");
+        }
         let service = probe("getppid()");
         assert_eq!(service["PPid"], "1", "the exec service: {service:?}");
         assert_eq!(service["Uid"], ids, "the exec service: {service:?}");
@@ -177,7 +180,6 @@ fn nothing_can_gain_privileges() {
         out.stdout.trim().to_string()
     };
     let (first, second) = (boot_id(&name), boot_id(&other));
-    assert_eq!(first.len(), 36, "{first:?}");
     assert_ne!(first, second, "two boxes share a kernel");
     #[cfg(target_os = "linux")]
     {

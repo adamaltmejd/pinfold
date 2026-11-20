@@ -46,13 +46,25 @@ fn losing_the_owner_fails_closed() {
         "before the kill: {control:?}"
     );
 
+    // Control: before the kill the other root sees the owner alive.
+    let run_id = up.ready()["run_id"].as_str().expect("run_id").to_string();
+    let owner = up.ready()["owner"].clone();
+    let listed = other.listed(&run_id);
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(
+        (&listed[0]["owner"], &listed[0]["owner_alive"]),
+        (&owner, &json!(true)),
+        "{}",
+        listed[0]
+    );
+
     let hold = hold_maintenance();
     let leftover = up.kill_owner();
 
     // On Apple the guest survives its owner. A script still runs in it,
     // but the proxy is gone: the CONNECT gets no answer. The guest's relay
     // may accept the connection (curl 56) or refuse it (7); a timeout is
-    // not a pass. On Linux the VM ends with its owner (guarantee 43).
+    // not a pass. On Linux the VM ended with its owner (`kill_owner`).
     #[cfg(target_os = "macos")]
     {
         let orphan = request();
@@ -95,12 +107,12 @@ fn losing_the_owner_fails_closed() {
     #[cfg(target_os = "macos")]
     assert!(!apple_lists(&name), "the runtime still lists {name}");
     assert!(other.listed(leftover.run_id()).is_empty());
-    let run_id = leftover.run_id().to_string();
     drop(leftover);
 
     // The name is reusable.
     let again = env.up(&spec);
-    assert_ne!(again.ready()["run_id"], json!(run_id));
+    let again_id = again.ready()["run_id"].as_str().expect("run_id");
+    assert_ne!(again_id, run_id);
     drop(again);
 
     project_client_exits_125(&env);
