@@ -1222,6 +1222,9 @@ with `build` and caller images with `image build`. The old Podman store,
 old derived-root cache and managed agent disks are left untouched.
 
 Built-in images use `debian:trixie-slim` and strip setuid/setgid bits.
+As a convenience, `default` names uid 501 `pinfold` and uid 1000 `pi`
+where its base image leaves those uids free, and its default interactive
+Bash prompt is `pinfold:\w\$ `.
 
 | Profile | Tools |
 |---|---|
