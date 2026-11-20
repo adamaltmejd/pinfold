@@ -37,15 +37,15 @@ Numbers are kept; gaps are cut rows.
 
 | # | Fate |
 |---|---|
-| 1 | Kept. Dropped the `/proc/config.gz` check (how the kernel was built). |
+| 1 | Kept. Dropped the `/proc/config.gz` check (how the kernel was built). Added the Linux check that without `egress` CID 2 port 3128 is reset too. |
 | 2 | Shrunk. Absorbed 4's routing. Dropped ambiguous framing, the raw POST, CONNECT to a route and `ready` naming the log. |
 | 4 | Merged: routing into 2, audit-log stop into 38. |
-| 5 | Shrunk to the fork+exec grandchild, setuid, read-only root and kernel check. |
+| 5 | Shrunk to the fork+exec grandchild (`unshare -U` fails with `ENOSPC`), the setuid inventory of the built-in `default` image and the read-only root. The kernel check is two boxes' distinct `boot_id`, since a differing `uname -r` does not prove a separate kernel. |
 | 6 | Secret part merged into 26; the rest is prose (Process interface, Always applied). |
-| 8 | Shrunk to SIGKILL of a detached owner, client 125 and prune. |
+| 8 | Shrunk to SIGKILL of `box up` and prune, plus a detached owner's client exiting 125. On Apple, `box exec` shows the request fails inside the surviving guest, so the failure is the proxy being gone, not a dead exec. |
 | 9 | Cut. Lifecycle contract stays in Process interface prose. |
-| 10 | Shrunk to hostile fetch under force and prune, planted hooks, push to `host/*` with tags, fresh disk and first push (from 13). Parser edges, quarantine races, promisor and wording dropped. |
-| 11 | Shrunk to the writable race, `disk-unclean` after owner death and `disk rm` in use. |
+| 10 | Shrunk to two fetch steps (a listing naming a host-only commit fails; a valid tag colliding with a host tag leaves host tags in place under force and prune), planted hooks, a `push.followTags` push to `host/*`, fresh disk and first push (from 13). The statement covers only the host's own branches and tags, as the threat model does. Parser edges, quarantine races, promisor and wording dropped. One test with several steps. |
+| 11 | Shrunk to the writable race, `disk-in-use` then `disk-unclean` after owner death (the dead claim pins the disk until `box prune` retires it, per `core/disk.rs`), and `disk rm` in use. |
 | 13 | Protected paths into 48; disk first start and first push into 10; the rest is prose. |
 | 15 | Shrunk to one `clean --unused 0s` beside a kept live project. |
 | 17 | Cut. Validation stays in Process interface prose. |
@@ -53,19 +53,19 @@ Numbers are kept; gaps are cut rows.
 | 20 | Cut. `stat` and OOM scoring stay in prose. |
 | 21 | Merged into 26. |
 | 23 | Managed-build identity into 50; caller-build detail is Images prose. Its apt sentence, which contradicted Images, is gone. |
-| 26 | Shrunk. Absorbed 21 and the secret parts of 6 and 39. One injecting route and Claude and Pi login routes at the fixture. Live Codex dropped. |
+| 26 | Shrunk. Absorbed 21 and the secret parts of 6 and 39. One injecting route (the box's own header value replaced) and Claude and Pi login routes (duplicates and nominated fields removed, `?api_key=` refused) at a fixture that echoes nothing. Control includes the `from` and `PINFOLD_ENV_` values arriving. The statement keeps the threat model's reflecting-upstream exception. Live Codex dropped. |
 | 27 | Cut. `doctor` stays in Maintenance and CLI prose; its protected-path finding goes with 48. |
 | 28 | Cut. Updates prose unchanged. |
 | 34 | Cut. Blocked writes stay in Egress proxy Limits. `slow-response.yml` deleted. |
 | 36 | Cut. Idle tunnels stay in Egress proxy Limits. `slow-proxy.yml` deleted. |
-| 38 | Shrunk to the audit-log cap stop. Absorbed 4's audit stop, 42 and 39's launch record. |
+| 38 | Shrunk to the audit-log cap stop. Absorbed 4's audit stop, 42's cap stop and 39's launch record. Run-record retention (14-day age, the 128 MiB inactive quota, a live run left untouched) now has no test, by the owner's choice of a short table; it stays in Maintenance prose. |
 | 39 | Split: secrets into 26, launch record into 38, command contract and fixed policy into 47. TTY detail and the "no harness version field" absence check dropped. |
 | 42 | Merged into 38. |
 | 43 | Kept, without the fds check (moved to prose). |
-| 44 | Shrunk to one build with deny and allow. |
-| 45 | Shrunk to symlink, mode and existing destination. |
-| 47 | Shrunk. Absorbed 39's command contract and fixed policy and 18's no-config refusal. |
-| 48 | Shrunk. Absorbed 13's protected paths. The hard-link scenario, which asserted a listed non-protection, is gone. |
+| 44 | Shrunk to one build with deny and allow, plus a direct connection from RUN that bypasses the proxy and fails (no NIC), which tells the build VM from a host build behind the proxy. |
+| 45 | Shrunk to symlink, executability (export normalizes modes to 0644 or 0755) and existing destination. |
+| 47 | Shrunk. Absorbed 39's command contract and fixed policy and 18's no-config refusal. One test with several steps. |
+| 48 | Shrunk. Absorbed 13's protected paths, as two separate refusals (configuration directory, profile directory) so neither masks the other. The statement names the hard-link exception. The hard-link scenario, which asserted a listed non-protection, is gone. |
 | 49 | Cut. Rex prose in the pi layer unchanged. |
 | 50 | Shrunk to a three-link chain. Absorbed 23's identity. The "`full` is an unknown profile" absence check dropped. |
 
@@ -88,6 +88,26 @@ These behaviours were stated only in a dropped scenario:
 - pi layer, Lifetime: "Bootstrap death or a final departure racing a join,
   keep or stop never admits two writable generations." (from 47)
 
+A review of the first commit found more behaviour stated only in dropped
+scenarios. Each was checked against the code or a dated record:
+
+- Process interface, `env`: a literal `HOME` appears in "Apple's container
+  configuration", and "a refusal of such a mount may name it." (from 6)
+- Configuration, `config --json`: "On Linux it reads only the local
+  catalog, so it needs neither KVM nor a runtime on PATH, and an absent
+  catalog reports false." (from 18; `catalog::resolve`)
+- Process interface, `stat`: "A workload the guest kernel OOM-kills exits
+  137, and `oom_kills` rises. On Linux the guest's `MemTotal` is within
+  64 MiB below `memory`." (from 20)
+- Process supervision, OOM score: "-1000 and legacy -17 fail with `EACCES`
+  and leave the score unchanged, while legacy 15 succeeds." (from 20; the
+  exec service sets the -999 floor)
+- Process supervision, TTY: "Later host resizes reach the guest terminal
+  while the command runs." (from 39)
+- pi layer, Rex: "Concurrent starts share one server exec and one socket."
+  and owner death ends "every dial exec". (from 49; observed in
+  2026-11-19-rex-relay.md)
+
 ## Workflows and policy
 
 - Deleted `.github/workflows/slow-response.yml` (row 34's gate) and
@@ -98,11 +118,17 @@ These behaviours were stated only in a dropped scenario:
   test in the release workflow, so a pushed tag now publishes. The nightly
   pin release still runs the suite and fails without it.
 - AGENTS.md Tests: guarantee 36's namespace sentences and the Codex live
-  login are gone from the public-endpoints rule.
-- `scripts/slow-proxy.sh`, `scripts/connect_tunnels_share_activity.py` and
-  `scripts/connect-tls.Containerfile` served only row 36 and are left in
-  place for a separate decision.
+  login are gone from the public-endpoints rule. `example.com` is denied
+  by default and allowed only as guarantee 44's control. A positive
+  control runs in the same box, or in the same project when the refusal
+  comes before any box exists.
+- Deleted `scripts/slow-proxy.sh`, `scripts/connect_tunnels_share_activity.py`
+  and `scripts/connect-tls.Containerfile`. They served only row 36, and
+  nothing else used them.
+- `bump-pins.yml`: the Mac suite step is still named "Full Mac end-to-end
+  suite, including live login". Renaming it was refused at push: the
+  session's GitHub token lacks the `workflow` scope for that file.
 
 ## Size
 
-ARCHITECTURE.md: 2270 lines before, 2254 after.
+ARCHITECTURE.md: 2270 lines before, 2264 after.

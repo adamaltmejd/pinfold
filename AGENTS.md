@@ -90,7 +90,8 @@ The rules below govern the rewrite.
   to match; rewriting is the exception.
 - **Tests must be able to fail:**
   1. Positive controls. Every "refused" test shows the allowed version
-     succeeding in the same box.
+     succeeding in the same box, or in the same project when the refusal
+     comes before any box exists.
   2. Assert the reason, not only the failure: a proxy 403 plus the log entry
      naming why. A timeout or DNS error is not a pass.
   3. Names its sabotage: the change to the binary that makes it fail, in
@@ -100,7 +101,7 @@ The rules below govern the rewrite.
   retries: a flaky test is a bug to fix or delete. Fixtures run on the host
   (an HTTP service behind a route, a fake OpenAI-compatible model). The only
   public endpoints are `api.github.com` (allowed) and `example.com`
-  (denied).
+  (denied by default, and allowed only as guarantee 44's control).
 - **Budget:** the suite runs in under 5 minutes in CI.
 
 ## Checks
