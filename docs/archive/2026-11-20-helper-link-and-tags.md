@@ -82,23 +82,36 @@ only.
   Each lists nothing, and the push's own crossing then reports the
   failure if it persists. Only a signal (`Interrupted`) still stops the
   helper at `list for-push`.
-- Git now plans the push from the box's state, which has these effects:
-  - unchanged refs print `Everything up-to-date`;
-  - `push.followTags` sends only tags the box lacks, so a box tag that
-    differs is skipped silently;
-  - Git itself rejects an explicit changed tag (`already exists`)
-    unless forced, while other refs of that push land, per Git's own
-    rule;
+- Final filter (round 3): after validation, pinfold keeps an entry only
+  if its id is the id of a host ref under `refs/heads/*` or `refs/tags/*`
+  (a tag ref's own id). It reads those ids from one `git for-each-ref`.
+  - pinfold looks up no box-supplied id.
+  - Every id Git then sees is one a host ref points at, so host Git has
+    nothing to fetch, in a partial clone or otherwise, on any Git
+    version.
+  - This replaced round 2's `cat-file --batch-check` with
+    `GIT_NO_LAZY_FETCH=1` and its promisor detection. Review found that
+    detection leaky on Git 2.43: `remote.*.partialclonefilter` alone
+    registers a promisor, and `extensions.partialClone = false` names a
+    remote.
+  - The filter went from 44 lines (the call plus a 43-line function) to
+    11 inline.
+- Git plans the push from what remains, with these effects:
+  - an unchanged branch or tag prints `Everything up-to-date`;
+  - a box `host/NAME` at an older host commit that is no longer a ref
+    tip looks absent, so Git prints `* [new branch]` instead of a range
+    and pushes;
+  - a box tag at an object no host ref points at looks absent, so
+    followTags sends the host's tag of that name, and the box's
+    exit-65 check fails the whole push unless forced;
+  - a box tag of that name at another host tip is listed, so followTags
+    skips it, and Git rejects an explicit push of it (`already exists`)
+    unless forced;
   - host Git may reject a branch push it can see is not a fast-forward
-    of the box's `host/NAME` (`non-fast-forward`). It does not when the
-    box's tip is an object the host lacks: the remote-helper transport
-    does not enforce Git's fetch-first rule (a review finding, not
-    reproduced here). pinfold forces every branch refspec either way.
-- The box script's exit-65 check still covers a push Git attempts
-  without knowing about the tag: an empty listing, or a tag created
-  after the listing.
-- Object ids the host lacks are harmless: Git only compares them and
-  never fetches them during a push.
+    of the box's `host/NAME` (`non-fast-forward`). pinfold forces every
+    branch refspec either way.
+- The box script's exit-65 check also covers a tag created after the
+  listing, and an empty listing.
 
 ## Commands
 
@@ -393,19 +406,11 @@ commit.
     --stdin`.
   - With the fix, the same push ran no upload-pack (the log stayed at 1,
     the clone).
-- **The fix.** After validation, the helper keeps only ids the host
-  repository has, in one `git cat-file --batch-check` with
-  `GIT_NO_LAZY_FETCH=1`. Git's release notes place that variable and
-  `--no-lazy-fetch` in 2.45.0. Ubuntu 24.04's git 2.43 would ignore it,
-  so a repository with any promisor remote lists nothing:
-  `extensions.partialClone` set, or a `remote.*.promisor` not `false`.
-  - A partial clone therefore pushes as before the listing (every tag
-    resent, not quiet).
-  - After the promisor settings were removed from the same project, two
-    followTags pushes and `git push box --tags` each printed `Everything
-    up-to-date`. The box-only tags were dropped from the listing.
-  - I verified the variable only on git 2.56.1 (the run above), with no
-    2.43 or 2.47 host.
+- **Round 2's fix, since replaced.** Round 2 kept ids found by `cat-file
+  --batch-check` with `GIT_NO_LAZY_FETCH=1`. A repository with a
+  promisor remote got an empty listing, because Git's release notes put
+  the variable in 2.45.0. Round 3 replaced it; see Design and the
+  section below.
 - **No disk writes from the listing.** The receiver's bundle file is
   now optional. The for-push listing passes none, so it creates no
   bundle file and fails on the first byte after the empty line. Fetch
@@ -416,6 +421,42 @@ commit.
   directory named `bin<U+0001>x`, and doctor ran with no helper on PATH.
   It printed `- Git remote: no git-remote-pinfold on PATH; link
   git-remote-pinfold to pinfold in a directory on PATH`, with no command.
+
+### Review fixes, round 3
+
+These ran through a build of the round-3 commit.
+
+- **Listing kept to host ref tips.** In a full clone with `main`, `v1`
+  and `v2`:
+  - the first followTags push printed `* [new branch] main -> main`,
+    `* [new tag] v1 -> v1` and `* [new tag] v2 -> v2`;
+  - the second and third each printed `Everything up-to-date`, exit 0.
+- After a new host commit, the push printed `* [new branch] main ->
+  main`, exit 0, not a range. The box's `host/main` sat at the old
+  commit, which is no longer a host ref tip, so it was dropped from the
+  listing. The next push printed `Everything up-to-date`.
+- The box re-tagged `v1` at a box-only commit (`8441d5d`), and the host
+  committed again. A followTags push exited 1. It printed `pinfold: a
+  pushed tag already exists in the box with a different target; nothing
+  was pushed (use --force to replace box tags)`, then `! [remote
+  rejected]` with that reason for `main` and `v1`. The box's
+  `host/main` and `v1` were unchanged.
+- `git push --force --follow-tags box main` exited 0 with `* [new
+  branch] main -> main` and `* [new tag] v1 -> v1`. The box then held
+  the host's `main` (`f9e3947`) and `v1` (`2c072a0`). The next
+  followTags push printed `Everything up-to-date`.
+- **Partial clone**, set up as in round 2 (upload-pack wrapper, log at 1
+  after the clone):
+  - after the first push, the box made a box-only commit `b93535c…`,
+    tagged it (`boxcommit`, annotated `boxonly`) and moved its
+    `host/main` there;
+  - the next followTags push printed `* [new branch] main -> main`, exit
+    0, and the one after printed `Everything up-to-date`;
+  - the log stayed at 1, so no upload-pack ran.
+- **Non-UTF-8 install path.** The remedy builds a command only from
+  `Path::to_str`; otherwise it prints the generic sentence. This was
+  checked by code reading only, because the macOS filesystem refused
+  `mkdir` of a name holding byte 0xFF.
 
 ### Checks
 
@@ -430,7 +471,7 @@ commit.
 ### Cleanup
 
 - Every box started was stopped.
-- Twenty-one disks were removed by name: `pi-repo-8800e3f439bd-{home,project}` (seven times),
+- Twenty-five disks were removed by name: `pi-repo-8800e3f439bd-{home,project}` (seven times), `pi-full-81c7a40f3262-{home,project}`, `pi-partial-96d3ee279c8a-{home,project}`,
   `pi-r-{file,link,ro}-…-{home,project}` and
   `pi-r-share-7e8205bba800-home`.
 - `R` was removed.

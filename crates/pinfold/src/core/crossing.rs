@@ -237,53 +237,23 @@ pub(crate) fn pushed_cancellable(
             return Err(malformed_listing());
         }
     }
-    held_here(repo, refs, cancel)
-}
-
-/// REFS less those whose object REPO lacks, looked up without lazy
-/// fetching: Git would otherwise ask a partial clone's promisor remote for
-/// ids the box chose. Git before 2.45 ignores `GIT_NO_LAZY_FETCH`, so a
-/// repository with a promisor remote keeps none.
-fn held_here(repo: &Path, refs: Refs, cancel: &AtomicBool) -> Result<Refs, CrossingError> {
-    let promisors = git(
+    // Keep only ids a host branch or tag points at, so pinfold looks up no
+    // box-chosen id and host Git has nothing to fetch for any it sees.
+    let tips = succeeded(git(
         repo,
         &[
-            "config",
-            "--get-regexp",
-            r"^(extensions\.partialclone|remote\..*\.promisor)$",
+            "for-each-ref",
+            "--format=%(objectname)",
+            "refs/heads/",
+            "refs/tags/",
         ],
         cancel,
-    )?;
-    if String::from_utf8_lossy(&promisors.stdout)
-        .lines()
-        .any(|line| !line.ends_with(" false"))
-    {
-        return Ok(Refs::new());
-    }
-    let oids: String = refs.values().map(|oid| format!("{oid}\n")).collect();
-    let no_lazy: [(&str, &OsStr); 1] = [("GIT_NO_LAZY_FETCH", OsStr::new("1"))];
-    let types = succeeded(git_input(
-        repo,
-        &["cat-file", "--batch-check=%(objecttype)"],
-        oids.as_bytes(),
-        &no_lazy,
-        cancel,
     )?)?;
-    let types = String::from_utf8_lossy(&types.stdout);
-    let types: Vec<&str> = types.lines().collect();
-    if types.len() != refs.len() {
-        return Err(CrossingError::Failed(
-            "git on the host misread the box's listing".into(),
-        ));
-    }
-    Ok(refs
-        .into_iter()
-        .zip(types)
-        .filter(|(_, kind)| !kind.ends_with(" missing"))
-        .map(|(entry, _)| entry)
-        .collect())
+    let tips = String::from_utf8_lossy(&tips.stdout);
+    let tips: HashSet<&str> = tips.lines().collect();
+    refs.retain(|_, oid| tips.contains(oid.as_str()));
+    Ok(refs)
 }
-
 /// REPO's object id length in hex, which every id the box sends has.
 fn object_width(repo: &Path, cancel: &AtomicBool) -> Result<usize, CrossingError> {
     let format = succeeded(git(repo, &["rev-parse", "--show-object-format"], cancel)?)?;

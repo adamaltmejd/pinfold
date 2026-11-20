@@ -263,8 +263,8 @@ pub(crate) fn link_remedy(exe: &Path) -> String {
             .unwrap_or_else(|| terminal_text(&path.to_string_lossy()))
     };
     if fs::symlink_metadata(&link).is_err() {
-        // A path no shell word can carry gets no command to paste.
-        let shell = |path: &Path| crate::pi::remote::shell_word(&path.to_string_lossy());
+        // A path no shell word can carry, or not UTF-8, gets no command.
+        let shell = |path: &Path| path.to_str().and_then(crate::pi::remote::shell_word);
         match (shell(exe), shell(&link)) {
             (Some(exe), Some(link)) => format!("run `ln -s {exe} {link}`"),
             _ => format!("link {HELPER} to pinfold in a directory on PATH"),
