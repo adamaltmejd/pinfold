@@ -106,10 +106,13 @@ pinfold -- pi
 Use `pinfold -- sh` for a shell. Anything after `--` is the command and
 its arguments. Bare `pinfold --` exits with a usage error.
 
-On the first interactive run, choose the profile and confirm the project
-folder. If your shell sets `PINFOLD_PROFILE`, that selects the profile.
-Unset it to choose a different one. On macOS the box can edit files in
-that folder, including its Git metadata. Linux uses a private project disk. If the selected
+On the first interactive run, of `pinfold -- CMD` or `pinfold start`,
+choose the profile and confirm the project folder. If your shell sets
+`PINFOLD_PROFILE`, that selects the profile. Unset it to choose a
+different one. On macOS you also choose how the box sees the folder:
+share it (the default), so the box edits it and its Git metadata, or use
+an isolated project disk with its own files; in a Git project, `git fetch
+box` and `git push box` move branches. Linux always uses a project disk. If the selected
 managed image is missing, Pinfold offers to build it and then starts your
 command. A build needs network access. An explicit `image` must already
 be available locally. Rebuild with `pinfold build` if a later launch
@@ -117,7 +120,7 @@ reports `image-outdated`.
 
 Run `pinfold config` to see which folder, profile and image the project uses.
 Run `pinfold` to see the box status and project settings. Before setup it
-previews the initial profile, file sharing and image. Run `pinfold doctor`
+previews the profile and file mount the first run asks to confirm. Run `pinfold doctor`
 to check for problems or `pinfold --help` to list the commands.
 
 For scripts, prepare the project first with `pinfold config edit` and

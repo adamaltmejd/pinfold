@@ -20,23 +20,44 @@ use crate::formatting::terminal_text;
 use crate::pi::launch::utf8;
 
 pub fn print_intro() {
-    if let Err(error) = project_intro() {
-        println!(
-            "Project details unavailable. {}",
-            terminal_text(&error.to_string())
-        );
+    match project_intro() {
+        Ok(Some(branches)) => {
+            println!("\nRun a command    pinfold -- CMD\nKeep it running  pinfold start");
+            if branches {
+                println!("Move branches    git fetch box / git push box");
+            }
+            println!("Change settings  pinfold config edit\nAll commands     pinfold --help");
+        }
+        Ok(None) => println!(
+            "\nSet up and run     pinfold -- CMD     (e.g. pinfold -- claude)\nChange settings    pinfold config edit\nAll commands       pinfold --help"
+        ),
+        Err(error) => {
+            println!(
+                "Project details unavailable. {}",
+                terminal_text(&error.to_string())
+            );
+            println!("\nRun a command    pinfold -- CMD\nAll commands     pinfold --help");
+        }
     }
-    println!("\nRun a command    pinfold -- CMD\nAll commands     pinfold --help");
 }
 
-fn project_intro() -> io::Result<()> {
+/// `None` without a configuration; otherwise whether it is a Git disk
+/// project, whose branches cross by `git fetch box` and `git push box`.
+fn project_intro() -> io::Result<Option<bool>> {
     use crate::pi::session::{ProjectStatus, project_status};
 
     let context = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
     let root = &context.root;
     println!("Project   {}", terminal_text(&root.to_string_lossy()));
+    let loaded = Config::load(root);
+    let configured = !loaded.as_ref().is_err_and(|error| {
+        error
+            .get_ref()
+            .is_some_and(|e| e.is::<crate::config::NoConfig>())
+    });
     let status = project_status(root);
     match &status {
+        Ok(ProjectStatus::Stopped) if !configured => println!("Box       not set up"),
         Ok(ProjectStatus::Stopped) => println!("Box       stopped"),
         Ok(ProjectStatus::Starting) => println!("Box       starting"),
         Ok(ProjectStatus::Stopping) => println!("Box       stopping"),
@@ -48,7 +69,7 @@ fn project_intro() -> io::Result<()> {
                 None => println!("Box       running"),
             }
             if let Some(mount) = mount {
-                println!("Box files {}", project_files(*mount));
+                println!("Box files {}", project_files(*mount, root));
             }
         }
         Ok(ProjectStatus::Unavailable) | Err(_) => println!("Box       status unavailable"),
@@ -56,55 +77,54 @@ fn project_intro() -> io::Result<()> {
     if matches!(status, Ok(ProjectStatus::Running { .. })) {
         println!("\nThe next launch uses these settings.");
     }
-    let (config, preview) = match Config::load(root) {
-        Ok(config) => (config, false),
-        Err(error)
-            if error
-                .get_ref()
-                .is_some_and(|e| e.is::<crate::config::NoConfig>()) =>
-        {
-            println!("\nNo project configuration yet. These are the proposed settings.");
-            (Config::first_run_preview(root)?, true)
-        }
-        Err(error) => return Err(error),
+    let config = if configured {
+        loaded?
+    } else if cfg!(target_os = "macos") {
+        println!("\nThe first run asks you to confirm, and lets you pick a disk instead:");
+        Config::first_run_preview(root)?
+    } else {
+        println!("\nThe first run asks you to confirm:");
+        Config::first_run_preview(root)?
     };
-    check_report_mount(&context, config.mount)?;
+    context.check_metadata(config.mount)?;
     config.check_host_paths(root)?;
     // A preview has no saved profile for PINFOLD_PROFILE to override.
-    let profile = if preview {
-        terminal_text(&config.profile.name)
-    } else {
+    let profile = if configured {
         profile_description(&config)
+    } else {
+        terminal_text(&config.profile.name)
     };
     println!("Profile   {profile}");
-    println!("Files     {}", project_files(config.mount));
-    let image = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(root));
-    println!("Image     {}", terminal_text(&image));
-    if preview {
-        if std::env::var_os("PINFOLD_PROFILE").is_some() {
-            println!("\nIn a terminal, confirm these settings to save them.");
-        } else {
-            println!("\nIn a terminal, choose a profile and confirm the settings to save them.");
+    println!("Files     {}", project_files(config.mount, root));
+    let reference = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(root));
+    // Only a definite absence earns a line; an unknown answer stays quiet.
+    if image_built(&image::service().resolve_image(&reference)).0 == Some(false) {
+        match (&config.image, configured) {
+            (Some(image), _) => println!(
+                "Image     {} is not available locally. Make it available before running.",
+                terminal_text(image)
+            ),
+            (None, false) => println!("Image     not built yet. The first run offers to build it."),
+            (None, true) => println!("Image     not built yet. Build it with `pinfold build`."),
         }
-        if config.image.is_some() {
-            println!("This profile uses an explicit image. It must already be available locally.");
-        } else {
-            println!("Pinfold will offer to build the image if it is missing.");
-        }
-    } else {
+    }
+    if configured {
         println!(
             "Settings  {}",
             terminal_text(&config.path.to_string_lossy())
         );
     }
-    Ok(())
+    Ok(configured
+        .then_some(config.mount == crate::config::ProjectMount::Disk && context.repository))
 }
 
-fn project_files(mount: crate::config::ProjectMount) -> &'static str {
+/// The project mount as the intro, a running box and `pinfold config` state it.
+fn project_files(mount: crate::config::ProjectMount, root: &Path) -> String {
+    let root = terminal_text(&root.to_string_lossy());
     match mount {
-        crate::config::ProjectMount::Share => "Shared with the box. Edits appear on your Mac.",
+        crate::config::ProjectMount::Share => format!("Shared: the box edits {root}"),
         crate::config::ProjectMount::Disk => {
-            "Stored on a private project disk. Use git fetch box and git push box for branches."
+            format!("Isolated disk: the box has its own files, separate from {root}.")
         }
     }
 }
@@ -1233,18 +1253,8 @@ pub fn apparmor_profile(args: &[String]) -> io::Result<i32> {
 fn project_config(cwd: &Path) -> io::Result<(PathBuf, Config)> {
     let context = crate::pi::context::Context::discover(cwd)?;
     let config = Config::load(&context.root)?;
-    check_report_mount(&context, config.mount)?;
+    context.check_metadata(config.mount)?;
     Ok((context.root, config))
-}
-
-fn check_report_mount(
-    context: &crate::pi::context::Context,
-    mount: crate::config::ProjectMount,
-) -> io::Result<()> {
-    match mount {
-        crate::config::ProjectMount::Share => context.verify(mount),
-        crate::config::ProjectMount::Disk => context.check_worktree(mount),
-    }
 }
 
 /// Read-only: do not materialize profiles or record project state.
@@ -1282,7 +1292,7 @@ pub fn config(args: &[String]) -> io::Result<i32> {
         return Ok(0);
     }
     println!("Project   {}", terminal_text(&root.to_string_lossy()));
-    println!("Files     {}", project_files(config.mount));
+    println!("Files     {}", project_files(config.mount, &root));
     println!("Profile   {}", profile_description(&config));
     let availability = match report["image_built"].as_bool() {
         Some(true) => "available locally",
@@ -1343,6 +1353,21 @@ fn config_edit() -> io::Result<i32> {
     Ok(code)
 }
 
+/// Whether an image lookup found the image, and why when it cannot tell.
+fn image_built(
+    resolved: &io::Result<Result<image::ImageInfo, String>>,
+) -> (Option<bool>, Option<String>) {
+    match resolved {
+        Ok(Ok(_)) => (Some(true), None),
+        #[cfg(target_os = "macos")]
+        Ok(Err(message)) if !message.starts_with("Error: image not found: ") => {
+            (None, Some(message.clone()))
+        }
+        Ok(Err(_)) => (Some(false), None),
+        Err(error) => (None, Some(error.to_string())),
+    }
+}
+
 /// `resolved` is the lookup of the config's image, or `None` when it was skipped.
 fn config_report(
     root: &Path,
@@ -1352,16 +1377,7 @@ fn config_report(
     let project = crate::pi::state::project_id(root);
     let [home_disk, project_disk] = crate::pi::state::disk_names(&project);
     let image = crate::pi::launch::resolve_image(config, &project);
-    let (image_built, image_error) = match resolved {
-        None => (None, None),
-        Some(Ok(Ok(_))) => (Some(true), None),
-        #[cfg(target_os = "macos")]
-        Some(Ok(Err(message))) if !message.starts_with("Error: image not found: ") => {
-            (None, Some(message.clone()))
-        }
-        Some(Ok(Err(_))) => (Some(false), None),
-        Some(Err(error)) => (None, Some(error.to_string())),
-    };
+    let (image_built, image_error) = resolved.map_or((None, None), image_built);
     Ok(serde_json::json!({
         "root": utf8(root, "project root")?,
         "config": utf8(&config.path, "configuration file")?,

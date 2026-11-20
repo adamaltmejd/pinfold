@@ -95,11 +95,12 @@ pub fn project_dir(root: &Path) -> io::Result<PathBuf> {
     Ok(dirs::config_dir()?.join("projects").join(project_id(root)))
 }
 
-/// `pinfold config edit`'s first step: the project's configuration file,
-/// written with the project mount when it is missing. The project is
-/// checked first, with the profile a run would select, so nothing is
-/// created inside it.
-pub fn create(root: &Path, selected: Option<&str>) -> io::Result<(PathBuf, bool)> {
+/// The project's configuration file, written when it is missing: by
+/// `pinfold config edit` with the platform's default mount, or by first-run
+/// setup with the chosen profile and mount. The project is checked first,
+/// with the profile a run would select, so nothing is created inside it.
+pub fn create(root: &Path, setup: Option<(&str, ProjectMount)>) -> io::Result<(PathBuf, bool)> {
+    let selected = setup.map(|(name, _)| name);
     let dir = project_dir(root)?;
     let path = dir.join("pinfold.toml");
     // A file that cannot be read or parsed selects no profile, and a
@@ -119,7 +120,7 @@ pub fn create(root: &Path, selected: Option<&str>) -> io::Result<(PathBuf, bool)
     check_paths_outside(
         root,
         profile.as_ref(),
-        selected.is_some() && ProjectMount::default_kind() == ProjectMount::Share,
+        setup.is_some_and(|(_, mount)| mount == ProjectMount::Share),
     )?;
     if read_optional(&path)?.is_some() {
         return Ok((path, false));
@@ -129,7 +130,9 @@ pub fn create(root: &Path, selected: Option<&str>) -> io::Result<(PathBuf, bool)
     // replaces one a concurrent edit created. `create_new` refuses a
     // planted staging symlink.
     let staging = dir.join(format!(".pinfold.toml.tmp-{}", std::process::id()));
-    let mut contents = ProjectMount::default_kind().declaration();
+    let mut contents = setup
+        .map_or(ProjectMount::default_kind(), |(_, mount)| mount)
+        .declaration();
     if let Some(name) = selected {
         // Profile::load accepts only ASCII names safe in a TOML string.
         contents.push_str(&format!("profile = \"{name}\"\n"));

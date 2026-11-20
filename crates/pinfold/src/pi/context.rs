@@ -134,11 +134,8 @@ impl Context {
 
     /// Launches must verify a discovered repository before creating state.
     pub fn verify(&self, mount: ProjectMount) -> io::Result<()> {
-        self.check_worktree(mount)?;
-        if mount == ProjectMount::Share {
-            return self.verify_share();
-        }
-        if !self.repository {
+        self.check_metadata(mount)?;
+        if mount == ProjectMount::Share || !self.repository {
             return Ok(());
         }
         let output = crossing::git_command(&self.root)
@@ -156,6 +153,15 @@ impl Context {
         Err(io::Error::other(
             "git-discovery: Git could not verify the project root",
         ))
+    }
+
+    /// `verify` without host Git: the worktree, and a share's Git metadata.
+    pub(crate) fn check_metadata(&self, mount: ProjectMount) -> io::Result<()> {
+        self.check_worktree(mount)?;
+        if mount == ProjectMount::Share {
+            return self.verify_share();
+        }
+        Ok(())
     }
 
     fn verify_share(&self) -> io::Result<()> {

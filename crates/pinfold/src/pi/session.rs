@@ -1099,11 +1099,14 @@ async fn confirm_setup(message: String, signals: &mut Signals) -> io::Result<boo
         }))
 }
 
+/// First-run setup for `-- CMD` (`command`) and `start` (`None`): the
+/// profile, then where both kinds exist, the project mount. `None` when
+/// the user declines or closes the terminal.
 async fn confirm_first_run(
     root: &Path,
-    command: &str,
+    command: Option<&str>,
     signals: &mut Signals,
-) -> io::Result<Option<String>> {
+) -> io::Result<Option<(String, ProjectMount)>> {
     let forced = crate::config::override_value("PINFOLD_PROFILE")?;
     let name = if let Some(name) = &forced {
         name.clone()
@@ -1133,27 +1136,52 @@ async fn confirm_first_run(
     } else {
         ""
     };
-    let path = terminal_text(&root.to_string_lossy());
-    let command = terminal_text(command);
-    let mount = match ProjectMount::default_kind() {
-        ProjectMount::Share => {
-            format!("The box can edit files in {path}, including its Git metadata.")
-        }
-        ProjectMount::Disk => format!(
-            "The box uses an isolated project disk for {path}. Host files stay separate from edits in the box."
-        ),
-    };
     forward_diagnostics(
         format!("Using {name} ({source}{selected_by}).").into_bytes(),
         signals,
     )
     .await?;
-    forward_diagnostics(mount.into_bytes(), signals).await?;
-    Ok(
-        confirm_setup(format!("Save these settings and run {command}?"), signals)
-            .await?
-            .then_some(name),
-    )
+    // Linux has only disks, so there is nothing to ask.
+    let mount = if cfg!(target_os = "macos") {
+        let Some(answer) = setup_answer(
+            "Files: share this folder with the box, or use an isolated disk? [share/disk] (share)"
+                .into(),
+            signals,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        match answer.to_ascii_lowercase().as_str() {
+            "" | "share" => ProjectMount::Share,
+            "disk" => ProjectMount::Disk,
+            _ => {
+                return Err(io::Error::other(format!(
+                    "unknown files choice \"{}\"; answer share or disk",
+                    terminal_text(&answer)
+                )));
+            }
+        }
+    } else {
+        ProjectMount::default_kind()
+    };
+    let path = terminal_text(&root.to_string_lossy());
+    let statement = match mount {
+        ProjectMount::Share => {
+            format!("The box can edit files in {path}, including its Git metadata.")
+        }
+        ProjectMount::Disk => {
+            format!("The box has its own files on an isolated disk, separate from {path}.")
+        }
+    };
+    forward_diagnostics(statement.into_bytes(), signals).await?;
+    let question = match command {
+        Some(command) => format!("Save these settings and run {}?", terminal_text(command)),
+        None => "Save these settings and start the box?".into(),
+    };
+    Ok(confirm_setup(question, signals)
+        .await?
+        .then_some((name, mount)))
 }
 
 fn missing_image(result: &io::Result<Option<Lease>>) -> Option<&launch::MissingManagedImage> {
@@ -1202,7 +1230,7 @@ async fn run_setup_build(cwd: &Path, signals: &mut Signals) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other(
-            "the image build failed; the project command did not start",
+            "the image build failed; the project box did not start",
         ))
     }
 }
@@ -1282,30 +1310,36 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             Ok(current)
         };
         // Prompts read lines; a noncanonical terminal is treated as redirected.
-        let interactive = args.is_some() && io::stdin().is_terminal()
+        let interactive = io::stdin().is_terminal()
             && io::stdout().is_terminal() && io::stderr().is_terminal()
             && nix::sys::termios::tcgetattr(io::stdin()).is_ok_and(|settings| {
                 settings.local_flags.contains(nix::sys::termios::LocalFlags::ICANON)
             });
         let mut admitted = admit(&root, &candidate, intent, &mut signals, &executable).await;
-        if let Some(command) = args.and_then(|args| args.first())
-            && interactive
+        let mut set_up = false;
+        if interactive
             && admitted.as_ref().err().and_then(io::Error::get_ref)
                 .is_some_and(|cause| cause.is::<crate::config::NoConfig>())
         {
             // Admission has released its locks. Validate the invoking worktree before
             // offering the share, then rediscover it after the user answers.
             discover()?;
-            let Some(profile) = confirm_first_run(&root, command, &mut signals).await? else {
+            let command = args.and_then(|args| args.first()).map(String::as_str);
+            let Some((profile, mount)) = confirm_first_run(&root, command, &mut signals).await? else {
                 return Ok(125);
             };
-            let candidate = Ok(discover()?);
-            if !crate::config::create(&root, Some(&profile))?.1 {
+            let current = discover()?;
+            // No host Git here: a live owner's box may write `.git`. Admission
+            // runs the disk's Git check and compares the owner after the save.
+            current.check_metadata(mount)?;
+            if !crate::config::create(&root, Some((&profile, mount)))?.1 {
                 return Err(io::Error::other("project configuration appeared during setup; run the command again"));
             }
-            admitted = admit(&root, &candidate, intent, &mut signals, &executable).await;
+            set_up = true;
+            admitted = admit(&root, &Ok(current), intent, &mut signals, &executable).await;
         }
-        if interactive && let Some(missing) = missing_image(&admitted) {
+        // `start` offers a build only right after its own setup (Configuration).
+        if interactive && (args.is_some() || set_up) && let Some(missing) = missing_image(&admitted) {
             discover()?.check_worktree(missing.mount)?;
             let message = format!("The project image {} is missing. Build it now?", missing.reference);
             if !confirm_setup(message, &mut signals).await? {
