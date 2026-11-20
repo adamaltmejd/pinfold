@@ -168,17 +168,23 @@ pub(crate) fn pinfold_url(root: &Path) -> String {
     url_word(&format!("pinfold::{}", root.to_string_lossy()))
 }
 
-/// URL as one POSIX shell word: unquoted when every character is plain,
-/// else single-quoted. A URL holding a control character cannot be printed
-/// as pasteable text, so the placeholder `pinfold::ROOT` stands in.
+/// URL as one shell word; the placeholder `pinfold::ROOT` stands in for
+/// one that cannot be.
 fn url_word(url: &str) -> String {
+    shell_word(url).unwrap_or_else(|| "pinfold::ROOT".to_string())
+}
+
+/// TEXT as one POSIX shell word: unquoted when every character is plain,
+/// else single-quoted. Text holding a control character cannot be printed
+/// as pasteable text: `None`.
+pub(crate) fn shell_word(text: &str) -> Option<String> {
     let plain = |ch: char| ch.is_ascii_alphanumeric() || "/._+:@%=,-".contains(ch);
-    if url.chars().any(char::is_control) {
-        "pinfold::ROOT".to_string()
-    } else if url.chars().all(plain) {
-        url.to_string()
+    if text.chars().any(char::is_control) {
+        None
+    } else if text.chars().all(plain) {
+        Some(text.to_string())
     } else {
-        format!("'{}'", url.replace('\'', r"'\''"))
+        Some(format!("'{}'", text.replace('\'', r"'\''")))
     }
 }
 

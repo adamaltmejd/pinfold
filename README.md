@@ -58,7 +58,8 @@ ln -sf pinfold ~/.local/bin/git-remote-pinfold
 ```
 
 The `git-remote-pinfold` link is a disk project's Git remote (below); Git
-finds it on PATH.
+finds it on PATH. `pinfold update` and first-run setup of a disk project
+also create it beside pinfold when nothing is there.
 
 `pinfold update` installs the latest stable release, verified; `--check`
 only reports it. Close boxes and other pinfold commands first; the install

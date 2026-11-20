@@ -1849,7 +1849,11 @@ repository or home identity overrides it.
 with `git remote add box pinfold::ROOT`, ROOT being the canonical project
 root; pinfold never writes host Git configuration. Git runs it
 through `git-remote-pinfold`, a link to the pinfold executable on PATH;
-invoked by that name, pinfold is the helper. `git fetch box` is
+invoked by that name, pinfold is the helper. `pinfold update` after an
+install, and first-run setup that saves a disk, create that link beside
+the resolved executable, relative, only where no file or link exists;
+setup prints the `ln` command when none is then on PATH, and `doctor`
+reports a disk project's missing or foreign one. `git fetch box` is
 Crossing's fetch into `refs/remotes/box/*`, and no box tag reaches the
 host; `git push box BRANCH` is Crossing's push into the box's
 `refs/remotes/host/*`, and a pushed tag lands as the box's tag. The user merges;
