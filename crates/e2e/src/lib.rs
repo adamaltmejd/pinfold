@@ -152,19 +152,27 @@ struct Roots {
 impl Roots {
     fn command(&self) -> Command {
         let mut command = Command::new(pinfold());
-        for (name, _) in std::env::vars_os() {
-            if name
-                .to_str()
-                .is_some_and(|name| name.starts_with("PINFOLD_"))
-            {
-                command.env_remove(name);
-            }
-        }
+        self.apply(&mut command);
+        command
+    }
+
+    /// These roots and no inherited `PINFOLD_*`, for pinfold itself or a
+    /// command that runs it, as host `git` runs the remote helper.
+    fn apply(&self, command: &mut Command) {
+        remove_vars(command, "PINFOLD_");
         command
             .env("XDG_CONFIG_HOME", &self.config)
             .env("XDG_STATE_HOME", &self.state)
             .env("XDG_CACHE_HOME", &self.cache);
-        command
+    }
+}
+
+/// Remove every inherited variable whose name starts with `prefix`.
+fn remove_vars(command: &mut Command, prefix: &str) {
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(|name| name.starts_with(prefix)) {
+            command.env_remove(name);
+        }
     }
 }
 
@@ -218,6 +226,11 @@ impl TestEnv {
     /// The `XDG_STATE_HOME` this test's commands use.
     pub fn state_home(&self) -> &Path {
         &self.roots.state
+    }
+
+    /// The `XDG_CONFIG_HOME` this test's commands use.
+    pub fn config_home(&self) -> &Path {
+        &self.roots.config
     }
 
     /// `pinfold` with this test's roots and no inherited `PINFOLD_*`.
@@ -365,6 +378,204 @@ impl Drop for TestEnv {
     }
 }
 
+/// A throwaway project folder holding a Git repository, run as a user runs
+/// it: `pinfold` in its root with a non-terminal stdin, and host `git` with
+/// `git-remote-pinfold` on PATH and none of the user's Git configuration.
+/// Dropping it runs `pinfold stop` there; declare it after its [`TestEnv`],
+/// whose drop then removes the project's disks.
+pub struct Project<'a> {
+    env: &'a TestEnv,
+    root: PathBuf,
+    config_dir: PathBuf,
+}
+
+impl<'a> Project<'a> {
+    /// `git init` a new folder `name` in the test's directory, with no
+    /// template and so no hooks directory, then create
+    /// its configuration with `config edit`, as on a first run: a share on
+    /// macOS, a disk on Linux.
+    pub fn new(env: &'a TestEnv, name: &str) -> Project<'a> {
+        let root = env.root().join(name);
+        fs::create_dir(&root).unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
+        host_git_setup(env);
+        let init = run(
+            git_command(env, &root).args(["init", "-q", "--template="]),
+            COMMAND,
+        );
+        assert_eq!(init.code, 0, "git init: {init:?}");
+        let projects = env.config_home().join("pinfold/projects");
+        let before = dir_names(&projects);
+        let edit = run(
+            pinfold_command(env, &root).args(["config", "edit"]),
+            COMMAND,
+        );
+        assert_eq!(edit.code, 0, "config edit: {edit:?}");
+        let new: Vec<String> = dir_names(&projects)
+            .into_iter()
+            .filter(|name| !before.contains(name))
+            .collect();
+        assert_eq!(
+            new.len(),
+            1,
+            "config edit's new project directories: {new:?}"
+        );
+        Project {
+            env,
+            config_dir: projects.join(&new[0]),
+            root,
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The project's configuration directory, the one `config edit` made
+    /// under the config root.
+    pub fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
+    /// `pinfold ARGS` in the project's root, with `VISUAL=true` so `config
+    /// edit` exits at once.
+    pub fn pinfold(&self, args: &[&str]) -> Exec {
+        run(pinfold_command(self.env, &self.root).args(args), COMMAND)
+    }
+
+    /// `pinfold ARGS` in the project's root, to spawn.
+    pub fn command(&self, args: &[&str]) -> Command {
+        let mut command = pinfold_command(self.env, &self.root);
+        command.args(args);
+        command
+    }
+
+    /// Host `git ARGS` in the project's root.
+    pub fn git(&self, args: &[&str]) -> Exec {
+        run(git_command(self.env, &self.root).args(args), COMMAND)
+    }
+}
+
+impl Drop for Project<'_> {
+    fn drop(&mut self) {
+        let mut stop = pinfold_command(self.env, &self.root);
+        stop.arg("stop");
+        let mut toplevel = git_command(self.env, &self.root);
+        toplevel.args(["rev-parse", "--show-toplevel"]);
+        let root = self.root.clone();
+        if let Err(error) = in_drop(move || {
+            // `stop` acts on the project it discovers from here: were this
+            // repository gone, that could be an enclosing one's.
+            let found = run(&mut toplevel, COMMAND);
+            if !root.join(".git").is_dir()
+                || found.code != 0
+                || Path::new(found.stdout.trim()) != root
+            {
+                return Err(format!(
+                    "not stopped: no longer its own repository: {found:?}"
+                ));
+            }
+            match run(&mut stop, COMMAND) {
+                out if out.code == 0 => Ok(()),
+                out => Err(format!("{out:?}")),
+            }
+        }) {
+            eprintln!(
+                "e2e: PINFOLD STOP FAILED in {}: {error}; its roots are kept",
+                self.root.display()
+            );
+            self.env.roots.keep.store(true, Ordering::SeqCst);
+            if !thread::panicking() {
+                panic!(
+                    "pinfold stop in {} failed (see stderr)",
+                    self.root.display()
+                );
+            }
+        }
+    }
+}
+
+/// The test's throwaway Git configuration and its `git-remote-pinfold`
+/// link, made once per test.
+fn host_git_setup(env: &TestEnv) {
+    let bin = env.root().join("bin");
+    if bin.exists() {
+        return;
+    }
+    fs::create_dir(&bin).unwrap();
+    std::os::unix::fs::symlink(pinfold(), bin.join("git-remote-pinfold")).unwrap();
+    fs::write(
+        env.root().join("gitconfig"),
+        "[user]\n\tname = e2e\n\temail = e2e@example.invalid\n\
+         [init]\n\tdefaultBranch = main\n\
+         [commit]\n\tgpgSign = false\n[tag]\n\tgpgSign = false\n\
+         [gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n",
+    )
+    .unwrap();
+    fs::write(env.root().join("gitconfig-system"), "").unwrap();
+}
+
+fn pinfold_command(env: &TestEnv, root: &Path) -> Command {
+    let mut command = env.command();
+    host_git_env(env, &mut command);
+    command.current_dir(root).env("VISUAL", "true");
+    command
+}
+
+fn git_command(env: &TestEnv, root: &Path) -> Command {
+    let mut command = Command::new("git");
+    host_git_env(env, &mut command);
+    env.roots.apply(&mut command);
+    command.current_dir(root);
+    command
+}
+
+/// Host Git with the test's configuration only, and the test's helper link
+/// first on PATH.
+fn host_git_env(env: &TestEnv, command: &mut Command) {
+    remove_vars(command, "GIT_");
+    let mut path = vec![env.root().join("bin")];
+    path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    command
+        .env("GIT_CONFIG_GLOBAL", env.root().join("gitconfig"))
+        .env("GIT_CONFIG_SYSTEM", env.root().join("gitconfig-system"))
+        .env("PATH", std::env::join_paths(path).expect("a PATH"));
+}
+
+/// Every path under `dir`, sorted, with its length and mtime, read without
+/// following symlinks; none when `dir` is missing. Two equal trees hold the
+/// same entries, unchanged as far as their metadata shows.
+pub fn tree(dir: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => panic!("read {}: {error}", dir.display()),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let path = entry.unwrap().path();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        found.push((path.clone(), metadata.len(), metadata.modified().unwrap()));
+        if metadata.is_dir() {
+            found.extend(tree(&path));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The names in a directory; none when it is missing.
+fn dir_names(dir: &Path) -> Vec<String> {
+    match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("read {}: {error}", dir.display()),
+    }
+}
+
 /// Each line of `text` as JSON.
 pub fn json_lines(text: &str) -> Vec<Value> {
     text.lines()
@@ -384,6 +595,21 @@ fn temp() -> PathBuf {
 fn suite_cache() -> &'static Path {
     static CACHE: OnceLock<PathBuf> = OnceLock::new();
     CACHE.get_or_init(|| {
+        // A project discovers an enclosing repository; the suite's own
+        // must have none.
+        let mut git = Command::new("git");
+        remove_vars(&mut git, "GIT_");
+        let inside = run(
+            git.current_dir(temp())
+                .args(["rev-parse", "--show-toplevel"]),
+            COMMAND,
+        );
+        assert_ne!(
+            inside.code,
+            0,
+            "the temp dir {} is inside a Git work tree; set TMPDIR outside it",
+            temp().display()
+        );
         let cache = temp().join("pinfold-e2e-cache");
         fs::create_dir_all(&cache).unwrap();
         cache
@@ -609,6 +835,60 @@ fn stat(pid: u32) -> Option<(u32, String, u32, String)> {
     let state = fields.next()?.to_string();
     let parent = fields.next()?.parse().ok()?;
     Some((pid, state, parent, name.to_string()))
+}
+
+/// The live direct children of `pid` that lead a session of their own
+/// (`setsid`), from /proc: a client's detached owner, not the forks it
+/// has yet to exec.
+#[cfg(target_os = "linux")]
+pub fn detached_children(pid: u32) -> Vec<u32> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir("/proc").expect("read /proc").flatten() {
+        let Some(child) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(line) = fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // `PID (COMM) STATE PPID PGRP SESSION ...`
+        let Some((_, tail)) = line.rsplit_once(')') else {
+            continue;
+        };
+        let fields: Vec<&str> = tail.split_whitespace().take(4).collect();
+        if let [state, parent, _, session] = fields[..]
+            && state != "Z"
+            && parent.parse() == Ok(pid)
+            && session.parse() == Ok(child)
+        {
+            found.push(child);
+        }
+    }
+    found
+}
+
+/// Wait, bounded, until `pid` has exited: gone from /proc, or a zombie. A
+/// stat that cannot be read for another reason fails the test.
+#[cfg(target_os = "linux")]
+pub fn wait_exited(pid: u32) {
+    let deadline = Instant::now() + COMMAND;
+    loop {
+        match fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => panic!("read /proc/{pid}/stat: {error}"),
+            Ok(stat) => {
+                let (_, tail) = stat.rsplit_once(')').expect("a stat line");
+                if tail.split_whitespace().next() == Some("Z") {
+                    return;
+                }
+            }
+        }
+        assert!(Instant::now() < deadline, "{pid} did not exit");
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// A box whose owner a test killed. Dropping it removes the box by name
