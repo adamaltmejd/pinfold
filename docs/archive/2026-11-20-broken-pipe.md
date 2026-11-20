@@ -22,13 +22,14 @@ The code handles EPIPE on sockets and child pipes (`ownership.rs`,
 SIGPIPE would bypass those handlers. The shadowed `println!` reacts only
 to a failed stdout write.
 
-The signal skips destructors where the old panic unwound. Every report
-prints after its work or only reads between lines, except `clean`, which
-prints its plan before removing (both old and new behavior abandon the
-removal), and `box up`. Its `down` line is printed only after `hold`'s
-teardown succeeded, when `Claim::finish` has already removed the
-ownership record, so `Claim`'s drop has nothing left to remove; `refused`
-and a signal's `down` before start hold no box.
+The signal skips destructors where the old panic unwound. The first
+commit claimed every report prints after its work or only reads between
+lines. That was wrong: `disk rm --all` and `box prune` print inside their
+removal loops, and `clean` prints its plan before removing, so a signal
+there cut the work short. See Review fixes. `box up`'s `down` line is
+printed only after `hold`'s teardown succeeded, when `Claim::finish` has
+already removed the ownership record, so `Claim`'s drop has nothing left
+to remove; `refused` and a signal's `down` before start hold no box.
 
 Calls from `pi/` into `cli.rs` and `update.rs` (`usage`, `exit_code`,
 `working`, `installed`, `link_helper`, `helper_on_path`, `link_remedy`,
@@ -124,3 +125,74 @@ listed running afterwards.
 Not run: `box up` with a closed stdout (no spec was written), Linux.
 `cargo clippy` for `x86_64-unknown-linux-musl` (zig as the C compiler)
 passed.
+
+## Review fixes
+
+Review of `8cb8a2b` found three faults. All three reproduced on that
+build.
+
+1. **An inherited blocked SIGPIPE.** `raise` returned, and the
+   `unreachable!` after it panicked (exit 101). Now `printed` exits 141
+   when the process survives `raise`.
+2. **`box up` statuses.** The `refused` and `down` records died by signal
+   (141), against the spec's 1 for a refusal and 0 or 1 for `down`.
+3. **Loops cut short.** `disk rm --all` printed each result inside its
+   removal loop, so the signal left later disks unattempted, against "attempts
+   each ordinary removal". `box prune` has the same shape, and `clean`
+   prints its plan before removing.
+
+Fix: `main.rs` marks `box`, `disk`, `image`, `clean`, `build` and
+`update` with `cli::finishes_without_reader()`. In those, the shadowed
+`println!` drops a line whose write fails with `BrokenPipe` and the command
+goes on, exiting with its own status. The marked commands are the process
+interface (`box`, `disk` and `image`, whose exit statuses are specified)
+and the commands that change state. The others are read-only reports
+and keep the SIGPIPE death: bare `pinfold`, `--version`, `--help`,
+subcommand `--help` (help returns before the mark), `config`, `doctor`,
+`apparmor-profile` and `profile`. `box up`'s `failed` line moved from
+`writeln!` with `?` to the shadowed `println!`, so a missing reader no
+longer adds a "Broken pipe" diagnostic; it still exits 1. Its `ready`
+line keeps `writeln!` with `?`: a failed `ready` tears the box down and
+exits 1. `image rm` prints after its removal and needed no change
+beyond the mark.
+
+Commands whose closed-reader status changes from 141 to 0 (by the
+mark; run below only for `box list`, `box up`, `disk rm --all`, `clean
+--dry-run` and `update --check`):
+`box list|stat|inspect|events|prune`, `disk list`, `disk rm` and
+`disk export`, `image build|rm`, `clean` (including `--dry-run`),
+`build`, and `update` (including `--check`). Whenever they would have
+exited otherwise, they exit with that status: 1 for a refusal or a failed
+removal, 3 for an absent box or run.
+
+### Verification
+
+Same setup as above, under a new temp dir. `prev` is `8cb8a2b`. Each
+case ran with a reader certainly closed: `{ sleep 1; exec pf ARGS
+2>err; } | true`, then `${PIPESTATUS[0]}`.
+
+- `--version` with SIGPIPE blocked: a Perl wrapper ran
+  `sigprocmask(SIG_BLOCK, SIGPIPE)` and then exec'd pinfold. Patched:
+  exit 141, empty stderr. `prev`: exit 101, a panic at
+  `entered unreachable code`. `--help` blocked, patched: 141, empty.
+- Unblocked, patched: `--version`, `--help`, bare, `doctor` and `config
+  --help` exited 141 with empty stderr. `box list --label …`,
+  `clean --dry-run` and `update --check` exited 0 with empty stderr
+  (`box list` on `prev`: 141). `box --help` exited 141.
+- `box up < refuse.json` (an unknown spec field, refused as `spec`):
+  patched, exit 1 with empty stderr; `prev`, exit 141. Unpiped, it
+  prints the `refused` line and exits 1.
+- `box up < up.json | head -1`: one box with three disks. `head` read
+  `ready` and exited, and stdin EOF tore the box down. Patched: exit 0
+  (`stdin-closed`), empty stderr. `disk list` then showed `bp359-a`,
+  `-b` and `-c`.
+- `disk rm --all`: on `prev`, exit 141; only `bp359-a` was removed and
+  `-b` and `-c` remained. After the three disks were recreated with the
+  same `box up`: patched, exit 0, empty stderr, and `disk list` was
+  empty. No `bp359` box remained.
+- `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D
+  warnings` on macOS, and the same for `x86_64-unknown-linux-musl` (zig
+  as the C compiler): pass.
+
+The session cases were not rerun: this change does not touch
+`pinfold -- CMD`.

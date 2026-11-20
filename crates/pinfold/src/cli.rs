@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::config::Config;
@@ -19,11 +20,12 @@ use crate::dirs;
 use crate::formatting::terminal_text;
 use crate::pi::launch::utf8;
 
-/// Shadows std's `println!` for reports here and where imported. When the
-/// reader of stdout has gone, the process dies of SIGPIPE, as a Unix
-/// filter's writer does, where std's panics (#359). SIGPIPE stays ignored
-/// for everything else: owners, relays, sessions and the Git remote helper
-/// handle EPIPE on their own pipes and sockets.
+/// Shadows std's `println!` here and where imported, which panics when the
+/// reader of stdout has gone (#359). A report then dies of SIGPIPE, as a
+/// Unix filter's writer does; a command that [`finishes_without_reader`]
+/// drops the line and carries on. SIGPIPE stays ignored for everything
+/// else: owners, relays, sessions and the Git remote helper handle EPIPE
+/// on their own pipes and sockets.
 macro_rules! println {
     ($($arg:tt)*) => {{
         use ::std::io::Write as _;
@@ -32,15 +34,27 @@ macro_rules! println {
 }
 pub(crate) use println;
 
+static FINISHES: AtomicBool = AtomicBool::new(false);
+
+/// For commands that change state or answer the process interface: a
+/// closed stdout must not cut short their work or change their status.
+pub fn finishes_without_reader() {
+    FINISHES.store(true, Ordering::Relaxed);
+}
+
 pub(crate) fn printed(result: io::Result<()>) {
     match result {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+            if FINISHES.load(Ordering::Relaxed) {
+                return;
+            }
             use nix::sys::signal::{SigHandler, Signal, raise, signal};
             // SAFETY: the default disposition installs no handler.
             let _ = unsafe { signal(Signal::SIGPIPE, SigHandler::SigDfl) };
             let _ = raise(Signal::SIGPIPE);
-            unreachable!("SIGPIPE ends the process");
+            // An inherited signal mask can block SIGPIPE.
+            std::process::exit(141);
         }
         Err(error) => panic!("failed printing to stdout: {error}"),
     }
@@ -336,15 +350,14 @@ fn up(args: &[String]) -> io::Result<i32> {
         match hold_up(&plan, signals).await {
             Ok(code) => Ok(code),
             Err(error) => {
-                writeln!(
-                    io::stdout(),
+                println!(
                     "{}",
                     serde_json::json!({
                         "event": "failed",
                         "box": &plan.name,
                         "detail": error.to_string(),
                     })
-                )?;
+                );
                 Ok(1)
             }
         }

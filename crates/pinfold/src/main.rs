@@ -78,6 +78,12 @@ fn main() -> ExitCode {
     if !helper && cli::help(verb, args) {
         return ExitCode::SUCCESS;
     }
+    if matches!(
+        verb,
+        "box" | "disk" | "image" | "clean" | "build" | "update"
+    ) {
+        cli::finishes_without_reader();
+    }
     // `update` takes the executable lock itself, exclusively.
     let _executable = if matches!(
         verb,
