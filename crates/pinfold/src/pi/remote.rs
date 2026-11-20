@@ -28,7 +28,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     if !valid_name(remote) {
         return Err(refused(&format!(
             "remote-url: use a configured remote, not a URL: `git remote add box {}`, then `git push box BRANCH` or `git fetch box`",
-            shell_word(remote)
+            url_word(remote)
         )));
     }
     let (input, mut output) = protocol()?;
@@ -133,19 +133,12 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
                 runtime, init, name, root, guest, &sources, &refspecs, cancel,
             )
         })?;
-        match &pushed {
-            Err(error) => eprintln!("pinfold: {}", describe(error)),
-            Ok(true) => {
-                let branch = shell_word(&accepted[0]["refs/heads/".len()..]);
-                eprintln!(
-                    "pinfold: the box repository is new; in the box run: git switch -c {branch} host/{branch}"
-                );
-            }
-            Ok(false) => {}
+        if let Err(error) = &pushed {
+            eprintln!("pinfold: {}", describe(error));
         }
         for destination in accepted {
             report.push_str(&match &pushed {
-                Ok(_) => format!("ok {destination}\n"),
+                Ok(()) => format!("ok {destination}\n"),
                 Err(_) => format!("error {destination} the box refused the push\n"),
             });
         }
@@ -156,18 +149,20 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
 
 /// ROOT's remote URL as one shell word for a printed command.
 pub(crate) fn pinfold_url(root: &Path) -> String {
-    shell_word(&format!("pinfold::{}", root.to_string_lossy()))
+    url_word(&format!("pinfold::{}", root.to_string_lossy()))
 }
 
-/// TEXT as one POSIX shell word for a printed command: unquoted when every
-/// character is plain, else single-quoted. Control characters are escaped.
-fn shell_word(text: &str) -> String {
-    let text = terminal_text(text);
+/// URL as one POSIX shell word: unquoted when every character is plain,
+/// else single-quoted. A URL holding a control character cannot be printed
+/// as pasteable text, so the placeholder `pinfold::ROOT` stands in.
+fn url_word(url: &str) -> String {
     let plain = |ch: char| ch.is_ascii_alphanumeric() || "/._+:@%=,-".contains(ch);
-    if !text.is_empty() && text.chars().all(plain) {
-        text
+    if url.chars().any(char::is_control) {
+        "pinfold::ROOT".to_string()
+    } else if url.chars().all(plain) {
+        url.to_string()
     } else {
-        format!("'{}'", text.replace('\'', r"'\''"))
+        format!("'{}'", url.replace('\'', r"'\''"))
     }
 }
 

@@ -495,7 +495,7 @@ pub(crate) fn project_status(root: &Path) -> io::Result<ProjectStatus> {
             {
                 return Ok(ProjectStatus::Stopping);
             }
-            // The owner publishes its generation before it finishes the initial disk sync.
+            // The owner publishes its generation before it admits its first client.
             Ok(Err(_))
                 if ownership::lock_alive(&launch_key(root))?
                     && ownership::name_alive(&locator.name)? =>

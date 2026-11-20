@@ -37,9 +37,6 @@ const BRANCHES: usize = 4096;
 /// which the host reports as `spec`.
 const NOT_A_REPO: i32 = 64;
 
-/// The push script's exit code for a push that created the box repository.
-const CREATED: i32 = 65;
-
 /// The prefix of a fetch's quarantine under REPO's objects dir.
 const QUARANTINE: &str = "pinfold-incoming-";
 
@@ -48,23 +45,19 @@ const STDERR_KEPT: u64 = 16 << 10;
 
 /// `$1` is GUEST_REPO, `$2` the host's object format, the rest refspecs
 /// into `refs/remotes/host/*`. The bundle arrives on stdin. When GUEST_REPO
-/// has no `.git`, it first creates the repository, its branch unborn, and
-/// exits [`CREATED`] on success. Two pushes racing here may both init: a
-/// reinit keeps HEAD, refs and objects, and Git's lock files fail a
-/// simultaneous writer rather than interleave.
+/// has no `.git`, it first creates the repository, on Git's default unborn
+/// branch. Two pushes racing here may both init; a reinit keeps refs and
+/// objects.
 const PUSH_SCRIPT: &str = r#"
 repo=$1 format=$2; shift 2
-created=
 if [ ! -e "$repo/.git" ] && [ ! -L "$repo/.git" ]; then
-  git init -q --object-format="$format" --initial-branch="${1#*:refs/remotes/host/}" "$repo" || exit
-  created=1
+  git init -q --object-format="$format" "$repo" || exit
 fi
 dir=$(git -C "$repo" rev-parse --absolute-git-dir) || exit 64
 bundle=$(mktemp "$dir/pinfold-push.XXXXXX") || exit
 trap 'rm -f "$bundle"' EXIT
 cat >"$bundle" &&
-  git -C "$repo" fetch -q --atomic --no-tags --no-write-fetch-head "$bundle" "$@" || exit
-[ -z "$created" ] || exit 65
+  git -C "$repo" fetch -q --atomic --no-tags --no-write-fetch-head "$bundle" "$@"
 "#;
 
 /// `$1` is GUEST_REPO; stdin holds the commits the host already has, one
@@ -101,9 +94,8 @@ impl From<io::Error> for CrossingError {
 pub type Refs = BTreeMap<String, String>;
 
 /// Bundle REPO's SOURCES and fetch them in the box with REFSPECS, whose
-/// destinations the caller puts under `refs/remotes/host/`. True when the
-/// push created the box repository. Cancellation reaps each host helper
-/// before return.
+/// destinations the caller puts under `refs/remotes/host/`. Cancellation
+/// reaps each host helper before return.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn push_cancellable(
     runtime: &dyn Runtime,
@@ -114,7 +106,7 @@ pub(crate) fn push_cancellable(
     sources: &[String],
     refspecs: &[String],
     cancel: &AtomicBool,
-) -> Result<bool, CrossingError> {
+) -> Result<(), CrossingError> {
     check_args(repo, guest_repo, cancel)?;
     let format = succeeded(git(repo, &["rev-parse", "--show-object-format"], cancel)?)?;
     let format = String::from_utf8_lossy(&format.stdout).trim().to_string();
@@ -161,10 +153,7 @@ pub(crate) fn push_cancellable(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let output = output_discard_cancellable(&mut command, None, cancel)?;
-    match output.status.code() {
-        Some(CREATED) => Ok(true),
-        code => box_status(code, "", guest_repo).map(|()| false),
-    }
+    box_status(output.status.code(), "", guest_repo)
 }
 
 /// The box's checked branches, their objects held in a quarantine inside

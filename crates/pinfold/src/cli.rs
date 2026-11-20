@@ -154,6 +154,7 @@ Project
 
 Disk projects
   git push box    Send a host branch into the box as host/*
+                  In the box: git switch -c BRANCH host/BRANCH
   git fetch box   Bring guest branches back as box/*
                   Once first: git remote add box pinfold::ROOT
                   (needs git-remote-pinfold on PATH)

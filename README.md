@@ -278,8 +278,8 @@ git fetch box                             # guest branches as box/*, to merge
 ```
 
 Crossing never touches a working tree. The first push into a disk
-without a repository creates an empty one there and prints the command
-that checks the branch out in the box, `git switch -c main host/main`.
+without a repository creates an empty one there. To check a branch out,
+run `git switch -c main host/main` in the box.
 
 Every byte from the box is checked before Git sees a ref, but the
 remote ends at refs: `git pull box`, a refspec on the command line
