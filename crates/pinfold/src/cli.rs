@@ -350,7 +350,8 @@ fn up(args: &[String]) -> io::Result<i32> {
         match hold_up(&plan, signals).await {
             Ok(code) => Ok(code),
             Err(error) => {
-                println!(
+                let written = writeln!(
+                    io::stdout(),
                     "{}",
                     serde_json::json!({
                         "event": "failed",
@@ -358,7 +359,10 @@ fn up(args: &[String]) -> io::Result<i32> {
                         "detail": error.to_string(),
                     })
                 );
-                Ok(1)
+                match written {
+                    Err(error) if error.kind() != io::ErrorKind::BrokenPipe => Err(error),
+                    _ => Ok(1),
+                }
             }
         }
     });

@@ -2118,8 +2118,9 @@ Explicit help groups the command inventory
 by task. Report commands use human output unless `--json` is requested,
 including when stdout is redirected. When the reader of stdout closes early,
 `box`, `disk`, `image`, `clean`, `build` and `update` finish their work
-quietly with their own exit status; other commands die of SIGPIPE (141
-from a shell), without a diagnostic. The box protocol and guest stdio retain
+quietly with their own exit status; other commands, and every command's
+help, die of SIGPIPE, or exit 141 where it is blocked, without a
+diagnostic. The box protocol and guest stdio retain
 their own output contracts. Unknown top-level commands name the
 command and point to help. Editor failure reports the status and how to open
 the configuration file. `--help` or `-h` after a subcommand, before any
