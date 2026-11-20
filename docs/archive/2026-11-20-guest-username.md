@@ -1,6 +1,6 @@
 # Box user name and Bash prompt (#335), 2026-11-20
 
-The default image now names the usual host uids `pinfold` and gives
+The default image now names uid 501 `pinfold` and uid 1000 `pi`, and gives
 interactive Bash the prompt `pinfold:\w\$ `. The binary is unchanged.
 This file records the first design, why it was dropped, and the final
 image-only design and its verification.
