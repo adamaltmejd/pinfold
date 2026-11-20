@@ -31,18 +31,20 @@ fn status(text: &str) -> BTreeMap<String, String> {
 const PRINT_STATUS: &str = "open(my $f, '<', \"/proc/$pid/status\") or die \"status: $!\\n\"; \
      print grep { /^(Uid|Gid|PPid|Cap(Inh|Prm|Eff|Bnd|Amb)|NoNewPrivs):/ } <$f>;";
 
-/// Walk the file system holding `$ARGV[0]` without following links or
-/// leaving it. Print `setid PATH` for each setuid or setgid file and
-/// `closed DIR ERRNO` for each directory it cannot list, with chdir's
-/// result there (`0` if the directory can still be searched), then `done`.
-const SETID_SCAN: &str = "my $dev = (lstat $ARGV[0])[0]; \
+/// Walk the tree under `$ARGV[0]` without following links, skipping the
+/// mounts that are not the image: the kernel's `/proc`, `/sys` and `/dev`,
+/// and the tmpfs `/tmp` (Always applied). Device numbers are not compared:
+/// an overlay root reports several. Print `setid PATH` for each setuid or
+/// setgid file and `closed DIR ERRNO` for each directory it cannot list,
+/// with chdir's result there (`0` if it can still be searched), then `done`.
+const SETID_SCAN: &str = "my %skip = map { $_ => 1 } qw(/proc /sys /dev /tmp); \
      sub walk { my $dir = shift; \
        opendir(my $h, $dir) or do { print \"closed $dir \", (chdir($dir) ? 0 : $! + 0), \"\\n\"; return }; \
        for my $entry (sort readdir $h) { \
          next if $entry eq '.' || $entry eq '..'; \
          my $path = $dir eq '/' ? \"/$entry\" : \"$dir/$entry\"; \
          my @stat = lstat $path or next; \
-         next if $stat[0] != $dev; \
+         next if $skip{$path}; \
          if (-d _) { walk($path) } elsif (-f _ && ($stat[2] & 06000)) { print \"setid $path\\n\" } \
        } } \
      walk($ARGV[0]); print \"done\\n\"";
@@ -99,9 +101,9 @@ fn nothing_can_gain_privileges() {
     assert_eq!(seen["unshare 0"], "0", "{}", out.stdout);
     assert_eq!(seen["unshare user"], ENOSPC, "{}", out.stdout);
 
-    // No setuid or setgid file on the image's root file system that box
-    // work can reach: each directory it cannot list it cannot search
-    // either (EACCES), so nothing below one can be executed.
+    // No image-provided setuid or setgid file that box work can reach:
+    // each directory it cannot list it cannot search either (EACCES),
+    // so nothing below one can be executed.
     let scan = |root: &str| {
         let out = env.exec(&name, &["perl", "-e", SETID_SCAN, root]);
         assert_eq!(out.code, 0, "the scan of {root}: {out:?}");

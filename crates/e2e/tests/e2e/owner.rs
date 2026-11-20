@@ -48,7 +48,7 @@ fn losing_the_owner_fails_closed() {
 
     // Control: before the kill the other root sees the owner alive.
     let run_id = up.ready()["run_id"].as_str().expect("run_id").to_string();
-    let owner = up.ready()["owner"].clone();
+    let owner = json!(up.pid());
     let listed = other.listed(&run_id);
     assert_eq!(listed.len(), 1, "{listed:?}");
     assert_eq!(
@@ -189,6 +189,8 @@ fn project_client_exits_125(env: &TestEnv) {
     let listed = json_lines(&listed.stdout);
     assert_eq!(listed.len(), 1, "boxes of project {id}: {listed:?}");
     let leftover = Leftover::listed(env, &listed[0]);
+    #[cfg(target_os = "linux")]
+    let below = e2e::Below::of(leftover.owner());
     let kill = run(
         Command::new("kill").args(["-KILL", &leftover.owner().to_string()]),
         COMMAND,
@@ -202,6 +204,8 @@ fn project_client_exits_125(env: &TestEnv) {
         125,
         "the client after its owner's SIGKILL"
     );
+    #[cfg(target_os = "linux")]
+    below.wait_gone();
     drop(leftover);
 }
 

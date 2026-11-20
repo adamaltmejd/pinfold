@@ -482,6 +482,11 @@ impl Drop for BoxUp {
 }
 
 impl BoxUp {
+    /// The `box up` process's pid, from the host.
+    pub fn pid(&self) -> u32 {
+        self.child.as_ref().expect("a running owner").id()
+    }
+
     /// The `ready` line.
     pub fn ready(&self) -> &Value {
         &self.ready
@@ -499,28 +504,13 @@ impl BoxUp {
             roots: self.roots.clone(),
         };
         #[cfg(target_os = "linux")]
-        let below = descendants(child.id());
-        #[cfg(target_os = "linux")]
-        assert!(!below.is_empty(), "box up {} has no VMM", self.name);
+        let below = Below::of(child.id());
         child.kill().expect("SIGKILL box up");
         self.child = Some(child);
         let status = self.reap(COMMAND);
         assert_eq!(status.map(exit_code), Some(128 + 9), "box up after SIGKILL");
         #[cfg(target_os = "linux")]
-        {
-            let deadline = Instant::now() + COMMAND;
-            while below
-                .iter()
-                .any(|(pid, _)| Path::new(&format!("/proc/{pid}")).exists())
-            {
-                assert!(
-                    Instant::now() < deadline,
-                    "processes below box up {} outlived it: {below:?}",
-                    self.name
-                );
-                thread::sleep(Duration::from_millis(10));
-            }
-        }
+        below.wait_gone();
         leftover
     }
 
@@ -557,33 +547,68 @@ impl BoxUp {
     }
 }
 
-/// Every live host process below `pid`, with its command name, from /proc.
+/// The host processes below an owner, the VMM among them, taken from
+/// /proc before the owner is killed.
 #[cfg(target_os = "linux")]
-fn descendants(pid: u32) -> Vec<(u32, String)> {
-    let mut parents = Vec::new();
-    for entry in fs::read_dir("/proc").expect("read /proc").flatten() {
-        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        // `PID (COMM) STATE PPID …`; COMM may hold spaces and parentheses.
-        let (Some((head, tail)), Some(open)) = (stat.rsplit_once(')'), stat.find('(')) else {
-            continue;
-        };
-        let child = stat[..open].trim().parse::<u32>();
-        let parent = tail.split_whitespace().nth(1).map(str::parse::<u32>);
-        if let (Ok(child), Some(Ok(parent))) = (child, parent) {
-            parents.push((child, parent, head[open + 1..].to_string()));
+#[derive(Debug)]
+pub struct Below(Vec<(u32, String)>);
+
+#[cfg(target_os = "linux")]
+impl Below {
+    /// Every live process below `pid`, with its command name; at least one.
+    pub fn of(pid: u32) -> Below {
+        let mut parents = Vec::new();
+        for entry in fs::read_dir("/proc").expect("read /proc").flatten() {
+            let Some((child, state, parent, name)) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+                .and_then(stat)
+            else {
+                continue;
+            };
+            if state != "Z" {
+                parents.push((child, parent, name));
+            }
+        }
+        let mut found = Vec::new();
+        let mut frontier = vec![pid];
+        while let Some(parent) = frontier.pop() {
+            for (child, _, name) in parents.iter().filter(|(_, p, _)| *p == parent) {
+                found.push((*child, name.clone()));
+                frontier.push(*child);
+            }
+        }
+        assert!(!found.is_empty(), "no process below {pid}: no VMM");
+        Below(found)
+    }
+
+    /// Wait, bounded, until each process has exited: gone from /proc, or a
+    /// zombie no one has reaped yet.
+    pub fn wait_gone(&self) {
+        let deadline = Instant::now() + COMMAND;
+        while self
+            .0
+            .iter()
+            .any(|(pid, _)| stat(*pid).is_some_and(|(_, state, _, _)| state != "Z"))
+        {
+            assert!(Instant::now() < deadline, "outlived their owner: {self:?}");
+            thread::sleep(Duration::from_millis(10));
         }
     }
-    let mut found: Vec<(u32, String)> = Vec::new();
-    let mut frontier = vec![pid];
-    while let Some(parent) = frontier.pop() {
-        for (child, _, name) in parents.iter().filter(|(_, p, _)| *p == parent) {
-            found.push((*child, name.clone()));
-            frontier.push(*child);
-        }
-    }
-    found
+}
+
+/// `/proc/PID/stat`'s pid, state, parent pid and command name.
+#[cfg(target_os = "linux")]
+fn stat(pid: u32) -> Option<(u32, String, u32, String)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `PID (COMM) STATE PPID ...`; COMM may hold spaces and parentheses.
+    let (head, tail) = stat.rsplit_once(')')?;
+    let (_, name) = head.split_once('(')?;
+    let mut fields = tail.split_whitespace();
+    let state = fields.next()?.to_string();
+    let parent = fields.next()?.parse().ok()?;
+    Some((pid, state, parent, name.to_string()))
 }
 
 /// A box whose owner a test killed. Dropping it removes the box by name

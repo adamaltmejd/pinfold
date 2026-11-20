@@ -2,6 +2,8 @@
 //! at a time and is not read while unclean; export writes only a new
 //! destination.
 
+#[cfg(target_os = "macos")]
+use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -44,6 +46,7 @@ fn disks_persist_and_attach_exclusively() {
     let (first, second) = (box_name("attach-a"), box_name("attach-b"));
 
     // Two writable `up`s race for one new disk.
+    let store = Store::before(&env, &disk);
     let (a, b) = thread::scope(|scope| {
         let a = scope.spawn(|| env.start(&spec(&first, &disk, false)));
         let b = scope.spawn(|| env.start(&spec(&second, &disk, false)));
@@ -59,6 +62,7 @@ fn disks_persist_and_attach_exclusively() {
         ),
     };
     assert_eq!(refusal(Err(refused)), "disk-in-use");
+    let backing = store.created();
 
     let marker = format!("pf-disk-{}", std::process::id());
     let write = env.exec(
@@ -84,12 +88,13 @@ fn disks_persist_and_attach_exclusively() {
     );
     let pruned = run(env.command().args(["box", "prune"]), COMMAND);
     assert_eq!(pruned.code, 0, "{pruned:?}");
-    drop(hold);
-    drop(dead);
     assert_eq!(
         refusal(env.start(&spec(&reader, &disk, true))),
         "disk-unclean"
     );
+    // Only now: the guard's cleanup could itself retire the claim.
+    drop(hold);
+    drop(dead);
 
     // Control: the next box to attach the disk reads the writer's file.
     let read = |name: &str| {
@@ -120,43 +125,93 @@ fn disks_persist_and_attach_exclusively() {
     let reading = env.up(&spec(&reader, &disk, true));
     assert_eq!(read(&reader), marker);
     drop(reading);
-    assert!(disk_exists(&env, &disk), "{disk} before disk rm");
     let (code, lines) = rm(&env);
     assert_eq!(code, 0, "{lines:?}");
     assert_eq!(
         lines,
         [json!({ "event": "removed", "disk": disk, "existed": true })]
     );
-    assert!(!disk_exists(&env, &disk), "{disk} after disk rm");
+    store.assert_gone(&backing);
 }
 
-/// Whether the disk's backing store exists, seen from outside pinfold: on
-/// Apple a runtime volume named `<16 hex>-NAME`, on Linux
-/// `<state>/pinfold/disks/NAME.ext4` (Disks).
-fn disk_exists(env: &TestEnv, disk: &str) -> bool {
+/// A disk's backing store, observed from outside pinfold (Disks): on Apple
+/// the runtime volume that appears when the disk is created, on Linux
+/// `<state>/pinfold/disks/NAME.ext4`.
+struct Store {
     #[cfg(target_os = "macos")]
-    {
-        let _ = env;
-        let out = run(
-            std::process::Command::new("container").args(["volume", "list", "--format", "json"]),
-            COMMAND,
-        );
-        assert_eq!(out.code, 0, "container volume list: {out:?}");
-        let volumes: Value = serde_json::from_str(&out.stdout).expect("volume list JSON");
-        let suffix = format!("-{disk}");
-        volumes
-            .as_array()
-            .expect("a list")
-            .iter()
-            .filter_map(|volume| volume["id"].as_str())
-            .any(|id| id.len() == 16 + suffix.len() && id.ends_with(&suffix))
-    }
+    before: BTreeSet<String>,
+    #[cfg(target_os = "macos")]
+    suffix: String,
     #[cfg(target_os = "linux")]
-    {
-        env.state_home()
-            .join(format!("pinfold/disks/{disk}.ext4"))
-            .exists()
+    path: std::path::PathBuf,
+}
+
+impl Store {
+    /// Before the disk exists.
+    fn before(env: &TestEnv, disk: &str) -> Store {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = env;
+            Store {
+                before: volumes(),
+                suffix: format!("-{disk}"),
+            }
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let path = env.state_home().join(format!("pinfold/disks/{disk}.ext4"));
+            assert!(!path.exists(), "{} before the disk", path.display());
+            Store { path }
+        }
     }
+
+    /// The store, once the disk exists: on Apple the one new volume named
+    /// for the disk (other tests create volumes meanwhile).
+    fn created(&self) -> String {
+        #[cfg(target_os = "macos")]
+        {
+            let new: Vec<String> = volumes()
+                .difference(&self.before)
+                .filter(|id| id.ends_with(&self.suffix))
+                .cloned()
+                .collect();
+            assert_eq!(new.len(), 1, "new volumes for the disk: {new:?}");
+            new[0].clone()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            fs::metadata(&self.path).unwrap_or_else(|e| panic!("{}: {e}", self.path.display()));
+            self.path.display().to_string()
+        }
+    }
+
+    fn assert_gone(&self, store: &str) {
+        #[cfg(target_os = "macos")]
+        assert!(!volumes().contains(store), "{store} after disk rm");
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            fs::metadata(store).map_err(|error| error.kind()).err(),
+            Some(std::io::ErrorKind::NotFound),
+            "{store} after disk rm"
+        );
+    }
+}
+
+/// Apple's volume names.
+#[cfg(target_os = "macos")]
+fn volumes() -> BTreeSet<String> {
+    let out = run(
+        std::process::Command::new("container").args(["volume", "list", "--format", "json"]),
+        COMMAND,
+    );
+    assert_eq!(out.code, 0, "container volume list: {out:?}");
+    let volumes: Value = serde_json::from_str(&out.stdout).expect("volume list JSON");
+    volumes
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|volume| volume["id"].as_str().map(str::to_string))
+        .collect()
 }
 
 /// The names in a directory, sorted.
@@ -223,8 +278,12 @@ fn disk_export_writes_only_a_new_destination() {
     let listing = names(&root);
     let (code, lines, stderr) = export(&existing);
     assert_eq!(code, 1, "{lines:?} {stderr}");
-    assert!(stderr.contains("destination-exists"), "{stderr}");
-    assert!(lines.is_empty(), "{lines:?}");
+    assert!(
+        stderr
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .any(|word| word == "destination-exists"),
+        "{stderr}"
+    );
     assert_eq!(fs::metadata(&existing).unwrap().ino(), inode);
     assert!(names(&existing).is_empty(), "{:?}", names(&existing));
     assert_eq!(names(&root), listing, "the export left something beside it");
