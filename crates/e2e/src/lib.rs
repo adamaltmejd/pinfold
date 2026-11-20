@@ -78,6 +78,7 @@ pub struct Exec {
 /// Run `command` with null stdin, capturing its output. Past `timeout` it
 /// is killed and the test fails naming it; nothing waits unbounded.
 pub fn run(command: &mut Command, timeout: Duration) -> Exec {
+    scrub(command);
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -160,6 +161,7 @@ impl Roots {
     /// command that runs it, as host `git` runs the remote helper.
     fn apply(&self, command: &mut Command) {
         remove_vars(command, "PINFOLD_");
+        scrub(command);
         command
             .env("XDG_CONFIG_HOME", &self.config)
             .env("XDG_STATE_HOME", &self.state)
@@ -171,6 +173,24 @@ impl Roots {
 fn remove_vars(command: &mut Command, prefix: &str) {
     for (name, _) in std::env::vars_os() {
         if name.to_str().is_some_and(|name| name.starts_with(prefix)) {
+            command.env_remove(name);
+        }
+    }
+}
+
+/// Remove every inherited variable that may hold a credential or locate a
+/// login store, so no user login reaches a command the harness runs. A
+/// test's own variables must not match. `GIT_*` is left whole: removing
+/// `GIT_CONFIG_KEY_n` alone would break Git, and project commands drop the
+/// family (`host_git_env`).
+fn scrub(command: &mut Command) {
+    const MARKS: [&str; 6] = ["TOKEN", "KEY", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH"];
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(|name| {
+            let name = name.to_ascii_uppercase();
+            !name.starts_with("GIT_")
+                && (MARKS.iter().any(|mark| name.contains(mark)) || name == "CODEX_HOME")
+        }) {
             command.env_remove(name);
         }
     }
@@ -231,6 +251,11 @@ impl TestEnv {
     /// The `XDG_CONFIG_HOME` this test's commands use.
     pub fn config_home(&self) -> &Path {
         &self.roots.config
+    }
+
+    /// The `XDG_CACHE_HOME` this test's commands use: the suite run's.
+    pub fn cache_home(&self) -> &Path {
+        &self.roots.cache
     }
 
     /// `pinfold` with this test's roots and no inherited `PINFOLD_*`.
@@ -386,15 +411,20 @@ impl Drop for TestEnv {
 pub struct Project<'a> {
     env: &'a TestEnv,
     root: PathBuf,
-    config_dir: PathBuf,
+    config_dir: Option<PathBuf>,
 }
 
 impl<'a> Project<'a> {
-    /// `git init` a new folder `name` in the test's directory, with no
-    /// template and so no hooks directory, then create
-    /// its configuration with `config edit`, as on a first run: a share on
-    /// macOS, a disk on Linux.
+    /// A new project, configured as on a first run ([`Project::configure`]).
     pub fn new(env: &'a TestEnv, name: &str) -> Project<'a> {
+        let mut project = Project::unconfigured(env, name);
+        project.configure();
+        project
+    }
+
+    /// `git init` a new folder `name` in the test's directory, with no
+    /// template and so no hooks directory. It has no configuration.
+    pub fn unconfigured(env: &'a TestEnv, name: &str) -> Project<'a> {
         let root = env.root().join(name);
         fs::create_dir(&root).unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
         host_git_setup(env);
@@ -403,12 +433,19 @@ impl<'a> Project<'a> {
             COMMAND,
         );
         assert_eq!(init.code, 0, "git init: {init:?}");
-        let projects = env.config_home().join("pinfold/projects");
+        Project {
+            env,
+            root,
+            config_dir: None,
+        }
+    }
+
+    /// Create the project's configuration with `config edit`, as on a first
+    /// run: a share on macOS, a disk on Linux.
+    pub fn configure(&mut self) {
+        let projects = self.env.config_home().join("pinfold/projects");
         let before = dir_names(&projects);
-        let edit = run(
-            pinfold_command(env, &root).args(["config", "edit"]),
-            COMMAND,
-        );
+        let edit = self.pinfold(&["config", "edit"]);
         assert_eq!(edit.code, 0, "config edit: {edit:?}");
         let new: Vec<String> = dir_names(&projects)
             .into_iter()
@@ -419,11 +456,7 @@ impl<'a> Project<'a> {
             1,
             "config edit's new project directories: {new:?}"
         );
-        Project {
-            env,
-            config_dir: projects.join(&new[0]),
-            root,
-        }
+        self.config_dir = Some(projects.join(&new[0]));
     }
 
     pub fn root(&self) -> &Path {
@@ -433,7 +466,7 @@ impl<'a> Project<'a> {
     /// The project's configuration directory, the one `config edit` made
     /// under the config root.
     pub fn config_dir(&self) -> &Path {
-        &self.config_dir
+        self.config_dir.as_deref().expect("a configured project")
     }
 
     /// `pinfold ARGS` in the project's root, with `VISUAL=true` so `config
@@ -491,6 +524,96 @@ impl Drop for Project<'_> {
                 );
             }
         }
+    }
+}
+
+/// A session script for `sh -c`: it prints `started`, then runs each line it
+/// reads with `sh -c`, stdin closed, and prints `done` after it, until
+/// stdin ends.
+pub const READER: &str =
+    "echo started; while read -r line; do sh -c \"$line\" < /dev/null; echo done; done";
+
+/// A spawned project client (`pinfold -- …`, from [`Project::command`]) whose
+/// session a test holds open: stdin and stdout piped, stderr inherited.
+/// Dropping it kills and reaps it.
+pub struct Client {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    lines: Receiver<String>,
+}
+
+impl Client {
+    pub fn spawn(mut command: Command) -> Client {
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"));
+        let stdout = child.stdout.take().expect("client stdout");
+        let (send, lines) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if send.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        Client {
+            stdin: child.stdin.take(),
+            child,
+            lines,
+        }
+    }
+
+    /// The command's next stdout line, waited for within the command
+    /// timeout.
+    pub fn line(&self) -> String {
+        self.lines
+            .recv_timeout(COMMAND)
+            .unwrap_or_else(|error| panic!("client {}: no line: {error}", self.child.id()))
+    }
+
+    /// Write `line` and a newline to the command's stdin.
+    fn send(&mut self, line: &str) {
+        let stdin = self.stdin.as_mut().expect("client stdin");
+        stdin
+            .write_all(format!("{line}\n").as_bytes())
+            .and_then(|()| stdin.flush())
+            .expect("write to the client");
+    }
+
+    /// In a [`READER`] session: run `line`, and return the lines it printed.
+    pub fn ask(&mut self, line: &str) -> Vec<String> {
+        self.send(line);
+        let mut out = Vec::new();
+        loop {
+            match self.line() {
+                done if done == "done" => return out,
+                other => out.push(other),
+            }
+        }
+    }
+
+    /// Close stdin and wait, bounded, for the client's exit code.
+    pub fn finish(mut self) -> i32 {
+        drop(self.stdin.take());
+        let status = wait_until(&mut self.child, Instant::now() + COMMAND)
+            .unwrap_or_else(|| panic!("client {} did not exit", self.child.id()));
+        exit_code(status)
+    }
+
+    /// SIGKILL the client and reap it.
+    pub fn kill(mut self) {
+        self.child.kill().expect("SIGKILL the client");
+        self.child.wait().expect("reap the client");
+    }
+}
+
+impl Drop for Client {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -716,6 +839,29 @@ impl BoxUp {
     /// The `ready` line.
     pub fn ready(&self) -> &Value {
         &self.ready
+    }
+
+    /// Wait, bounded, for `up` to end on its own with stdin still open:
+    /// its last line and its exit code.
+    pub fn ended(mut self) -> (Value, i32) {
+        let deadline = Instant::now() + COMMAND;
+        let mut last = None;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(line) => last = Some(line),
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => panic!("box up {} did not end", self.name),
+            }
+        }
+        let status = self
+            .reap(COMMAND)
+            .unwrap_or_else(|| panic!("box up {} was not reaped", self.name));
+        let last =
+            last.unwrap_or_else(|| panic!("box up {} printed nothing after ready", self.name));
+        let line = serde_json::from_str(&last)
+            .unwrap_or_else(|error| panic!("box up's last line {last:?}: {error}"));
+        (line, exit_code(status))
     }
 
     /// SIGKILL the owner and reap it. On Apple the guest outlives it. On
@@ -989,8 +1135,8 @@ impl Request {
 }
 
 /// A host HTTP service on loopback, reachable from a box only through a
-/// route. It answers every request with `status` and records it. It runs
-/// in the test process, which on macOS holds the firewall exception
+/// route. It answers every request and records it. It runs in the test
+/// process, which on macOS holds the firewall exception
 /// (scripts/run-mac-e2e.sh). Dropping it closes its listener.
 pub struct Fixture {
     port: u16,
@@ -999,8 +1145,29 @@ pub struct Fixture {
     accept: Option<JoinHandle<()>>,
 }
 
+/// What a [`Fixture`] answers.
+#[derive(Clone)]
+enum Answer {
+    /// This status and no body, to every request.
+    Status(u16),
+    /// A streamed model reply holding this text: OpenAI's chat completion
+    /// at `…/chat/completions`, Anthropic's message at `/v1/messages`; an
+    /// empty 200 elsewhere.
+    Model(Arc<str>),
+}
+
 impl Fixture {
+    /// Answer every request with `status` and no body.
     pub fn start(status: u16) -> Fixture {
+        Fixture::serving(Answer::Status(status))
+    }
+
+    /// A fake model whose every completion is `reply`.
+    pub fn model(reply: &str) -> Fixture {
+        Fixture::serving(Answer::Model(reply.into()))
+    }
+
+    fn serving(answer: Answer) -> Fixture {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the fixture");
         let port = listener.local_addr().expect("fixture address").port();
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -1011,8 +1178,8 @@ impl Fixture {
                 if stopped.load(Ordering::SeqCst) {
                     return;
                 }
-                let seen = Arc::clone(&seen);
-                thread::spawn(move || serve(stream, &seen, status));
+                let (seen, answer) = (Arc::clone(&seen), answer.clone());
+                thread::spawn(move || serve(stream, &seen, &answer));
             }
         });
         Fixture {
@@ -1047,7 +1214,7 @@ impl Drop for Fixture {
 }
 
 /// Read one Content-Length-framed request, record it and answer it.
-fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, status: u16) {
+fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, answer: &Answer) {
     if stream.set_read_timeout(Some(COMMAND)).is_err() {
         return;
     }
@@ -1076,13 +1243,93 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, status: u16) {
         headers.push((name.to_string(), value.to_string()));
     }
     let _ = std::io::copy(&mut reader.by_ref().take(length), &mut std::io::sink());
+    let (status, body) = match answer {
+        Answer::Status(status) => (*status, String::new()),
+        Answer::Model(reply) => (200, model_reply(&target, reply)),
+    };
     seen.lock().unwrap().push(Request {
         method,
         target,
         headers,
     });
     let _ = (&stream).write_all(
-        format!("HTTP/1.1 {status} Fixture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .as_bytes(),
+        format!(
+            "HTTP/1.1 {status} Fixture\r\nContent-Type: text/event-stream\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .as_bytes(),
     );
+}
+
+/// A streamed completion of `reply` in the wire format `target` names.
+fn model_reply(target: &str, reply: &str) -> String {
+    let path = target.split('?').next().unwrap_or_default();
+    let events: Vec<(Option<&str>, Value)> = if path.ends_with("/chat/completions") {
+        let chunk = |delta: Value, finish: Value| {
+            serde_json::json!({
+                "id": "e2e", "object": "chat.completion.chunk", "created": 0, "model": "e2e",
+                "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }],
+            })
+        };
+        vec![
+            (
+                None,
+                chunk(
+                    serde_json::json!({ "role": "assistant", "content": reply }),
+                    Value::Null,
+                ),
+            ),
+            (None, chunk(serde_json::json!({}), "stop".into())),
+        ]
+    } else if path == "/v1/messages" {
+        let message = serde_json::json!({
+            "id": "msg_e2e", "type": "message", "role": "assistant", "model": "e2e",
+            "content": [], "stop_reason": null, "stop_sequence": null,
+            "usage": { "input_tokens": 1, "output_tokens": 1 },
+        });
+        [
+            ("message_start", serde_json::json!({ "message": message })),
+            (
+                "content_block_start",
+                serde_json::json!({
+                    "index": 0, "content_block": { "type": "text", "text": "" },
+                }),
+            ),
+            (
+                "content_block_delta",
+                serde_json::json!({
+                    "index": 0, "delta": { "type": "text_delta", "text": reply },
+                }),
+            ),
+            ("content_block_stop", serde_json::json!({ "index": 0 })),
+            (
+                "message_delta",
+                serde_json::json!({
+                    "delta": { "stop_reason": "end_turn", "stop_sequence": null },
+                    "usage": { "output_tokens": 1 },
+                }),
+            ),
+            ("message_stop", serde_json::json!({})),
+        ]
+        .into_iter()
+        .map(|(event, mut data)| {
+            data["type"] = event.into();
+            (Some(event), data)
+        })
+        .collect()
+    } else {
+        return String::new();
+    };
+    let mut body: String = events
+        .iter()
+        .map(|(event, data)| match event {
+            Some(event) => format!("event: {event}\ndata: {data}\n\n"),
+            None => format!("data: {data}\n\n"),
+        })
+        .collect();
+    if path.ends_with("/chat/completions") {
+        body.push_str("data: [DONE]\n\n");
+    }
+    body
 }
