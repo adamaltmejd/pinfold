@@ -1099,16 +1099,46 @@ async fn confirm_setup(message: String, signals: &mut Signals) -> io::Result<boo
         }))
 }
 
-/// First-run setup for `-- CMD` (`command`) and `start` (`None`): the
-/// profile, then where both kinds exist, the project mount. `repository`
-/// is discovery's marker check; setup runs no host Git. `None` when the
-/// user declines or closes the terminal.
+/// First-run setup for `-- CMD` (`command`) and `start` (`None`): each saved
+/// setting in turn, then what the file will hold. `repository` is
+/// discovery's marker check; setup runs no host Git. `None` when the user
+/// declines or closes the terminal.
 async fn confirm_first_run(
     root: &Path,
     repository: bool,
     command: Option<&str>,
     signals: &mut Signals,
 ) -> io::Result<Option<(String, ProjectMount)>> {
+    let Some(profile) = setup_profile(signals).await? else {
+        return Ok(None);
+    };
+    let Some(mount) = setup_mount(root, repository, signals).await? else {
+        return Ok(None);
+    };
+    let (path, lines) = crate::config::setup_summary(root, &profile, mount)?;
+    forward_diagnostics(
+        format!(
+            "These settings will be saved to {}:",
+            terminal_text(&path.to_string_lossy())
+        )
+        .into_bytes(),
+        signals,
+    )
+    .await?;
+    for line in lines {
+        forward_diagnostics(format!("  {line}").into_bytes(), signals).await?;
+    }
+    let question = match command {
+        Some(command) => format!("Save and run {}?", terminal_text(command)),
+        None => "Save and start the box?".into(),
+    };
+    Ok(confirm_setup(question, signals)
+        .await?
+        .then_some((profile, mount)))
+}
+
+/// A set `PINFOLD_PROFILE` decides the profile; otherwise setup asks.
+async fn setup_profile(signals: &mut Signals) -> io::Result<Option<String>> {
     let forced = crate::config::override_value("PINFOLD_PROFILE")?;
     let name = if let Some(name) = &forced {
         name.clone()
@@ -1129,54 +1159,56 @@ async fn confirm_first_run(
     };
     crate::core::profile::Profile::load(&name)?;
     if forced.is_some() {
-        forward_diagnostics(format!("Profile: {name}").into_bytes(), signals).await?;
-    }
-    let path = terminal_text(&root.to_string_lossy());
-    // Linux has only disks, so there is nothing to ask.
-    let mount = if cfg!(target_os = "macos") {
-        let share = if repository {
-            "  share  the box edits this folder directly, including .git"
-        } else {
-            "  share  the box edits this folder directly"
-        };
-        for line in [
-            format!("Files for the box in {path}:"),
-            share.into(),
-            "  disk   the box works on an isolated disk; a new disk starts empty".into(),
-        ] {
-            forward_diagnostics(line.into_bytes(), signals).await?;
-        }
-        let Some(answer) = setup_answer("Choose [share/disk] (share)".into(), signals).await?
-        else {
-            return Ok(None);
-        };
-        match answer.to_ascii_lowercase().as_str() {
-            "" | "share" => ProjectMount::Share,
-            "disk" => ProjectMount::Disk,
-            _ => {
-                return Err(io::Error::other(format!(
-                    "unknown files choice \"{}\"; answer share or disk",
-                    terminal_text(&answer)
-                )));
-            }
-        }
-    } else {
-        // A Linux project is always a Git checkout.
         forward_diagnostics(
-            format!("Files for the box in {path}: an isolated disk; a new disk starts empty.")
-                .into_bytes(),
+            format!("Profile  {name}  (from PINFOLD_PROFILE)").into_bytes(),
             signals,
         )
         .await?;
-        ProjectMount::default_kind()
+    }
+    Ok(Some(name))
+}
+
+/// macOS asks for the project mount; Linux has only disks and states it.
+async fn setup_mount(
+    root: &Path,
+    repository: bool,
+    signals: &mut Signals,
+) -> io::Result<Option<ProjectMount>> {
+    if !cfg!(target_os = "macos") {
+        // A Linux project is always a Git checkout.
+        forward_diagnostics(
+            "Files    disk  (the only kind on Linux; a new disk starts empty)".into(),
+            signals,
+        )
+        .await?;
+        return Ok(Some(ProjectMount::default_kind()));
+    }
+    let share = if repository {
+        "  share  the box edits this folder directly, including .git"
+    } else {
+        "  share  the box edits this folder directly"
     };
-    let question = match command {
-        Some(command) => format!("Save these settings and run {}?", terminal_text(command)),
-        None => "Save these settings and start the box?".into(),
+    for line in [
+        format!(
+            "Files for the box in {}:",
+            terminal_text(&root.to_string_lossy())
+        ),
+        share.into(),
+        "  disk   the box works on an isolated disk; a new disk starts empty".into(),
+    ] {
+        forward_diagnostics(line.into_bytes(), signals).await?;
+    }
+    let Some(answer) = setup_answer("Choose [share/disk] (share)".into(), signals).await? else {
+        return Ok(None);
     };
-    Ok(confirm_setup(question, signals)
-        .await?
-        .then_some((name, mount)))
+    match answer.to_ascii_lowercase().as_str() {
+        "" | "share" => Ok(Some(ProjectMount::Share)),
+        "disk" => Ok(Some(ProjectMount::Disk)),
+        _ => Err(io::Error::other(format!(
+            "unknown files choice \"{}\"; answer share or disk",
+            terminal_text(&answer)
+        ))),
+    }
 }
 
 fn missing_image(result: &io::Result<Option<Lease>>) -> Option<&launch::MissingManagedImage> {
