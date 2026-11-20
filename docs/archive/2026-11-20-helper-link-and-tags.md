@@ -75,16 +75,25 @@ only.
   that fails a check, or any other crossing error gives an empty list,
   and the push goes ahead as before. I chose this over refusing because
   the push itself still runs every check and reports a real failure.
-  Errors before the box is reached, such as a refused remote, still
-  stop the helper as they did.
+  After review, this also covers errors outside the box command:
+  - the box ending during the listing;
+  - a refused remote;
+  - no project disk.
+  Each lists nothing, and the push's own crossing then reports the
+  failure if it persists. Only a signal (`Interrupted`) still stops the
+  helper at `list for-push`.
 - Git now plans the push from the box's state, which has these effects:
   - unchanged refs print `Everything up-to-date`;
   - `push.followTags` sends only tags the box lacks, so a box tag that
     differs is skipped silently;
-  - Git itself rejects an explicit changed tag (`already exists`) and a
-    host branch that is not a fast-forward of the box's `host/NAME`
-    (`non-fast-forward`) unless forced, while other refs of that push
-    land, per Git's own rule.
+  - Git itself rejects an explicit changed tag (`already exists`)
+    unless forced, while other refs of that push land, per Git's own
+    rule;
+  - host Git may reject a branch push it can see is not a fast-forward
+    of the box's `host/NAME` (`non-fast-forward`). It does not when the
+    box's tip is an object the host lacks: the remote-helper transport
+    does not enforce Git's fetch-first rule (a review finding, not
+    reproduced here). pinfold forces every branch refspec either way.
 - The box script's exit-65 check still covers a push Git attempts
   without knowing about the tag: an empty listing, or a tag created
   after the listing.
@@ -321,6 +330,49 @@ fetch.pruneTags=true fetch box`. It deleted every host tag. This is the
 documented "Not protected" case: the box lists no tags. It was there
 before this change, and the change leaves it as it was.
 
+### Review fixes
+
+These were verified on a fresh disk project with the build of that
+commit.
+
+- **Inner fetch exit status.** The box's fetch now also passes:
+  - `--no-prune` and `--no-prune-tags`, so a box `fetch.prune` cannot
+    delete other `host/*` refs;
+  - `--no-recurse-submodules`;
+  - `--no-auto-maintenance`;
+  - `--no-write-commit-graph`.
+
+  So the fetch's exit status reflects only its ref transaction.
+  - A plain-git 2.56.1 probe used a clone with
+    `fetch.recurseSubmodules=true` and a submodule whose remote was
+    gone. With the old flags, the fetch exited 1 after `host/main` had
+    landed (`Errors during submodule fetch: sub`). With the new flags
+    it exited 0.
+  - Through the binary, the box repository was set up the same way:
+    `git submodule add /tmp/sub sub`, `fetch.recurseSubmodules true`,
+    then `/tmp/sub` removed. `pf git push box main` exited 0 with
+    `004572a..b0fe1db  main -> main`, and the box's `host/main` was
+    `b0fe1db`.
+- **Listing fallback.** Checked by code reading only; I could not end
+  the box mid-listing on cue. `launch::cross` returns an outer
+  `io::Error` when the box ends during the work, the check refuses, the
+  disk is missing or a signal arrives. `list for-push` now returns
+  early only for `ErrorKind::Interrupted` and otherwise lists nothing.
+- **Link remedy.** It now prints `ln -s` without `-f`, and names a
+  taken path instead of printing a command. With an empty directory at
+  `R/bin/git-remote-pinfold`:
+  - Setup printed `Git needs git-remote-pinfold on PATH for this disk
+    project: R/bin/git-remote-pinfold is taken by something other than
+    pinfold`. The directory stayed empty.
+  - Doctor printed `- Git remote: no git-remote-pinfold on PATH;
+    R/bin/git-remote-pinfold is taken by something other than pinfold`.
+  - With nothing at the path, doctor printed `- Git remote: no
+    git-remote-pinfold on PATH; run `ln -s R/bin/pinfold
+    R/bin/git-remote-pinfold``.
+  - A link to pinfold whose directory is not on PATH prints `… links to
+    pinfold but its directory is not on PATH`. That case was not run.
+- The earlier texts above that show `ln -sf` are from before this fix.
+
 ### Checks
 
 - `cargo fmt --check` passed.
@@ -334,7 +386,7 @@ before this change, and the change leaves it as it was.
 ### Cleanup
 
 - Every box started was stopped.
-- Seventeen disks were removed by name: `pi-repo-8800e3f439bd-{home,project}` (five times),
+- Nineteen disks were removed by name: `pi-repo-8800e3f439bd-{home,project}` (six times),
   `pi-r-{file,link,ro}-…-{home,project}` and
   `pi-r-share-7e8205bba800-home`.
 - `R` was removed.

@@ -1366,7 +1366,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             if mount == ProjectMount::Disk && let Ok(exe) = crate::update::installed() {
                 let _ = crate::update::link_helper(&exe);
                 if crate::update::helper_on_path().is_none() {
-                    let line = format!("Git needs git-remote-pinfold on PATH for this disk project: {}", crate::update::link_command(&exe));
+                    let line = format!("Git needs git-remote-pinfold on PATH for this disk project: {}", crate::update::link_remedy(&exe));
                     forward_diagnostics(line.into_bytes(), &mut signals).await?;
                 }
             }

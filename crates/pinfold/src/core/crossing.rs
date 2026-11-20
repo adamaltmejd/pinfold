@@ -79,7 +79,9 @@ for spec do
     fi ;;
   esac
 done
-git -C "$repo" fetch -q --atomic --no-tags --no-write-fetch-head "$bundle" "$@"
+# Only the ref transaction may decide the exit status.
+git -C "$repo" fetch -q --atomic --no-tags --no-write-fetch-head --no-prune --no-prune-tags \
+  --no-recurse-submodules --no-auto-maintenance --no-write-commit-graph "$bundle" "$@"
 "#;
 
 /// `$1` is GUEST_REPO; stdin holds the commits the host already has, one

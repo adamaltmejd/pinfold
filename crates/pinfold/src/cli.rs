@@ -1225,8 +1225,8 @@ fn helper_finding() -> Option<String> {
     let exe = crate::update::installed().ok()?;
     let Some(helper) = crate::update::helper_on_path() else {
         return Some(format!(
-            "Git remote: no git-remote-pinfold on PATH; run `{}`",
-            crate::update::link_command(&exe)
+            "Git remote: no git-remote-pinfold on PATH; {}",
+            crate::update::link_remedy(&exe)
         ));
     };
     (fs::canonicalize(&helper).ok()? != exe).then(|| {

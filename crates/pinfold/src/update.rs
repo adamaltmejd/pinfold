@@ -253,13 +253,25 @@ pub(crate) fn helper_on_path() -> Option<PathBuf> {
         })
 }
 
-/// The command that links the helper beside EXE by hand.
-pub(crate) fn link_command(exe: &Path) -> String {
+/// What to do when no helper is on PATH: link one beside EXE by hand, or,
+/// when that path is taken, say so. No `-f`: `ln` would write inside a
+/// directory found there.
+pub(crate) fn link_remedy(exe: &Path) -> String {
+    let link = exe.with_file_name(HELPER);
     let word = |path: &Path| {
         crate::pi::remote::shell_word(&path.to_string_lossy())
             .unwrap_or_else(|| terminal_text(&path.to_string_lossy()))
     };
-    format!("ln -sf {} {}", word(exe), word(&exe.with_file_name(HELPER)))
+    if fs::symlink_metadata(&link).is_err() {
+        format!("run `ln -s {} {}`", word(exe), word(&link))
+    } else if fs::canonicalize(&link).is_ok_and(|target| target == exe) {
+        format!(
+            "{} links to pinfold but its directory is not on PATH",
+            word(&link)
+        )
+    } else {
+        format!("{} is taken by something other than pinfold", word(&link))
+    }
 }
 
 fn install(release: &str, path: &Path, staging: &Path) -> io::Result<()> {

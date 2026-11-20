@@ -1855,8 +1855,9 @@ through `git-remote-pinfold`, a link to the pinfold executable on PATH;
 invoked by that name, pinfold is the helper. `pinfold update` after an
 install, and first-run setup that saves a disk, create that link beside
 the resolved executable, relative, only where no file or link exists;
-setup prints the `ln` command when none is then on PATH, and `doctor`
-reports a disk project's missing or foreign one. `git fetch box` is
+setup prints the `ln -s` command, or names the taken path, when none is
+then on PATH, and `doctor` reports a disk project's missing or foreign
+one. `git fetch box` is
 Crossing's fetch into `refs/remotes/box/*`, and no box tag reaches the
 host; `git push box BRANCH` is Crossing's push into the box's
 `refs/remotes/host/*`, and a pushed tag lands as the box's tag. The user merges;
@@ -1891,11 +1892,12 @@ cross. The helper:
   `check-ref-format`), with nothing after the empty line. Git plans the
   push from it: an unchanged branch or tag is up to date,
   `push.followTags` sends only tags the box lacks, and Git itself
-  rejects a non-fast-forward branch or a changed tag unless forced. A
-  lying box can only make Git skip or attempt a ref; object ids the host
-  lacks name nothing it fetches, and the listing never feeds a fetch. A
-  box without a repository, or a listing that fails a check, lists
-  nothing and the push goes ahead;
+  rejects a changed tag unless forced. pinfold always forces branches
+  into `refs/remotes/host/*`; host Git may itself reject a
+  non-fast-forward it can see from the listing. A lying box can only
+  make Git skip or attempt a ref; object ids the host lacks name nothing
+  it fetches, and the listing never feeds a fetch. Any listing failure
+  but a signal lists nothing and the push goes ahead;
 - speaks Git's protocol on its own descriptors: its standard input is
   `/dev/null` and its standard output is stderr.
 
