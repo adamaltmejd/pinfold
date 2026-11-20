@@ -1137,12 +1137,12 @@ async fn confirm_first_run(
         let (share, disk) = if repository {
             (
                 "  share  the box edits this folder directly, including .git",
-                "  disk   the box gets its own Git clone on an isolated disk (committed files only)",
+                "  disk   the box works on an isolated disk; a new disk starts with your committed branches",
             )
         } else {
             (
                 "  share  the box edits this folder directly",
-                "  disk   the box starts with an empty isolated disk",
+                "  disk   the box works on an isolated disk; a new disk starts empty",
             )
         };
         for line in [
@@ -1169,7 +1169,7 @@ async fn confirm_first_run(
     } else {
         // A Linux project is always a Git checkout.
         forward_diagnostics(
-            format!("Files for the box in {path}: its own Git clone on an isolated disk (committed files only).")
+            format!("Files for the box in {path}: an isolated disk; a new disk starts with your committed branches.")
                 .into_bytes(),
             signals,
         )

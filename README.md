@@ -390,7 +390,7 @@ RUN curl -fsSL https://pkgs.superlogical.com/rex/install.sh | sh -s -- --tarball
 
 Rebuild the image to update it. Then run `pinfold start` in a Rex pane. It
 starts Rex in the box and prints a `unix://` address. Add it once in the
-Rex app under Add Remote Host…. The host is reachable while the box runs.
+Rex app under Add Remote Host…. It works only while the box runs.
 Turn off Remote Control in the Rex app first; with it on, `start` sets up
 nothing. Read the threat model's Rex entry before use.
 

@@ -1723,8 +1723,8 @@ project; executable replacement remains `update-busy`.
   guest's end ends the connection. A repeated start reuses the relay while
   its server exec runs; after that exec exits, the next start sets the
   relay up again. `start` prints on stderr one line, `pinfold start: rex:
-  add unix://PATH in the Rex app under Add Remote Host… (once); it is
-  reachable while this box runs.` Remote Control
+  add unix://PATH in the Rex app under Add Remote Host… (once). It works
+  only while this box runs.` Remote Control
   on or unreadable, at either read, sets up nothing, closes a relay already
   up, and prints one `rex-remote-control` line. A failed setup prints one
   `rex-relay-failed` line. Without `rex` in the box, outside Rex or without
@@ -1910,13 +1910,15 @@ initially `default`.
 A set `PINFOLD_PROFILE` selects the profile without asking, and setup
 names it. On macOS setup then asks for the project mount, `share` (the
 default) or `disk`; another answer refuses. The question names the
-project root and describes each kind, a disk as a Git clone of committed
-files in a Git project and as empty otherwise. Linux has only `disk`,
+project root and describes each kind: a disk is isolated, and a new one
+starts with the host's committed branches in a Git project (First start)
+and empty otherwise; a retained disk is reused as it is. Linux has only `disk`,
 does not ask, and states it once. Setup never runs host Git. Before saving, it runs the chosen mount's checks that need
 no host Git; a refusal there saves nothing. The disk's Git verification
 and the comparison with a live owner happen at the start that follows,
 so their refusals leave the saved file. Confirmation saves the profile
-and mount. `-- CMD` continues with the original command and
+and mount as active lines of the commented file `config edit` creates
+(below). `-- CMD` continues with the original command and
 arguments; `start` starts the box. Both then offer a missing managed image's
 build (Images). A chosen disk follows First start (Git).
 Refusal or EOF before confirmation exits 125 without creating the file.

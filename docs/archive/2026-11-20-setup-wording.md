@@ -159,3 +159,110 @@ before. `$T` was removed.
 
 `cargo fmt --check` and
 `cargo clippy --all-targets --locked -- -D warnings` pass.
+
+## Review fixes
+
+Review of PR #360 found four inaccurate texts and asked for one addition.
+Rerun with a fresh `$T` set up as above; `$T/pf` takes the profile from
+`PF_PROFILE`, default `default`.
+
+- The disk option promised a Git clone or an empty disk. Setup can reuse
+  a retained disk, and a new Git disk receives only the host's committed
+  branches (First start). New option lines and Linux statement below.
+- The `routes` example used a PostgreSQL address; named routes forward
+  plain HTTP only. It is now `routes = { api = "127.0.0.1:8080" }` under
+  `# HTTP services on this machine the box may reach as http://NAME:`.
+  Uncommented, `config --json` reports `{"api": "127.0.0.1:8080"}`.
+- The Rex line claimed the relay stays reachable while the box runs; it
+  stops if the guest Rex server exits. Now:
+  `pinfold start: rex: add unix://PATH in the Rex app under Add Remote Host… (once). It works only while this box runs.`
+  Not exercised (no `rex` in bundled images).
+- A failed preview after `Box       not set up` dropped the
+  `config edit` note. It is carried to the footer.
+- Addition: first-run setup saves the same commented template, with the
+  chosen mount and profile as active lines.
+
+First run in a Git folder, `pinfold -- true`, share, exit 0:
+
+```
+Profile: default
+Files for the box in $T/repo:
+  share  the box edits this folder directly, including .git
+  disk   the box works on an isolated disk; a new disk starts with your committed branches
+Choose [share/disk] (share)
+share
+Save these settings and run true? [Y/n]
+y
+```
+
+In a non-Git folder, answering `disk` then `n`, exit 125, no file:
+
+```
+  share  the box edits this folder directly
+  disk   the box works on an isolated disk; a new disk starts empty
+```
+
+Linux statement (code only):
+`Files for the box in PATH: an isolated disk; a new disk starts with your committed branches.`
+
+The saved first-run file:
+
+```toml
+mounts = [{ host = ".", kind = "share" }]
+# kind: "share" lets the box edit this folder directly; "disk" gives it its own isolated disk.
+# Profile to use (default, documents, adam, or a saved profile):
+profile = "default"
+
+# Optional settings: uncomment a line to set it.
+# Local image to run instead of the profile's (not with a Containerfile beside this file):
+# image = "localhost/my-image:latest"
+# Hosts the box may reach; replaces the default list:
+# allow = ["api.anthropic.com", "github.com"]
+# HTTP services on this machine the box may reach as http://NAME:
+# routes = { api = "127.0.0.1:8080" }
+# CPUs and memory for the box:
+# cpus = 4
+# memory = "8G"
+# Variables in the box: a value, or { from = "VAR" } to pass the host's VAR:
+# env = { LANG = "C.UTF-8", API_KEY = { from = "MY_API_KEY" } }
+# A Containerfile beside this file builds the project's own image.
+```
+
+`pinfold config` accepts it, exit 0. `config --json` for it and for the
+previous first-run content (`mounts` and `profile = "default"` only) are
+byte-identical.
+
+The `config edit` template is the same without the active profile line;
+its optional section starts with the profile example:
+
+```toml
+mounts = [{ host = ".", kind = "share" }]
+# kind: "share" lets the box edit this folder directly; "disk" gives it its own isolated disk.
+
+# Optional settings: uncomment a line to set it.
+# Profile to use (default, documents, adam, or a saved profile):
+# profile = "default"
+# Local image to run instead of the profile's (not with a Containerfile beside this file):
+...
+```
+
+The rest is as in the saved file. `config --json` accepts it, exit 0;
+all seven example lines uncommented together parse, exit 0.
+
+Bare `pinfold` in an unconfigured non-Git folder with
+`PINFOLD_PROFILE=nonexistent`, exit 0:
+
+```
+Project   $T/plain2
+Box       not set up
+
+The first run asks you to confirm, and lets you pick a disk instead:
+Project details unavailable. profile "nonexistent" has no directory $T/cfg/pinfold/profiles/nonexistent
+
+Run a command    pinfold -- CMD
+Change settings  pinfold config edit   (creates the settings file)
+All commands     pinfold --help
+```
+
+Cleanup: `pinfold disk rm pi-repo-25bd61ecb3e6-home`; `$T` removed.
+`cargo fmt --check` and clippy pass.

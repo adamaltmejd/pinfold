@@ -70,7 +70,7 @@ pub(crate) async fn report(
 ) -> io::Result<()> {
     let lines = match status {
         Some(Status::Relayed) => vec![format!(
-            "pinfold start: rex: add unix://{} in the Rex app under Add Remote Host… (once); it is reachable while this box runs.",
+            "pinfold start: rex: add unix://{} in the Rex app under Add Remote Host… (once). It works only while this box runs.",
             ownership::host_dir()?.join(leaf(key)).display()
         )],
         Some(Status::RemoteControl) => vec![
