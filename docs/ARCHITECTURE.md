@@ -1035,6 +1035,13 @@ network listener, no token: the socket identifies the box.
   time (RFC 3339 to the second), the host, the decision and its reason. A
   route request's line also names the method, the request path without its
   query, and the upstream's status (null when no status line arrived). No header value is ever written.
+  A refusal's reason is one of `not allowlisted`, `ip literal`, `route`,
+  `port not allowed`, `sni missing`, `sni mismatch`, `malformed clienthello`,
+  `malformed request`, `ambiguous framing`, `header timeout`,
+  `connection cap`, `resolve failed`, `login lapsed`, `login credential query`,
+  or a refused address's class: `loopback`, `unspecified`, `private`,
+  `link-local`, `cgnat`, `benchmark`, `ietf-protocol`, `multicast`,
+  `reserved`, `site-local`, `nat64 local-use`.
   Each box's log is capped at 128 MiB. A complete encoded JSON line,
   including its newline, that would exceed the cap writes nothing. A line
   that fits exactly is appended. There is no rotation or truncation.
@@ -2205,16 +2212,16 @@ project discovery. Inside a Git directory, the command refuses as `project-in-gi
 
 ## Guarantees
 
-The end-to-end proofs are suspended (`AGENTS.md`, Tests): the suite is
-removed, and no row is proven until it is rewritten. Each row is one test.
+The end-to-end suite is being rewritten row by row (`AGENTS.md`, Tests);
+a row is proven once its test lands. Each row is one test.
 "Shown by" names its hardest scenario and the positive control in the same
 run. Testing policy is in `AGENTS.md`. Row numbers are stable; gaps are
 cut rows.
 
 | # | Guarantee | Shown by |
 |---|---|---|
-| 1 | **No network but loopback.** The box has no interface but loopback. Its only way out is its own proxy; without `egress` it has none. | Inside, only `lo` exists and `1.1.1.1` is unreachable. A box without `egress` connects to the proxy's port and is refused. On Linux, vsock connections to CID 2 on the exec port, on an unused port and, in that box without `egress`, on port 3128 are reset at once, not timed out. Control: the same image with a route reaches the host fixture through the proxy; on Linux, in that box, CID 2 port 3128 reaches the proxy. |
-| 2 | **Only allowlisted hosts get through.** The proxy lets out only allowlisted names, never an IP literal or a name resolving to a refused address (Egress proxy). A route reaches exactly its one host service. | `localhost` and the host's own address are put on the allowlist and requested; each gets a 403, logged with its own reason. A CONNECT to an allowlisted name whose ClientHello SNI names another host is refused and logged. `example.com` gets a 403 logged `not allowlisted`. Control: in the same box, `api.github.com` answers, and a route reaches the host fixture with the Host header rewritten; its log line names the method, the path without its query and the upstream status. |
+| 1 | **No network but loopback.** The box has no interface but loopback. Its only way out is its own proxy; without `egress` it has none. | Inside, only `lo` exists and the documentation address `192.0.2.1` is unreachable. A box without `egress` connects to the proxy's port and is refused. On Linux, vsock connections to CID 2 on the exec port, on an unused port and, in that box without `egress`, on port 3128 are reset at once, not timed out. Control: the same image with a route reaches the host fixture through the proxy; on Linux, in that box, CID 2 port 3128 reaches the proxy. |
+| 2 | **Only allowlisted hosts get through.** The proxy lets out only allowlisted names, never an IP literal or a name resolving to a refused address (Egress proxy). A route reaches exactly its one host service. | `localhost` and the host's own address are put on the allowlist and requested; each gets a 403, logged `loopback` and `ip literal`. A CONNECT to an allowlisted name whose ClientHello SNI names another host is accepted, then refused and logged `sni mismatch`. `example.com` gets a 403 logged `not allowlisted`, over CONNECT and plain HTTP. Control: in the same box, `api.github.com` answers, and a route reaches the host fixture with the Host header rewritten; its log line names the method, the path without its query and the upstream status. |
 | 5 | **Nothing can gain privileges.** Box work runs as the host uid with no capabilities and cannot regain privileges, in a VM with its own kernel. | In a box on the built-in `default` image, a grandchild of an exec'd command (fork then exec) has the host uid, `CapBnd` 0 and `NoNewPrivs` 1, and its `unshare -U` fails with `ENOSPC`. The image has no setuid or setgid file, and the box's root is not writable. On Linux, PID 1 keeps only `CAP_SYS_ADMIN`, and the exec service is the host uid with every capability set empty. Control: a plain child runs in the same box. Two boxes report different `/proc/sys/kernel/random/boot_id` values, and on Linux each differs from the host's, so each box boots its own kernel. |
 | 8 | **Losing the owner fails closed.** If the owner dies, the box loses its way out, and the leftover can be removed. | SIGKILL of `box up`. On Apple the guest survives: `box exec` runs a script in it that prints a marker and then requests an allowlisted host; the marker appears and the request gets no upstream response. On Linux the VM ends with its owner (43). Another state root sees the owner dead, and `box prune` removes the leftover; the name is reusable. SIGKILL of a detached project owner while a session runs makes the client exit 125. Control: the same in-box request succeeds before the kill. |
 | 10 | **Disk-project branches and tags cross only through the Git remote.** A fetch writes box branches only under `refs/remotes/box/*` and adds only new tags; it never moves or deletes the host's own branches or tags, except as the threat model lists. A push lands only in the box's `refs/remotes/host/*` and its tags. Crossing carries no hook or configuration. | (a) A box that writes its own listing names a branch at a host-only commit. `git fetch box` fails naming that branch, no ref under `refs/remotes/box/` changes, and `.git/objects` is unchanged. (b) Separately, a valid listing carries a tag named like a host tag at another object. After `git fetch --force --tags --prune --prune-tags box`, every host tag is where it was. The box then commits hooks under every client-side name, `core.hooksPath`, `.husky/` and `.githooks/`; the host fetches, merges and checks out twice, and nothing planted runs. With `push.followTags`, `git push box main` lands main only in the box's `refs/remotes/host/main` and its annotated tags as box tags, and changes no box working-tree file. A fresh start leaves the project disk empty and the host's `.git/config` byte-identical; the first push creates the box repository. Control: a host hook runs, and a legitimate branch and new tag land under `refs/remotes/box/*` and `refs/tags/*`. |

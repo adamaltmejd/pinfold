@@ -52,18 +52,9 @@ rules for changing the repository.
 
 ## Tests
 
-**Suspended.** The suite was removed on 2026-11-11 for the composable
-build (`docs/archive/2026-11-11-composable-plan.md`). Until stage 2 lands
-and the suite is rewritten from ARCHITECTURE.md:
-- No step adds a test.
-- Each step's builder exercises the real binary through its ticket's
-  cases and records the commands and what it observed in a dated archive
-  file. The rewrite starts from those records.
-- No release is cut. The nightly workflow still calls the suite and
-  fails without it. The release workflow no longer runs a test, so a
-  pushed tag would publish.
-
-The rules below govern the rewrite.
+The suite is being rewritten row by row from the Guarantees table in
+ARCHITECTURE.md, in `crates/e2e`. A row without its test is listed in
+issue #297. No release is cut until every row has its test.
 
 - **End-to-end only.** No unit tests, mocks, runtime stubs, or test-only code
   paths or flags in the binary. A test builds the real binary, starts real
