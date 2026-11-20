@@ -390,14 +390,18 @@ pub struct Project<'a> {
 }
 
 impl<'a> Project<'a> {
-    /// `git init` a new folder `name` in the test's directory, then create
+    /// `git init` a new folder `name` in the test's directory, with no
+    /// template and so no hooks directory, then create
     /// its configuration with `config edit`, as on a first run: a share on
     /// macOS, a disk on Linux.
     pub fn new(env: &'a TestEnv, name: &str) -> Project<'a> {
         let root = env.root().join(name);
         fs::create_dir(&root).unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
         host_git_setup(env);
-        let init = run(git_command(env, &root).args(["init", "-q"]), COMMAND);
+        let init = run(
+            git_command(env, &root).args(["init", "-q", "--template="]),
+            COMMAND,
+        );
         assert_eq!(init.code, 0, "git init: {init:?}");
         let projects = env.config_home().join("pinfold/projects");
         let before = dir_names(&projects);
@@ -452,8 +456,17 @@ impl Drop for Project<'_> {
             out if out.code == 0 => Ok(()),
             out => Err(format!("{out:?}")),
         }) {
-            eprintln!("e2e: pinfold stop in {}: {error}", self.root.display());
+            eprintln!(
+                "e2e: PINFOLD STOP FAILED in {}: {error}; its roots are kept",
+                self.root.display()
+            );
             self.env.roots.keep.store(true, Ordering::SeqCst);
+            if !thread::panicking() {
+                panic!(
+                    "pinfold stop in {} failed (see stderr)",
+                    self.root.display()
+                );
+            }
         }
     }
 }

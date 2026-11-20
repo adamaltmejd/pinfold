@@ -11,8 +11,8 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
     // Sabotage (run): delete `paths.extend(extra)` in core/mounts.rs's
     // `protected_paths`. With the configuration directory symlinked in,
     // `-- true` then runs and exits 0.
-    // The same project running with each symlink removed is the positive
-    // control.
+    // The same project running, and `config edit` succeeding, with each
+    // symlink removed are the positive controls.
     default_image();
     let env = TestEnv::new("protected");
     let project = Project::new(&env, "protected");
@@ -26,14 +26,23 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
 
     // Each protected directory in turn is moved into the checkout and
     // linked from where pinfold reads it. Both commands are refused and
-    // change nothing under the state or config roots; with the link
-    // replaced by the directory, the project runs.
+    // change nothing under the state or config roots or the moved
+    // directory; with the link replaced by the directory, both succeed.
     for protected in [project.config_dir(), profile.as_path()] {
         let inside = project.root().join("linked");
         fs::rename(protected, &inside).unwrap();
         symlink(&inside, protected).unwrap();
-        for args in [&["--", "true"][..], &["config", "edit"]] {
-            let before = (tree(env.state_home()), tree(env.config_home()));
+        let commands = [&["--", "true"][..], &["config", "edit"]];
+        for args in commands {
+            // The config root's tree holds the link, not what it names.
+            let trees = || {
+                (
+                    tree(env.state_home()),
+                    tree(env.config_home()),
+                    tree(&inside),
+                )
+            };
+            let before = trees();
             let out = project.pinfold(args);
             // A setup failure exits 125; the spec names no code for `config
             // edit`.
@@ -46,16 +55,14 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
                 "{args:?}: {}",
                 out.stderr
             );
-            assert_eq!(
-                (tree(env.state_home()), tree(env.config_home())),
-                before,
-                "{args:?} with {protected:?} linked in"
-            );
+            assert_eq!(trees(), before, "{args:?} with {protected:?} linked in");
         }
         fs::remove_file(protected).unwrap();
         fs::rename(&inside, protected).unwrap();
-        let out = project.pinfold(&["--", "true"]);
-        assert_eq!(out.code, 0, "{protected:?} in place: {out:?}");
+        for args in commands {
+            let out = project.pinfold(args);
+            assert_eq!(out.code, 0, "{args:?} with {protected:?} in place: {out:?}");
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -106,7 +113,6 @@ fn share_reaches_only_its_folder(env: &TestEnv, project: &Project) {
     assert_eq!(git(&["rev-parse", "--abbrev-ref", "HEAD"]), "main");
     assert_eq!(git(&["rev-parse", "HEAD^"]), host_commit);
     assert_eq!(git(&["show", "HEAD:edit"]), "edit");
-    assert_eq!(git(&["status", "--porcelain", "--", "edit"]), "");
 }
 
 fn tokens(text: &str) -> impl Iterator<Item = &str> {

@@ -54,6 +54,9 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     // Sabotage (run): in core/crossing.rs's `fetch_cancellable`, skip the
     // branch check `!carried && !reached(oid)?`. The hostile fetch then
     // exits 0 and writes `refs/remotes/box/stolen` at the host-only commit.
+    // Sabotage (run): in `fetch_cancellable`'s `kept_out`, drop the
+    // `host_names` case-folded match. The forced tag fetch then writes the
+    // box's `Light`.
     // The legitimate fetch and the host's own hooks are the positive
     // controls.
     default_image();
@@ -106,16 +109,31 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
         BTreeMap::from([("refs/remotes/host/main".to_string(), c1.clone())])
     );
 
+    // The host's own hooks write to `host-ran`, installed before any fetch
+    // so nothing from the box can be overwritten unseen.
+    let planted = env.root().join("planted");
+    let host_ran = env.root().join("host-ran");
+    fs::create_dir(&planted).unwrap();
+    fs::create_dir(&host_ran).unwrap();
+    let hooks = project.root().join(".git/hooks");
+    assert!(!hooks.exists(), "git init --template= made no hooks");
+    fs::create_dir(&hooks).unwrap();
+    for hook in ["post-merge", "post-checkout"] {
+        let path = hooks.join(hook);
+        let marker = shell_quote(&host_ran.join(hook).display().to_string());
+        fs::write(&path, format!("#!/bin/sh\ntouch {marker}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
     // The box checks main out and commits hooks under every client-side
     // name in .githooks/ and .husky/, which its own core.hooksPath names.
     // Each would leave a file named for it in `planted` on the host. In the
     // box, where that path does not exist, each succeeds and leaves nothing:
     // a failing reference-transaction hook would refuse the box's own ref
-    // updates, the push's included.
-    let planted = env.root().join("planted");
-    let host_ran = env.root().join("host-ran");
-    fs::create_dir(&planted).unwrap();
-    fs::create_dir(&host_ran).unwrap();
+    // updates, the push's included. Its tags: `box-new`, new; `light` and
+    // `Light`, named like the host's `light` exactly and but for case, at
+    // other commits.
+    let planted_quoted = shell_quote(&planted.display().to_string());
     let mut setup = vec![
         "set -e
          mkdir -p /home/pi/bin; printf %s \"$1\" > /home/pi/bin/git; chmod 755 /home/pi/bin/git
@@ -123,7 +141,7 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
          git switch -q -c main host/main
          mkdir .githooks .husky
          for name do
-           printf '#!/bin/sh\\ntouch \"%s/%s\" 2>/dev/null\\nexit 0\\n' \"$marker\" \"$name\" > .githooks/$name
+           printf '#!/bin/sh\\ntouch %s/%s 2>/dev/null\\nexit 0\\n' \"$marker\" \"$name\" > .githooks/$name
            cp .githooks/$name .husky/$name
          done
          chmod 755 .githooks/* .husky/*
@@ -135,17 +153,18 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
          echo feature > feature
          git add feature
          git -c core.hooksPath=/dev/null commit -q -m feature
+         git tag Light
          git switch -q main
          git config core.hooksPath .githooks",
         "sh",
         HOSTILE_GIT,
-        planted.to_str().unwrap(),
+        &planted_quoted,
     ];
     setup.extend(HOOKS);
     in_box(&setup);
-    let box_ids = in_box(&["git rev-parse main feature box-new light"]);
-    let [box_main, box_feature, box_tag, box_light] =
-        <[&str; 4]>::try_from(box_ids.lines().collect::<Vec<_>>()).unwrap();
+    let box_ids = in_box(&["git rev-parse main feature box-new light Light"]);
+    let [box_main, box_feature, box_tag, box_light, box_upper] =
+        <[&str; 5]>::try_from(box_ids.lines().collect::<Vec<_>>()).unwrap();
 
     // (a) A hostile listing names `stolen` at the host-only commit, beside
     // a real bundle. The fetch fails naming it and changes nothing.
@@ -170,25 +189,25 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     assert_eq!(tree(&project.root().join(".git/objects")), objects_before);
     in_box(&["rm /home/pi/.hostile"]);
 
-    // (b) A valid listing carries `light` at another object. A forced,
-    // pruning tag fetch moves and deletes no host tag; the box's branches
-    // and its new tag land.
-    let tags = || {
-        let tags = git(&[
-            "for-each-ref",
-            "--format=%(refname) %(objectname)",
-            "refs/tags/",
-        ]);
-        tags.lines()
+    // (b) A valid listing carries `light` and `Light` at other objects. A
+    // forced, pruning tag fetch moves and deletes no host branch or tag and
+    // writes no `Light`; the box's branches and its new tag land.
+    let named = |prefix: &str| {
+        git(&["for-each-ref", "--format=%(refname) %(objectname)", prefix])
+            .lines()
             .map(|line| {
                 let (name, id) = line.split_once(' ').unwrap();
                 (name.to_string(), id.to_string())
             })
             .collect::<BTreeMap<_, _>>()
     };
-    let host_tags = tags();
+    let (host_tags, host_heads) = (named("refs/tags/"), named("refs/heads/"));
     assert_eq!(host_tags.len(), 2, "{host_tags:?}");
-    assert_ne!(host_tags["refs/tags/light"], box_light);
+    let host_light = host_tags["refs/tags/light"].clone();
+    assert!(
+        host_light != box_light && host_light != box_upper,
+        "{host_light}"
+    );
     git(&[
         "fetch",
         "-q",
@@ -200,33 +219,37 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     ]);
     let mut expected = host_tags.clone();
     expected.insert("refs/tags/box-new".into(), box_tag.into());
-    assert_eq!(tags(), expected);
+    assert_eq!(named("refs/tags/"), expected);
+    assert_eq!(named("refs/heads/"), host_heads);
+    // On a file system that folds case, `Light` would land in `light`'s
+    // file: read the id through Git, and every stored spelling of it.
+    assert_eq!(git(&["rev-parse", "refs/tags/light"]), host_light);
+    assert_eq!(
+        stored_tags(project.root(), "light"),
+        [("refs/tags/light".to_string(), host_light.clone())]
+    );
     assert_eq!(git(&["rev-parse", "refs/remotes/box/main"]), box_main);
     assert_eq!(git(&["rev-parse", "refs/remotes/box/feature"]), box_feature);
+    assert_eq!(names(&host_ran), Vec::<String>::new());
 
-    // Twice: the host fetches, merges and checks out. Its own hooks run;
-    // nothing the box planted does.
-    for hook in ["post-merge", "post-checkout"] {
-        let path = project.root().join(".git/hooks").join(hook);
-        fs::write(
-            &path,
-            format!("#!/bin/sh\ntouch \"{}/{hook}\"\n", host_ran.display()),
-        )
-        .unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    // Twice: the host fetches the box's newest main, merges and checks
+    // out. Its own hooks run; nothing the box planted does.
+    let mut fetched = box_main.to_string();
     for round in ["one", "two"] {
         if round == "two" {
             in_box(&[
                 "echo two > two && git add two && git -c core.hooksPath=/dev/null commit -q -m two",
             ]);
+            fetched = in_box(&["git rev-parse main"]);
+            assert_ne!(fetched, box_main);
         }
         git(&["fetch", "-q", "box"]);
+        assert_eq!(git(&["rev-parse", "box/main"]), fetched, "round {round}");
         git(&["merge", "-q", "box/main"]);
         git(&["checkout", "-q", "-b", round]);
         git(&["checkout", "-q", "main"]);
     }
-    assert_eq!(git(&["rev-parse", "main"]), git(&["rev-parse", "box/main"]));
+    assert_eq!(git(&["rev-parse", "main"]), fetched);
     assert_eq!(names(&host_ran), ["post-checkout", "post-merge"]);
     assert_eq!(names(&planted), Vec::<String>::new());
     assert_eq!(project.git(&["config", "--get", "core.hooksPath"]).code, 1);
@@ -247,6 +270,40 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     expected.insert("refs/tags/v1".into(), git(&["rev-parse", "refs/tags/v1"]));
     assert_eq!(box_refs(&in_box), expected);
     assert_eq!(in_box(&[worktree]), tree_before);
+    assert_eq!(names(&planted), Vec::<String>::new());
+}
+
+/// `text` as one shell word.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+/// Every tag the host repository stores, loose or packed, whose name is
+/// `name` ignoring ASCII case, with its id.
+fn stored_tags(root: &Path, name: &str) -> Vec<(String, String)> {
+    let git = root.join(".git");
+    let mut found = Vec::new();
+    for entry in fs::read_dir(git.join("refs/tags")).unwrap() {
+        let entry = entry.unwrap();
+        let stored = entry.file_name().into_string().unwrap();
+        if stored.eq_ignore_ascii_case(name) {
+            let id = fs::read_to_string(entry.path()).unwrap();
+            found.push((format!("refs/tags/{stored}"), id.trim().to_string()));
+        }
+    }
+    if let Ok(packed) = fs::read_to_string(git.join("packed-refs")) {
+        for line in packed.lines() {
+            if let Some((id, stored)) = line.split_once(' ')
+                && let Some(tag) = stored.strip_prefix("refs/tags/")
+                && tag.eq_ignore_ascii_case(name)
+            {
+                found.push((stored.to_string(), id.to_string()));
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
 }
 
 /// Exit 0, its stdout trimmed.

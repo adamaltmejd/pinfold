@@ -1,7 +1,10 @@
 //! Guarantee 15: cleanup removes only pinfold's garbage.
 
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use e2e::{Exec, Project, TestEnv, default_image, hold_maintenance, json_lines, run, tree};
 use serde_json::Value;
@@ -20,14 +23,35 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let idle = Project::new(&env, "idle");
 
     // A kept project with a live box and no clients: its one session wrote
-    // a file and ended.
+    // a file to its disk and one to the box's own tmpfs /tmp, which a
+    // replacement box would not have, and ended.
+    let box_mark = format!("box-{}", std::process::id());
     ok(live.pinfold(&["start"]), "start");
     ok(
-        live.pinfold(&["--", "sh", "-c", "echo kept > marker && sync"]),
+        live.pinfold(&[
+            "--",
+            "sh",
+            "-c",
+            "echo kept > marker && echo \"$1\" > /tmp/e2e-box && sync",
+            "sh",
+            &box_mark,
+        ]),
         "write",
     );
-    // An idle project: one run, ended, and a host file in its checkout.
+    // An idle project: one run, ended, and a host file in its checkout. Its
+    // detached owner is gone before `clean`: the only processes left with
+    // this test's state root are the ones the kept project had before.
+    let kept = processes_of(env.state_home());
+    assert!(!kept.is_empty(), "the kept project's owner");
     ok(idle.pinfold(&["--", "true"]), "idle run");
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while !processes_of(env.state_home()).is_subset(&kept) {
+        assert!(
+            Instant::now() < deadline,
+            "the idle project's owner outlived its run"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
     fs::write(idle.root().join("host-file"), "host\n").unwrap();
 
     let (live, idle) = (Facts::of(&env, &live), Facts::of(&env, &idle));
@@ -45,7 +69,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let hold = hold_maintenance();
     let cleaned = run(
         env.command().args(["clean", "--unused", "0s"]),
-        std::time::Duration::from_secs(120),
+        Duration::from_secs(120),
     );
     drop(hold);
     assert_eq!(cleaned.code, 0, "{cleaned:?}");
@@ -59,8 +83,33 @@ fn cleanup_removes_only_pinfolds_garbage() {
         assert!(path.exists(), "{} after clean", path.display());
     }
     assert_eq!(live.generation(&env), generation);
-    let read = live.project.pinfold(&["--", "cat", "marker"]);
-    assert_eq!(ok(read, "read back"), "kept");
+    let read = live
+        .project
+        .pinfold(&["--", "cat", "marker", "/tmp/e2e-box"]);
+    assert_eq!(ok(read, "read back"), format!("kept\n{box_mark}"));
+}
+
+/// The host processes whose environment sets `XDG_STATE_HOME` to `state`.
+fn processes_of(state: &Path) -> BTreeSet<u32> {
+    let wanted = format!("XDG_STATE_HOME={}", state.display()).into_bytes();
+    let mut found = BTreeSet::new();
+    for entry in fs::read_dir("/proc").expect("read /proc").flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse().ok())
+        else {
+            continue;
+        };
+        // A process that exited meanwhile, or a zombie, has no environment.
+        let Ok(environ) = fs::read(entry.path().join("environ")) else {
+            continue;
+        };
+        if environ.split(|byte| *byte == 0).any(|var| var == wanted) {
+            found.insert(pid);
+        }
+    }
+    found
 }
 
 /// One project's checkout, configuration file, state directory and disks.
@@ -106,7 +155,7 @@ impl<'a> Facts<'a> {
         let listed = ok(
             run(
                 env.command().args(["box", "list", "--label", &label]),
-                std::time::Duration::from_secs(120),
+                Duration::from_secs(120),
             ),
             "box list",
         );
