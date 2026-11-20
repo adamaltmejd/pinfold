@@ -41,35 +41,38 @@ write. Every change outside `profile/` and the docs was reverted.
 
 ```
 RUN set -eu; \
-    for account in 501:20 1000:1000; do \
-        uid=${account%:*}; gid=${account#*:}; \
-        if ! getent passwd "$uid" >/dev/null; then \
-            echo "pinfold:x:$uid:$gid:pinfold:/home/pi:/bin/bash" >> /etc/passwd; \
-        fi; \
-    done; \
-    if ! getent group 1000 >/dev/null; then echo 'pinfold:x:1000:' >> /etc/group; fi; \
+    if ! getent passwd 501 >/dev/null && ! getent passwd pinfold >/dev/null; then \
+        useradd -M -N -u 501 -g 20 -d /home/pi -s /bin/bash pinfold; \
+    fi; \
+    if ! getent group 1000 >/dev/null && ! getent group pi >/dev/null; then \
+        groupadd -g 1000 pi; \
+    fi; \
+    if ! getent passwd 1000 >/dev/null && ! getent passwd pi >/dev/null; then \
+        useradd -M -N -u 1000 -g 1000 -d /home/pi -s /bin/bash pi; \
+    fi; \
     printf '%s\n' "PS1='pinfold:\\w\\\$ '" >> /etc/bash.bashrc
 ```
 
-- uid 501, gid 20 is the first macOS user. uid 1000, gid 1000 is the usual
-  first Linux user.
-- Each line is added only if Debian has no account at that uid. A group is
-  added only for gid 1000. gid 20 stays Debian's `dialout`.
+- uid 501, gid 20 is the first macOS user, named `pinfold`. uid 1000,
+  gid 1000 is the usual first Linux user, named `pi`, with group `pi`.
+- Each account or group is added only if Debian leaves both its id and its
+  name free. gid 20 stays Debian's `dialout`.
 - The home is `/home/pi`, the project box's `HOME` (`pi/state.rs`).
+- `useradd` also writes locked `/etc/shadow` entries.
+- Other uids keep working without a name.
 
-Both lines share the name `pinfold`. Lookups by uid, which `whoami`, `id`,
-Bash and `ls` use, each find their own line. A lookup by name
-(`getent passwd pinfold`, `~pinfold`) returns the first line, uid 501.
-Both lines have the same home, so `~pinfold` is right for either uid. A
-name such as `pinfold1000` would avoid the duplicate but would show in
-`whoami` on every Linux box.
+The first image-only round gave both uids the name `pinfold`. Review
+rejected that:
+
+- `id -u "$(whoami)"` printed 501 when running as 1000.
+- Debian's `pwck` treats duplicate names as an error.
 
 The prompt does not use `\u`, so a uid with no name never sees
-`I have no name!`. Debian's `/etc/bash.bashrc` already returns early when
-not interactive, and `/etc/profile` sources it for login Bash. A home
-`.bashrc` runs later, so its `PS1` wins. Nothing is written into homes.
-
-Other uids keep working without a name.
+`I have no name!`. Debian's `/etc/bash.bashrc` returns early when not
+interactive. Nothing is written into homes. ARCHITECTURE.md states only
+the default prompt. Whether a home `PS1` wins depends on which startup
+files the shell reads. It was observed for plain interactive `bash` only
+(below).
 
 ## Verification
 
@@ -84,7 +87,41 @@ The bundled images were not rebuilt. The test image,
 `localhost/pinfold/profile-default:latest` plus the `RUN` above. The
 project was a share with `image = "localhost/pinfold-t335:latest"`.
 
-`container run --user U` on the test image:
+#### Final names
+
+The test image was the existing `localhost/pinfold/profile-default:latest`
+plus the final `RUN`. It was run with `container run --rm --network none
+--read-only --tmpfs /tmp --user U`:
+
+```
+== --user 501:20
+pinfold
+uid=501(pinfold) gid=20(dialout) groups=20(dialout)
+id -u $(whoami) = 501
+pinfold:x:501:20::/home/pi:/bin/bash
+PS1=[pinfold:\w\$ ]
+== --user 1000:1000
+pi
+uid=1000(pi) gid=1000(pi) groups=1000(pi)
+id -u $(whoami) = 1000
+pi:x:1000:1000::/home/pi:/bin/bash
+PS1=[pinfold:\w\$ ]
+```
+
+Each block's last line came from `bash -ic 'echo PS1=[$PS1]'`.
+
+As root, `pwck -r` reported no duplicate. It listed only missing home
+directories: Debian's own `man`, `lp`, `news`, `uucp`, `www-data`, `list`
+and `irc`, plus `pi` (`/home/pi` is a disk mount point, not part of the
+image). It exited 2. The stock `profile-default` image gives the same
+exit status and the same lines apart from `pi`. `grpck -r` exited 0.
+
+#### First image-only round (both uids named `pinfold`)
+
+The CLI runs below used this round's image. The shared name does not
+affect the prompt, the home, ownership or captured output.
+
+`container run --user U` on that image:
 
 ```
 501:20     uid=501(pinfold) gid=20(dialout) groups=20(dialout); whoami pinfold; ~ /home/pi
@@ -128,7 +165,8 @@ pinfold:~$ exit
 `pf -- bash -l` showed the same prompts and ended with `logout`.
 
 `PS1='custom-prompt\$ '` was then appended to the home's `.bashrc`.
-`pf -- bash` showed `custom-prompt$ ` at each prompt.
+Plain interactive `pf -- bash` then showed `custom-prompt$ ` at each
+prompt. This was not checked for login shells.
 
 `pf -- bash -c 'printf x' > out` exited 0, and `od -c` showed one byte,
 `x`.
@@ -141,6 +179,10 @@ without the lines:
 - `whoami` printed `cannot find name for user ID 501`.
 
 ### Linux (dev VM, Debian 13, x86_64)
+
+This run used the first image-only round, in which uid 1000 was also
+named `pinfold`. It was not repeated with `pi`. The `container run --user
+1000:1000` check above covers the final name.
 
 The tree was copied to the VM, and `cargo build -p pinfold --locked
 --target x86_64-unknown-linux-musl` built it. With throwaway XDG roots,
