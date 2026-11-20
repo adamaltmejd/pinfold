@@ -20,7 +20,8 @@ use crate::formatting::terminal_text;
 use crate::pi::launch::utf8;
 
 pub fn print_intro() {
-    match project_intro() {
+    let mut unconfigured = false;
+    match project_intro(&mut unconfigured) {
         Ok(Some(branches)) => {
             println!("\nRun a command    pinfold -- CMD\nKeep it running  pinfold start");
             if branches {
@@ -29,21 +30,26 @@ pub fn print_intro() {
             println!("Change settings  pinfold config edit\nAll commands     pinfold --help");
         }
         Ok(None) => println!(
-            "\nSet up and run     pinfold -- CMD     (e.g. pinfold -- claude)\nChange settings    pinfold config edit\nAll commands       pinfold --help"
+            "\nSet up and run     pinfold -- CMD     (e.g. pinfold -- claude)\nChange settings    pinfold config edit   (creates the settings file)\nAll commands       pinfold --help"
         ),
         Err(error) => {
             println!(
                 "Project details unavailable. {}",
                 terminal_text(&error.to_string())
             );
-            println!("\nRun a command    pinfold -- CMD\nAll commands     pinfold --help");
+            println!("\nRun a command    pinfold -- CMD");
+            if unconfigured {
+                println!("Change settings  pinfold config edit   (creates the settings file)");
+            }
+            println!("All commands     pinfold --help");
         }
     }
 }
 
 /// `None` without a configuration; otherwise whether it is a Git disk
 /// project, whose branches cross by `git fetch box` and `git push box`.
-fn project_intro() -> io::Result<Option<bool>> {
+/// `unconfigured` is set once known, so a later failure's footer has it.
+fn project_intro(unconfigured: &mut bool) -> io::Result<Option<bool>> {
     use crate::pi::session::{ProjectStatus, project_status};
 
     let context = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
@@ -55,6 +61,7 @@ fn project_intro() -> io::Result<Option<bool>> {
             .get_ref()
             .is_some_and(|e| e.is::<crate::config::NoConfig>())
     });
+    *unconfigured = !configured;
     let status = project_status(root);
     match &status {
         Ok(ProjectStatus::Stopped) if !configured => println!("Box       not set up"),
@@ -1328,8 +1335,16 @@ fn config_edit() -> io::Result<i32> {
         project.check_worktree(mount)?;
     }
     let (path, created) = crate::config::create(&project.root, None)?;
-    let action = if created { "Created" } else { "Opening" };
-    eprintln!("{action} {}", terminal_text(&path.to_string_lossy()));
+    let path_text = terminal_text(&path.to_string_lossy());
+    if created {
+        let mount = match crate::config::ProjectMount::default_kind() {
+            crate::config::ProjectMount::Share => "shared folder",
+            crate::config::ProjectMount::Disk => "isolated disk",
+        };
+        eprintln!("Created {path_text} with the default settings ({mount}).");
+    } else {
+        eprintln!("Opening {path_text}");
+    }
     let editor = ["VISUAL", "EDITOR"]
         .into_iter()
         .filter_map(std::env::var_os)

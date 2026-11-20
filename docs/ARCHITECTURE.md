@@ -1722,9 +1722,9 @@ project; executable replacement remains `update-busy`.
   whose reply may follow for five seconds before the exec is ended; the
   guest's end ends the connection. A repeated start reuses the relay while
   its server exec runs; after that exec exits, the next start sets the
-  relay up again. `start` prints on stderr `pinfold start: rex: in the Rex
-  app, add unix://PATH once under Add Remote Host…` and `pinfold start:
-  rex: the host is reachable while this project's box runs.` Remote Control
+  relay up again. `start` prints on stderr one line, `pinfold start: rex:
+  add unix://PATH in the Rex app under Add Remote Host… (once). It works
+  only while this box runs.` Remote Control
   on or unreadable, at either read, sets up nothing, closes a relay already
   up, and prints one `rex-remote-control` line. A failed setup prints one
   `rex-relay-failed` line. Without `rex` in the box, outside Rex or without
@@ -1907,16 +1907,18 @@ stdout and stderr are terminals and stdin's is already in canonical mode;
 pinfold never changes its mode for a prompt. When the file is missing and
 I/O is interactive, `-- CMD` and `start` run one setup. It offers a profile,
 initially `default`.
-A set `PINFOLD_PROFILE` selects the profile and is identified in the prompt.
-Setup identifies whether the selected profile is bundled or user-defined.
-On macOS it then asks for the project mount, `share` (the default) or
-`disk`; another answer refuses. Linux has only `disk` and does not ask.
-Setup names the project root and describes the chosen mount. It never
-runs host Git. Before saving, it runs the chosen mount's checks that need
+A set `PINFOLD_PROFILE` selects the profile without asking, and setup
+names it. On macOS setup then asks for the project mount, `share` (the
+default) or `disk`; another answer refuses. The question names the
+project root and describes each kind: a disk is isolated, and a new one
+starts with the host's committed branches in a Git project (First start)
+and empty otherwise; a retained disk is reused as it is. Linux has only `disk`,
+does not ask, and states it once. Setup never runs host Git. Before saving, it runs the chosen mount's checks that need
 no host Git; a refusal there saves nothing. The disk's Git verification
 and the comparison with a live owner happen at the start that follows,
 so their refusals leave the saved file. Confirmation saves the profile
-and mount. `-- CMD` continues with the original command and
+and mount as active lines of the commented file `config edit` creates
+(below). `-- CMD` continues with the original command and
 arguments; `start` starts the box. Both then offer a missing managed image's
 build (Images). A chosen disk follows First start (Git).
 Refusal or EOF before confirmation exits 125 without creating the file.
@@ -1928,8 +1930,9 @@ the Git remote always refuse as `no-config`. The diagnostic names the interactiv
 `doctor` reports it as a finding. An unreadable file
 or a dangling symlink fails. `pinfold config edit` checks a project as
 below, with the profile a run would select (a profile that cannot be
-loaded adds no paths, so the editor still opens), creates the file in one step when it is missing, holding only the
-project mount below, and opens it in `$VISUAL`, else `$EDITOR`, else
+loaded adds no paths, so the editor still opens), creates the file in one step when it is missing, holding the
+project mount below and commented examples of the other keys, says so,
+and opens it in `$VISUAL`, else `$EDITOR`, else
 `vi`; it exits with the editor's code. On Linux every project command
 outside Git, `config edit` included, is refused as `not-git`.
 
@@ -2072,7 +2075,8 @@ and it previews the profile and the default mount the first run asks to
 confirm, saying on macOS that a disk can be chosen instead. It reads project and owner
 information and image availability without creating state or starting a box.
 Unavailable details are identified. It ends with next steps, including
-`pinfold -- CMD`, and for a configured Git disk project `git fetch box`
+`pinfold -- CMD`, `pinfold config edit` (noted, before setup, as creating
+the settings file), and for a configured Git disk project `git fetch box`
 and `git push box`, and succeeds.
 Explicit help groups the command inventory
 by task. Report commands use human output unless `--json` is requested,

@@ -55,9 +55,45 @@ impl ProjectMount {
         }
     }
 
-    fn declaration(self) -> String {
+    /// A new project file: this mount and, from first-run setup, the chosen
+    /// profile as active lines, then each other key a project file accepts
+    /// as a commented example.
+    fn template(self, profile: Option<&str>) -> String {
+        let kinds = if cfg!(target_os = "macos") {
+            "\"share\" lets the box edit this folder directly; \"disk\" gives it its own isolated disk"
+        } else {
+            "\"disk\" gives the box its own isolated disk"
+        };
+        let profile_help = "# Profile to use (default, documents, adam, or a saved profile):\n";
+        // Profile::load accepts only ASCII names safe in a TOML string.
+        let (chosen, example) = match profile {
+            Some(name) => (
+                format!("{profile_help}profile = \"{name}\"\n"),
+                String::new(),
+            ),
+            None => (
+                String::new(),
+                format!("{profile_help}# profile = \"{DEFAULT_PROFILE}\"\n"),
+            ),
+        };
         format!(
-            "mounts = [{{ host = \".\", kind = \"{}\" }}]\n",
+            "mounts = [{{ host = \".\", kind = \"{}\" }}]
+# kind: {kinds}.
+{chosen}
+# Optional settings: uncomment a line to set it.
+{example}# Local image to run instead of the profile's (not with a Containerfile beside this file):
+# image = \"localhost/pinfold/image-my-image:latest\"
+# Hosts the box may reach; replaces the default list:
+# allow = [\"api.anthropic.com\", \"github.com\"]
+# HTTP services on this machine the box may reach as http://NAME:
+# routes = {{ api = \"127.0.0.1:8080\" }}
+# CPUs and memory for the box:
+# cpus = {DEFAULT_CPUS}
+# memory = \"{DEFAULT_MEMORY}\"
+# Variables in the box: a value, or {{ from = \"VAR\" }} to pass the host's VAR:
+# env = {{ LANG = \"C.UTF-8\", API_KEY = {{ from = \"MY_API_KEY\" }} }}
+# A Containerfile beside this file builds the project's own image.
+",
             self.as_str()
         )
     }
@@ -130,13 +166,9 @@ pub fn create(root: &Path, setup: Option<(&str, ProjectMount)>) -> io::Result<(P
     // replaces one a concurrent edit created. `create_new` refuses a
     // planted staging symlink.
     let staging = dir.join(format!(".pinfold.toml.tmp-{}", std::process::id()));
-    let mut contents = setup
+    let contents = setup
         .map_or(ProjectMount::default_kind(), |(_, mount)| mount)
-        .declaration();
-    if let Some(name) = selected {
-        // Profile::load accepts only ASCII names safe in a TOML string.
-        contents.push_str(&format!("profile = \"{name}\"\n"));
-    }
+        .template(selected);
     fs::OpenOptions::new()
         .write(true)
         .create_new(true)
