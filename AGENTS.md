@@ -59,8 +59,9 @@ and the suite is rewritten from ARCHITECTURE.md:
 - Each step's builder exercises the real binary through its ticket's
   cases and records the commands and what it observed in a dated archive
   file. The rewrite starts from those records.
-- No release is cut. The release and nightly workflows still call the
-  suite and fail without it.
+- No release is cut. The nightly workflow still calls the suite and
+  fails without it. The release workflow no longer runs a test, so a
+  pushed tag would publish.
 
 The rules below govern the rewrite.
 
@@ -99,12 +100,7 @@ The rules below govern the rewrite.
   retries: a flaky test is a bug to fix or delete. Fixtures run on the host
   (an HTTP service behind a route, a fake OpenAI-compatible model). The only
   public endpoints are `api.github.com` (allowed) and `example.com`
-  (denied), and on macOS only, codex's live login (`chatgpt.com`,
-  `auth.openai.com`) through guarantee 26's route. Guarantee 36 uses a
-  private Linux network and mount namespace with no external route. Only
-  there, `api.github.com` resolves to a locally assigned fixture address;
-  its TLS certificate is trusted only by the fixture guest. The production
-  proxy policy and timeout remain unchanged.
+  (denied).
 - **Budget:** the suite runs in under 5 minutes in CI.
 
 ## Checks
