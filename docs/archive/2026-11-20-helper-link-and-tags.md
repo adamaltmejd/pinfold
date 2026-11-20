@@ -373,6 +373,50 @@ commit.
     pinfold but its directory is not on PATH`. That case was not run.
 - The earlier texts above that show `ln -sf` are from before this fix.
 
+### Review fixes, round 2
+
+- **Lazy fetch from the listing.** In a partial clone, Git looks up the
+  listing's ids while it plans a push, and a missing id triggers a
+  fetch from the promisor remote.
+  - Setup:
+    - `origin` was a local repo with `uploadpack.allowFilter`.
+    - The project was `git clone --filter=blob:none file://…/origin`.
+    - `remote.origin.uploadpack` pointed at a wrapper that logs each
+      run.
+    - The box tagged a box-only commit (`213b32d…`) twice, as an
+      annotated `boxonly` and a lightweight `boxcommit`.
+  - With the previous binary (6c71aae), the followTags push ran
+    upload-pack twice (the log went from 1 to 3). Git printed `fatal:
+    git upload-pack: not our ref 213b32da2ec7d5edbd73907da18eb1bd3512cd3b`
+    and the same for the tag's id. `GIT_TRACE` showed `git -c
+    fetch.negotiationAlgorithm=noop fetch origin … --filter=blob:none
+    --stdin`.
+  - With the fix, the same push ran no upload-pack (the log stayed at 1,
+    the clone).
+- **The fix.** After validation, the helper keeps only ids the host
+  repository has, in one `git cat-file --batch-check` with
+  `GIT_NO_LAZY_FETCH=1`. Git's release notes place that variable and
+  `--no-lazy-fetch` in 2.45.0. Ubuntu 24.04's git 2.43 would ignore it,
+  so a repository with any promisor remote lists nothing:
+  `extensions.partialClone` set, or a `remote.*.promisor` not `false`.
+  - A partial clone therefore pushes as before the listing (every tag
+    resent, not quiet).
+  - After the promisor settings were removed from the same project, two
+    followTags pushes and `git push box --tags` each printed `Everything
+    up-to-date`. The box-only tags were dropped from the listing.
+  - I verified the variable only on git 2.56.1 (the run above), with no
+    2.43 or 2.47 host.
+- **No disk writes from the listing.** The receiver's bundle file is
+  now optional. The for-push listing passes none, so it creates no
+  bundle file and fails on the first byte after the empty line. Fetch
+  still passes its bundle and is unchanged. Checked by code reading:
+  the listing script is pinfold's own, so a box cannot easily make it
+  emit trailing bytes.
+- **Control-character install path.** The binary was copied into a
+  directory named `bin<U+0001>x`, and doctor ran with no helper on PATH.
+  It printed `- Git remote: no git-remote-pinfold on PATH; link
+  git-remote-pinfold to pinfold in a directory on PATH`, with no command.
+
 ### Checks
 
 - `cargo fmt --check` passed.
@@ -386,7 +430,7 @@ commit.
 ### Cleanup
 
 - Every box started was stopped.
-- Nineteen disks were removed by name: `pi-repo-8800e3f439bd-{home,project}` (six times),
+- Twenty-one disks were removed by name: `pi-repo-8800e3f439bd-{home,project}` (seven times),
   `pi-r-{file,link,ro}-…-{home,project}` and
   `pi-r-share-7e8205bba800-home`.
 - `R` was removed.

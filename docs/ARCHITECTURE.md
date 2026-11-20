@@ -1889,14 +1889,18 @@ cross. The helper:
 - answers `list for-push` with the box's `refs/remotes/host/NAME` as
   `refs/heads/NAME` and its `refs/tags/NAME`, read through Fetch's
   listing checks (line bound, object id width, 4096 refs, prefixes,
-  `check-ref-format`), with nothing after the empty line. Git plans the
+  `check-ref-format`), with no byte after the empty line, which is read
+  and dropped without touching disk. The listing is then reduced to
+  objects the host repository already has, looked up with
+  `GIT_NO_LAZY_FETCH=1`; a repository with a promisor remote lists
+  nothing, as Git before 2.45 ignores that variable. Git plans the
   push from it: an unchanged branch or tag is up to date,
   `push.followTags` sends only tags the box lacks, and Git itself
   rejects a changed tag unless forced. pinfold always forces branches
   into `refs/remotes/host/*`; host Git may itself reject a
   non-fast-forward it can see from the listing. A lying box can only
-  make Git skip or attempt a ref; object ids the host lacks name nothing
-  it fetches, and the listing never feeds a fetch. Any listing failure
+  make Git skip or attempt a ref; no listed id makes the host fetch, and
+  the listing never feeds a fetch. Any listing failure
   but a signal lists nothing and the push goes ahead;
 - speaks Git's protocol on its own descriptors: its standard input is
   `/dev/null` and its standard output is stderr.

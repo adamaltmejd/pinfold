@@ -217,19 +217,16 @@ pub(crate) fn pushed_cancellable(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let bundle = Bundle::new()?;
+    // No bundle: a byte after the listing fails it, and nothing is written.
     let listed = receive(
         &mut command,
         b"",
-        &bundle.path,
+        None,
         width,
         &["refs/remotes/host/", "refs/tags/"],
         guest_repo,
         cancel,
     )?;
-    if fs::metadata(&bundle.path)?.len() != 0 {
-        return Err(malformed_listing());
-    }
     let mut refs = Refs::new();
     for (name, oid) in listed {
         let name = match name.strip_prefix("refs/remotes/host/") {
@@ -240,7 +237,51 @@ pub(crate) fn pushed_cancellable(
             return Err(malformed_listing());
         }
     }
-    Ok(refs)
+    held_here(repo, refs, cancel)
+}
+
+/// REFS less those whose object REPO lacks, looked up without lazy
+/// fetching: Git would otherwise ask a partial clone's promisor remote for
+/// ids the box chose. Git before 2.45 ignores `GIT_NO_LAZY_FETCH`, so a
+/// repository with a promisor remote keeps none.
+fn held_here(repo: &Path, refs: Refs, cancel: &AtomicBool) -> Result<Refs, CrossingError> {
+    let promisors = git(
+        repo,
+        &[
+            "config",
+            "--get-regexp",
+            r"^(extensions\.partialclone|remote\..*\.promisor)$",
+        ],
+        cancel,
+    )?;
+    if String::from_utf8_lossy(&promisors.stdout)
+        .lines()
+        .any(|line| !line.ends_with(" false"))
+    {
+        return Ok(Refs::new());
+    }
+    let oids: String = refs.values().map(|oid| format!("{oid}\n")).collect();
+    let no_lazy: [(&str, &OsStr); 1] = [("GIT_NO_LAZY_FETCH", OsStr::new("1"))];
+    let types = succeeded(git_input(
+        repo,
+        &["cat-file", "--batch-check=%(objecttype)"],
+        oids.as_bytes(),
+        &no_lazy,
+        cancel,
+    )?)?;
+    let types = String::from_utf8_lossy(&types.stdout);
+    let types: Vec<&str> = types.lines().collect();
+    if types.len() != refs.len() {
+        return Err(CrossingError::Failed(
+            "git on the host misread the box's listing".into(),
+        ));
+    }
+    Ok(refs
+        .into_iter()
+        .zip(types)
+        .filter(|(_, kind)| !kind.ends_with(" missing"))
+        .map(|(entry, _)| entry)
+        .collect())
 }
 
 /// REPO's object id length in hex, which every id the box sends has.
@@ -310,7 +351,7 @@ pub(crate) fn fetch_cancellable(
     let listed: Vec<(String, String)> = receive(
         &mut command,
         held.as_bytes(),
-        &bundle.path,
+        Some(&bundle.path),
         width,
         &["refs/heads/"],
         guest_repo,
@@ -585,7 +626,8 @@ fn box_status(code: Option<i32>, stderr: &str, guest_repo: &str) -> Result<(), C
 }
 
 struct Receiver {
-    file: File,
+    /// Where bytes after the listing go; with none, any such byte fails.
+    file: Option<File>,
     /// The repository's object id length in hex.
     width: usize,
     /// The ref name prefixes a listed name may have.
@@ -602,9 +644,13 @@ fn malformed_listing() -> CrossingError {
 }
 
 impl Receiver {
-    fn new(bundle: &str, width: usize, prefixes: &'static [&'static str]) -> io::Result<Self> {
+    fn new(
+        bundle: Option<&str>,
+        width: usize,
+        prefixes: &'static [&'static str],
+    ) -> io::Result<Self> {
         Ok(Self {
-            file: File::create(bundle)?,
+            file: bundle.map(File::create).transpose()?,
             width,
             prefixes,
             listed: Vec::new(),
@@ -649,7 +695,10 @@ impl Receiver {
             }
             self.line.clear();
         }
-        if !self.listing {
+        if !self.listing && !bytes.is_empty() {
+            let Some(file) = self.file.as_mut() else {
+                return Err(malformed_listing());
+            };
             self.copied += bytes.len() as u64;
             if self.copied > LIMIT {
                 return Err(CrossingError::Refused(
@@ -657,7 +706,7 @@ impl Receiver {
                     format!("the bundle is past {LIMIT} bytes"),
                 ));
             }
-            self.file.write_all(bytes)?;
+            file.write_all(bytes)?;
         }
         Ok(())
     }
@@ -666,7 +715,9 @@ impl Receiver {
         if self.listing {
             return Err(malformed_listing());
         }
-        self.file.flush()?;
+        if let Some(file) = self.file.as_mut() {
+            file.flush()?;
+        }
         Ok(self.listed)
     }
 }
@@ -675,7 +726,7 @@ impl Receiver {
 fn receive(
     command: &mut Command,
     mut input: &[u8],
-    bundle: &str,
+    bundle: Option<&str>,
     width: usize,
     prefixes: &'static [&'static str],
     guest_repo: &str,
