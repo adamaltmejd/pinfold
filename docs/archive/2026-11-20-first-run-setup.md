@@ -208,3 +208,71 @@ a retained disk holds the box's files.
 rm`; `pinfold disk list` and `container volume ls` were empty and
 `container ls -a` held only the runtime's builder, as before the run. The
 temporary root was deleted. No image was built or removed.
+
+## Review fixes, round 2
+
+The section above recorded the first round's disk texts; this round
+replaced them. Same host and layout, a fresh root `/tmp/pf.mIop`. The
+wrapper also put a `git` script first on `PATH` that appended each
+invocation to `git.log` in the root, slept `PF_GIT_SLEEP` seconds when
+set, then ran the real Git. Projects: `s` and `gd`, Git repositories with
+one committed file; `plain`, a non-Git folder. `cargo fmt --check` and
+`cargo clippy --all-targets --locked -- -D warnings` pass.
+
+Setup now takes the launch lock after confirmation. With a live owner it
+runs no host Git: a chosen mount other than the owner's refuses as
+`config-changed` before saving, and an equal one is saved and readmission
+checks the rest. With no owner, the chosen mount's verification runs in a
+cancellable worker, as admission's does.
+
+**(a) Live share owner.** `pinfold start` in `s` with `share`, `y`: exit
+0, `Box       running with profile default`, and no host Git call was
+logged. The configuration file was deleted and the log cleared. `pinfold
+-- true` with `disk`, `y`:
+
+    The box has its own files on an isolated disk, separate from /private/tmp/pf.mIop/s.
+    Save these settings and run true? [Y/n]
+    y
+    pinfold: config-changed: the project mount kind changed (project.mount). Restore the previous mount kind or finish active sessions and run `pinfold stop` before retrying.
+
+exit 125, no Git call logged, and the project's configuration directory
+was empty. The same with `share`, `y`: exit 0 (joined), no Git call
+logged, the file holds `kind = "share"`. `pinfold stop` exited 0.
+
+**(b) Signal during verification.** In `gd` with no configuration and
+`PF_GIT_SLEEP=30`, `pinfold start`, `disk`, `y`, then SIGTERM to pinfold
+3 s later. The log held one call, `-C /private/tmp/pf.mIop/gd rev-parse
+--show-toplevel`, started 2 s before the signal. pinfold printed
+`pinfold start: operation interrupted` and exited 143 one second after
+the signal; no wrapper process remained, and no `gd` configuration
+directory existed.
+
+**(c) Disk control and intros.** In `gd`, `pinfold -- true`, `disk`, `y`:
+exit 0, `kind = "disk"`. The log showed the pre-save and admission
+`rev-parse --show-toplevel` calls, then the first-start sync (`remote add
+box pinfold::/private/tmp/pf.mIop/gd`, `bundle create`). Bare `pinfold`:
+
+    Project   /private/tmp/pf.mIop/gd
+    Box       stopped
+    Profile   default
+    Files     Isolated disk: the box has its own files, separate from /private/tmp/pf.mIop/gd.
+    Settings  /tmp/pf.mIop/cfg/pinfold/projects/gd-98cc5064af5d/pinfold.toml
+
+    Run a command    pinfold -- CMD
+    Keep it running  pinfold start
+    Move branches    git fetch box / git push box
+    Change settings  pinfold config edit
+    All commands     pinfold --help
+
+`s` (share) printed no `Move branches` line. In `plain`, after
+`EDITOR=true VISUAL=true pinfold config edit` and the kind changed to
+`disk`, bare `pinfold` (exit 0) printed
+`Files     Isolated disk: the box has its own files, separate from
+/private/tmp/pf.mIop/plain.` and no `Move branches` line. `pinfold config`
+printed the same Files lines for `plain` and `gd`.
+
+**Cleanup.** The disks `config --json` named (`pi-s-f366e2fa2e07-home`,
+`pi-gd-98cc5064af5d-home`, `pi-gd-98cc5064af5d-project`) were removed by
+name; `pinfold disk list` and `container volume ls` were empty and
+`container ls -a` held only the runtime's builder. The root was deleted.
+No image was built or removed.

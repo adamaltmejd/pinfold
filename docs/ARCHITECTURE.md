@@ -1911,8 +1911,12 @@ A set `PINFOLD_PROFILE` selects the profile and is identified in the prompt.
 Setup identifies whether the selected profile is bundled or user-defined.
 On macOS it then asks for the project mount, `share` (the default) or
 `disk`; another answer refuses. Linux has only `disk` and does not ask.
-Setup names the project root and describes the chosen mount. Confirmation saves the
-profile and mount. `-- CMD` continues with the original command and
+Setup names the project root and describes the chosen mount. After
+confirmation, holding the launch lock, it verifies the chosen mount as
+admission does, before saving. Beside a live owner it runs no host Git:
+a mount other than the owner's refuses as `config-changed` before
+saving, and readmission checks the rest. A refusal or signal there saves
+nothing. Confirmation saves the profile and mount. `-- CMD` continues with the original command and
 arguments; `start` starts the box. Both then offer a missing managed image's
 build (Images). A chosen disk follows First start (Git).
 Refusal or EOF before confirmation exits 125 without creating the file.
@@ -2056,8 +2060,8 @@ prints a readable inventory. Plain `doctor` leads with findings and remedies.
 `pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without
 touching the runtime or the state directory. Bare `pinfold` reports the
 project root, box status, profile, project mount and settings path. The
-mount line says what the box sees of the project, as do a running box's
-mount line and `pinfold config`'s. It reports the image only when the
+mount line names the project root, as do a running box's mount line and
+`pinfold config`'s. It reports the image only when the
 image lookup `pinfold config` uses finds it missing: a managed image as
 not built, without its reference, and an explicit image by name, each
 with the remedy; an unknown answer prints nothing.
@@ -2068,7 +2072,8 @@ and it previews the profile and the default mount the first run asks to
 confirm, saying on macOS that a disk can be chosen instead. It reads project and owner
 information and image availability without creating state or starting a box.
 Unavailable details are identified. It ends with next steps, including
-`pinfold -- CMD`, and succeeds.
+`pinfold -- CMD`, and for a configured Git disk project `git fetch box`
+and `git push box`, and succeeds.
 Explicit help groups the command inventory
 by task. Report commands use human output unless `--json` is requested,
 including when stdout is redirected. The box protocol and guest stdio retain

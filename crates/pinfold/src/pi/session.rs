@@ -1103,7 +1103,7 @@ async fn confirm_setup(message: String, signals: &mut Signals) -> io::Result<boo
 /// profile, then where both kinds exist, the project mount. `None` when
 /// the user declines or closes the terminal.
 async fn confirm_first_run(
-    context: &Context,
+    root: &Path,
     command: Option<&str>,
     signals: &mut Signals,
 ) -> io::Result<Option<(String, ProjectMount)>> {
@@ -1165,16 +1165,13 @@ async fn confirm_first_run(
     } else {
         ProjectMount::default_kind()
     };
-    let path = terminal_text(&context.root.to_string_lossy());
+    let path = terminal_text(&root.to_string_lossy());
     let statement = match mount {
         ProjectMount::Share => {
             format!("The box can edit files in {path}, including its Git metadata.")
         }
-        ProjectMount::Disk if context.repository => format!(
-            "The box has its own repository on an isolated disk, separate from {path}. git fetch box and git push box move branches."
-        ),
         ProjectMount::Disk => {
-            format!("The box has its own files on an isolated disk and does not see {path}.")
+            format!("The box has its own files on an isolated disk, separate from {path}.")
         }
     };
     forward_diagnostics(statement.into_bytes(), signals).await?;
@@ -1326,17 +1323,42 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         {
             // Admission has released its locks. Validate the invoking worktree before
             // offering the share, then rediscover it after the user answers.
-            let context = discover()?;
+            discover()?;
             let command = args.and_then(|args| args.first()).map(String::as_str);
-            let Some((profile, mount)) = confirm_first_run(&context, command, &mut signals).await? else {
+            let Some((profile, mount)) = confirm_first_run(&root, command, &mut signals).await? else {
                 return Ok(125);
             };
-            let current = discover()?;
-            // The chosen mount's full check, so a refusal leaves no file.
-            current.verify(mount)?;
+            let mut current = discover()?;
+            // The launch lock keeps an owner from starting until the file is saved.
+            let launch = launch_lock(&root, &mut signals, &mut false).await?;
+            match read_locator(&root)? {
+                Some(locator) if ownership::name_alive(&locator.name)? => {
+                    // Host Git never runs beside a live owner, which may share `.git`;
+                    // readmission checks the join as for a configured project.
+                    if locator.mount.is_some_and(|live| live != mount) {
+                        return Err(crate::pi::session_snapshot::mount_changed());
+                    }
+                }
+                _ => {
+                    // The chosen mount's full check, so a refusal leaves no file.
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    let worker_cancel = cancel.clone();
+                    let mut worker = tokio::task::spawn_blocking(move || {
+                        crate::core::process::with_cancellation(worker_cancel, || {
+                            current.verify(mount).map(|()| current)
+                        })
+                    });
+                    current = tokio::select! {
+                        biased;
+                        _ = signals.recv() => { cancel.store(true, Ordering::Release); let _ = worker.await; Err(io::ErrorKind::Interrupted.into()) },
+                        result = &mut worker => result.map_err(|_| io::Error::other("configuration worker failed"))?,
+                    }?;
+                }
+            }
             if !crate::config::create(&root, Some((&profile, mount)))?.1 {
                 return Err(io::Error::other("project configuration appeared during setup; run the command again"));
             }
+            drop(launch);
             set_up = true;
             admitted = admit(&root, &Ok(current), intent, &mut signals, &executable).await;
         }

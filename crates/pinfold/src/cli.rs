@@ -21,10 +21,14 @@ use crate::pi::launch::utf8;
 
 pub fn print_intro() {
     match project_intro() {
-        Ok(true) => println!(
-            "\nRun a command    pinfold -- CMD\nKeep it running  pinfold start\nChange settings  pinfold config edit\nAll commands     pinfold --help"
-        ),
-        Ok(false) => println!(
+        Ok(Some(branches)) => {
+            println!("\nRun a command    pinfold -- CMD\nKeep it running  pinfold start");
+            if branches {
+                println!("Move branches    git fetch box / git push box");
+            }
+            println!("Change settings  pinfold config edit\nAll commands     pinfold --help");
+        }
+        Ok(None) => println!(
             "\nSet up and run     pinfold -- CMD     (e.g. pinfold -- claude)\nChange settings    pinfold config edit\nAll commands       pinfold --help"
         ),
         Err(error) => {
@@ -37,8 +41,9 @@ pub fn print_intro() {
     }
 }
 
-/// Whether the project has a configuration.
-fn project_intro() -> io::Result<bool> {
+/// `None` without a configuration; otherwise whether it is a Git disk
+/// project, whose branches cross by `git fetch box` and `git push box`.
+fn project_intro() -> io::Result<Option<bool>> {
     use crate::pi::session::{ProjectStatus, project_status};
 
     let context = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
@@ -64,10 +69,7 @@ fn project_intro() -> io::Result<bool> {
                 None => println!("Box       running"),
             }
             if let Some(mount) = mount {
-                println!(
-                    "Box files {}",
-                    project_files(*mount, root, context.repository)
-                );
+                println!("Box files {}", project_files(*mount, root));
             }
         }
         Ok(ProjectStatus::Unavailable) | Err(_) => println!("Box       status unavailable"),
@@ -93,10 +95,7 @@ fn project_intro() -> io::Result<bool> {
         terminal_text(&config.profile.name)
     };
     println!("Profile   {profile}");
-    println!(
-        "Files     {}",
-        project_files(config.mount, root, context.repository)
-    );
+    println!("Files     {}", project_files(config.mount, root));
     let reference = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(root));
     // Only a definite absence earns a line; an unknown answer stays quiet.
     if image_built(&image::service().resolve_image(&reference)).0 == Some(false) {
@@ -115,19 +114,17 @@ fn project_intro() -> io::Result<bool> {
             terminal_text(&config.path.to_string_lossy())
         );
     }
-    Ok(configured)
+    Ok(configured
+        .then_some(config.mount == crate::config::ProjectMount::Disk && context.repository))
 }
 
 /// The project mount as the intro, a running box and `pinfold config` state it.
-fn project_files(mount: crate::config::ProjectMount, root: &Path, repository: bool) -> String {
+fn project_files(mount: crate::config::ProjectMount, root: &Path) -> String {
     let root = terminal_text(&root.to_string_lossy());
     match mount {
         crate::config::ProjectMount::Share => format!("Shared: the box edits {root}"),
-        crate::config::ProjectMount::Disk if repository => {
-            "Isolated disk: the box has its own repository. git fetch box and git push box move branches.".into()
-        }
         crate::config::ProjectMount::Disk => {
-            format!("Isolated disk: the box has its own files and does not see {root}.")
+            format!("Isolated disk: the box has its own files, separate from {root}.")
         }
     }
 }
@@ -1305,10 +1302,7 @@ pub fn config(args: &[String]) -> io::Result<i32> {
         return Ok(0);
     }
     println!("Project   {}", terminal_text(&root.to_string_lossy()));
-    println!(
-        "Files     {}",
-        project_files(config.mount, &root, config.repository)
-    );
+    println!("Files     {}", project_files(config.mount, &root));
     println!("Profile   {}", profile_description(&config));
     let availability = match report["image_built"].as_bool() {
         Some(true) => "available locally",

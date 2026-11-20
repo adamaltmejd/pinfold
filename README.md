@@ -111,8 +111,8 @@ choose the profile and confirm the project folder. If your shell sets
 `PINFOLD_PROFILE`, that selects the profile. Unset it to choose a
 different one. On macOS you also choose how the box sees the folder:
 share it (the default), so the box edits it and its Git metadata, or use
-an isolated project disk, where `git fetch box` and `git push box` move
-branches. Linux always uses a project disk. If the selected
+an isolated project disk with its own files; in a Git project, `git fetch
+box` and `git push box` move branches. Linux always uses a project disk. If the selected
 managed image is missing, Pinfold offers to build it and then starts your
 command. A build needs network access. An explicit `image` must already
 be available locally. Rebuild with `pinfold build` if a later launch
