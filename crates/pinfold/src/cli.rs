@@ -1185,17 +1185,16 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
 
 fn profile_description(config: &Config) -> String {
     let name = terminal_text(&config.profile.name);
-    let saved = config
-        .project_profile
-        .as_deref()
-        .unwrap_or(crate::config::DEFAULT_PROFILE);
-    if std::env::var_os("PINFOLD_PROFILE").is_some() && saved != config.profile.name {
-        format!(
-            "{name} (PINFOLD_PROFILE overrides {})",
-            terminal_text(saved)
-        )
-    } else {
-        name
+    match config.project_profile.as_deref() {
+        Some(saved)
+            if std::env::var_os("PINFOLD_PROFILE").is_some() && saved != config.profile.name =>
+        {
+            format!(
+                "{name} (PINFOLD_PROFILE overrides {})",
+                terminal_text(saved)
+            )
+        }
+        _ => name,
     }
 }
 
