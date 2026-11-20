@@ -118,7 +118,7 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     fs::create_dir(&host_ran).unwrap();
     let mut setup = vec![
         "set -e
-         mkdir -p \"$HOME/bin\"; printf %s \"$1\" > \"$HOME/bin/git\"; chmod 755 \"$HOME/bin/git\"
+         mkdir -p /home/pi/bin; printf %s \"$1\" > /home/pi/bin/git; chmod 755 /home/pi/bin/git
          marker=$2; shift 2
          git switch -q -c main host/main
          mkdir .githooks .husky

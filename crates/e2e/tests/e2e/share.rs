@@ -35,10 +35,12 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
         for args in [&["--", "true"][..], &["config", "edit"]] {
             let before = (tree(env.state_home()), tree(env.config_home()));
             let out = project.pinfold(args);
-            assert_ne!(
-                out.code, 0,
-                "{args:?} with {protected:?} linked in: {out:?}"
-            );
+            // A setup failure exits 125; the spec names no code for `config
+            // edit`.
+            match args[0] {
+                "--" => assert_eq!(out.code, 125, "{protected:?} linked in: {out:?}"),
+                _ => assert_ne!(out.code, 0, "{protected:?} linked in: {out:?}"),
+            }
             assert!(
                 tokens(&out.stderr).any(|token| token == "host-path-in-project"),
                 "{args:?}: {}",

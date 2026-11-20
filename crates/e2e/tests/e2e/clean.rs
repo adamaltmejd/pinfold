@@ -8,9 +8,11 @@ use serde_json::Value;
 
 #[test]
 fn cleanup_removes_only_pinfolds_garbage() {
-    // Sabotage (run): in cli.rs's `CleanPlan::idle`, drop the
-    // `!live.contains(&project.id)` test. `clean` then tries to remove the
-    // kept project's attached disk and exits 1, and its state is gone.
+    // Sabotage (run): in cli.rs, drop the `!live.contains(&project.id)`
+    // test in `CleanPlan::idle` and the `locks.contains_key` skip in
+    // `CleanPlan::remove`. The kept project's state directory is then gone.
+    // Dropping only the live test passes: the owner's project lock still
+    // keeps the project.
     // The idle project's state and disks going is the positive control.
     default_image();
     let env = TestEnv::new("clean");
