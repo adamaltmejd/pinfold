@@ -97,3 +97,54 @@ check the crate.
   is created inside it.
 - Each protected-path check on macOS now hashes the embedded init in
   `artifacts::init_path`. The cost is unmeasured.
+
+## Review fixes
+
+- The protected set named the init's own directory,
+  `artifacts/init/<sha>/linux-arm64`. With `artifacts/init` a regular
+  file, resolving it failed with ENOTDIR before any overlap test. It now
+  names `artifacts/init`, which resolves as the other entries do: an
+  existing file canonicalizes, a missing one resolves through its
+  ancestors. A symlink below it is left to `prepare`, as before this
+  change. The entry is a path join, so the check no longer hashes the
+  init and creates nothing.
+- The Git remote's covering-share probe (`refuse_covering_share`) took a
+  root's launch lock before any check. It now runs `check_roots_outside`
+  on that root first.
+
+Runs used the same wrapper and roots as above. Binaries: main at 774f964
+(`main`), the PR's first commit 5e62acd (`pr1`), and the review fix
+(`after`).
+
+`artifacts/init` a regular file, fresh non-Git project, external roots:
+
+| Binary | `config edit` | then `-- true`, redirected |
+|---|---|---|
+| main | creates `pinfold.toml`, exit 0 | `owner-unavailable`, exit 125 |
+| pr1 | `Not a directory (os error 20)`, exit 1 | `Not a directory (os error 20)`, exit 125 |
+| after | creates `pinfold.toml`, exit 0 | `owner-unavailable`, exit 125 |
+
+After, with `artifacts/init` a regular file and the state root inside
+the project: `host-path-in-project` naming the state root, exit 125, no
+new lock. The init file no longer masks it.
+
+After, #358's case (`artifacts/init` a symlink to `initdir/` in the
+project, share first run): `host-path-in-project: …/initdir resolves
+inside …` before any prompt, exit 125, no new lock, no config or state
+root, `initdir/` empty.
+
+Git remote, `git push box main` in a Git repo:
+
+| Case | main | after |
+|---|---|---|
+| unconfigured, state root inside | `no-config`, two new locks | `host-path-in-project`, no new lock |
+| share owner live (`start`), external roots | `share-no-crossing` | `share-no-crossing` |
+| share owner live, state root inside | `config-changed` naming `roots.state`, no new lock | `host-path-in-project` from the probe, no new lock |
+
+With a live owner the launch lock file already exists, so no case can
+show a new lock there; the probe's check shows as the changed reason.
+`stop` ended the box, exit 0.
+
+`cargo fmt --check` and clippy for both targets pass.
+
+The unmeasured hashing cost noted above is gone with the path join.

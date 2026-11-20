@@ -2275,6 +2275,7 @@ pub(crate) async fn refuse_covering_share(cwd: &Path, signals: &mut Signals) -> 
         {
             continue;
         }
+        crate::config::check_roots_outside(root)?;
         let mut noticed = false;
         let _launch = launch_lock(root, signals, &mut noticed).await?;
         let Some(locator) = read_locator(root)? else {
