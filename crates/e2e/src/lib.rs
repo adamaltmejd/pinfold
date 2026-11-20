@@ -7,12 +7,18 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+
+/// A build of pinfold or of the default image, cold.
+const BUILD: Duration = Duration::from_secs(1800);
+/// Any other command a test runs on the host.
+const COMMAND: Duration = Duration::from_secs(120);
 
 /// The `pinfold` binary built from this checkout. Linux boxes run the CLI
 /// itself as PID 1, so there it is the static musl release build.
@@ -20,14 +26,16 @@ pub fn pinfold() -> &'static Path {
     static BINARY: OnceLock<PathBuf> = OnceLock::new();
     BINARY.get_or_init(|| {
         let mut command = Command::new(env!("CARGO"));
-        command.args([
-            "build",
-            "-p",
-            "pinfold",
-            "--locked",
-            "--message-format",
-            "json-render-diagnostics",
-        ]);
+        command
+            .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .args([
+                "build",
+                "-p",
+                "pinfold",
+                "--locked",
+                "--message-format",
+                "json-render-diagnostics",
+            ]);
         // Cargo gives a test its own package's CARGO_PKG_* and
         // CARGO_MANIFEST_*; ring's build script reruns when those change.
         for (name, _) in std::env::vars_os() {
@@ -41,14 +49,12 @@ pub fn pinfold() -> &'static Path {
             let triple = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
             command.args(["--release", "--target", &triple]);
         }
-        let output = command
-            .stderr(Stdio::inherit())
-            .output()
-            .expect("run cargo build -p pinfold");
-        assert!(output.status.success(), "cargo build -p pinfold failed");
+        let output = run(&mut command, BUILD);
+        assert_eq!(output.code, 0, "cargo build -p pinfold: {}", output.stderr);
         // The test executable may run from a copy (scripts/run-mac-e2e.sh),
         // so the path comes from Cargo, not from the test's own location.
-        String::from_utf8_lossy(&output.stdout)
+        output
+            .stdout
             .lines()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .find(|message| {
@@ -61,12 +67,69 @@ pub fn pinfold() -> &'static Path {
     })
 }
 
-/// The XDG roots one test's `pinfold` commands use.
+/// A finished host command.
+#[derive(Debug)]
+pub struct Exec {
+    pub code: i32,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Run `command` with null stdin, capturing its output. Past `timeout` it
+/// is killed and the test fails naming it; nothing waits unbounded.
+pub fn run(command: &mut Command, timeout: Duration) -> Exec {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"));
+    let (send, read) = mpsc::channel();
+    for (index, mut pipe) in [
+        Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>,
+        Box::new(child.stderr.take().unwrap()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let send = send.clone();
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            let _ = send.send((index, bytes));
+        });
+    }
+    let deadline = Instant::now() + timeout;
+    let mut streams = [Vec::new(), Vec::new()];
+    for _ in 0..2 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match read.recv_timeout(left) {
+            Ok((index, bytes)) => streams[index] = bytes,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{command:?} did not finish within {timeout:?}");
+            }
+        }
+    }
+    // Both pipes are closed, so the command has exited or is exiting.
+    let status = child.wait().expect("wait for a host command");
+    let [stdout, stderr] = streams.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    Exec {
+        code: exit_code(status),
+        stdout,
+        stderr,
+    }
+}
+
+/// The XDG roots one test's `pinfold` commands use, and whether a box
+/// failed to end cleanly, so its roots are kept as evidence.
 #[derive(Clone)]
 struct Roots {
     config: PathBuf,
     state: PathBuf,
     cache: PathBuf,
+    keep: Arc<AtomicBool>,
 }
 
 impl Roots {
@@ -88,8 +151,9 @@ impl Roots {
     }
 }
 
-/// One test's throwaway config and state roots, removed on drop. The cache
-/// root is the suite run's own (see [`suite_cache`]).
+/// One test's throwaway config and state roots, removed on drop unless a
+/// box failed to end cleanly. The cache root is the suite run's own (see
+/// [`suite_cache`]).
 pub struct TestEnv {
     root: PathBuf,
     roots: Roots,
@@ -102,6 +166,7 @@ impl TestEnv {
             config: root.join("config"),
             state: root.join("state"),
             cache: suite_cache().to_path_buf(),
+            keep: Arc::default(),
         };
         fs::create_dir_all(&roots.config).unwrap();
         fs::create_dir_all(&roots.state).unwrap();
@@ -118,17 +183,10 @@ impl TestEnv {
 
     /// `pinfold box exec NAME -- ARGV`.
     pub fn exec(&self, name: &str, argv: &[&str]) -> Exec {
-        let output = self
-            .command()
-            .args(["box", "exec", name, "--"])
-            .args(argv)
-            .output()
-            .expect("run pinfold box exec");
-        Exec {
-            code: exit_code(output.status),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        }
+        run(
+            self.command().args(["box", "exec", name, "--"]).args(argv),
+            COMMAND,
+        )
     }
 
     /// Spawn `box up` with `spec` and wait for its `ready` line.
@@ -142,9 +200,18 @@ impl TestEnv {
             .stderr(Stdio::inherit())
             .spawn()
             .expect("spawn pinfold box up");
-        let mut stdin = child.stdin.take().expect("box up stdin");
+        let stdin = child.stdin.take();
         let stdout = child.stdout.take().expect("box up stdout");
         let (send, lines) = mpsc::channel();
+        // The guard owns the child before anything else can fail.
+        let mut up = BoxUp {
+            name: name.to_string(),
+            roots: self.roots.clone(),
+            child: Some(child),
+            stdin,
+            lines,
+            ready: Value::Null,
+        };
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if send.send(line).is_err() {
@@ -152,19 +219,11 @@ impl TestEnv {
                 }
             }
         });
-        // The guard owns the child before anything can fail.
-        let mut up = BoxUp {
-            name: name.to_string(),
-            roots: self.roots.clone(),
-            child,
-            stdin: None,
-            lines,
-            ready: Value::Null,
-        };
-        stdin
+        up.stdin
+            .as_mut()
+            .expect("box up stdin")
             .write_all(spec.to_string().as_bytes())
             .expect("write the box spec");
-        up.stdin = Some(stdin);
         // A cold Linux cache fetches the pinned VMM and kernel first.
         let line = up
             .lines
@@ -180,7 +239,11 @@ impl TestEnv {
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
+        if self.roots.keep.load(Ordering::SeqCst) {
+            eprintln!("e2e: kept {} for recovery", self.root.display());
+        } else {
+            let _ = fs::remove_dir_all(&self.root);
+        }
     }
 }
 
@@ -211,32 +274,31 @@ pub fn default_image() -> &'static str {
     static BUILT: OnceLock<()> = OnceLock::new();
     BUILT.get_or_init(|| {
         let present = cfg!(target_os = "macos")
-            && Command::new("container")
-                .args(["image", "inspect", IMAGE])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success());
+            && run(
+                Command::new("container").args(["image", "inspect", IMAGE]),
+                COMMAND,
+            )
+            .code
+                == 0;
         if !present {
             let env = TestEnv::new("default-image");
-            let status = env
-                .command()
-                .args(["build", "--profile", "default"])
-                .stdout(Stdio::null())
-                .status()
-                .expect("run pinfold build --profile default");
-            assert!(status.success(), "pinfold build --profile default failed");
+            let build = run(env.command().args(["build", "--profile", "default"]), BUILD);
+            assert_eq!(
+                build.code, 0,
+                "pinfold build --profile default: {}",
+                build.stderr
+            );
         }
     });
     IMAGE
 }
 
 /// A running box and the `box up` process that owns it. Dropping it closes
-/// `up`'s stdin, which is `down`, and waits for teardown.
+/// `up`'s stdin, which is `down`, and waits, bounded, for teardown.
 pub struct BoxUp {
     name: String,
     roots: Roots,
-    child: Child,
+    child: Option<Child>,
     stdin: Option<ChildStdin>,
     lines: Receiver<String>,
     ready: Value,
@@ -254,45 +316,69 @@ impl BoxUp {
             .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{line:?}: {e}")))
             .collect()
     }
+
+    /// Read `up`'s stdout to EOF within `timeout`; whether it ended.
+    fn drain(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(_) => {}
+                Err(RecvTimeoutError::Disconnected) => return true,
+                Err(RecvTimeoutError::Timeout) => return false,
+            }
+        }
+    }
+
+    /// Wait for the owner within `timeout`, without blocking past it.
+    fn reap(&mut self, timeout: Duration) -> Option<ExitStatus> {
+        let mut child = self.child.take()?;
+        let (send, status) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = send.send(child.wait());
+        });
+        status.recv_timeout(timeout).ok().and_then(Result::ok)
+    }
+
+    fn fail(&self, what: &str) {
+        eprintln!(
+            "e2e: BOX {} DID NOT END CLEANLY: {what}; its roots are kept",
+            self.name
+        );
+        self.roots.keep.store(true, Ordering::SeqCst);
+    }
 }
 
 impl Drop for BoxUp {
     fn drop(&mut self) {
-        // Never kill the owner first: on Apple the guest would outlive it,
-        // and only `box prune`, which acts host-wide, would remove it.
+        // Never kill the owner: on Apple the guest would outlive it, and
+        // only `box prune`, which acts host-wide, would remove it.
         drop(self.stdin.take());
-        let deadline = Instant::now() + Duration::from_secs(120);
-        let mut ended = false;
-        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-            match self.lines.recv_timeout(left) {
-                Ok(_) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    ended = true;
-                    break;
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
+        if !self.drain(Duration::from_secs(120)) {
+            self.fail("stdin EOF did not end box up within 120 s; trying box down");
+            let mut down = self.roots.command();
+            down.args(["box", "down", &self.name]);
+            let (send, done) = mpsc::channel();
+            // `run` panics on its deadline; a Drop must not.
+            thread::spawn(move || {
+                let _ = send.send(run(&mut down, COMMAND).code);
+            });
+            match done.recv_timeout(COMMAND + Duration::from_secs(10)) {
+                Ok(0) => {}
+                Ok(code) => self.fail(&format!("box down exited {code}")),
+                Err(_) => self.fail("box down did not finish"),
+            }
+            if !self.drain(Duration::from_secs(60)) {
+                self.fail("box up still running after box down; left as it is");
+                return;
             }
         }
-        if !ended {
-            eprintln!("box up {} did not end on stdin EOF; box down", self.name);
-            let _ = self
-                .roots
-                .command()
-                .args(["box", "down", &self.name])
-                .status();
-        }
-        if let Err(error) = self.child.wait() {
-            eprintln!("box up {} was not reaped: {error}", self.name);
+        match self.reap(Duration::from_secs(30)) {
+            Some(status) if status.success() => {}
+            Some(status) => self.fail(&format!("box up exited {status}")),
+            None => self.fail("box up was not reaped within 30 s"),
         }
     }
-}
-
-/// A finished `box exec`.
-#[derive(Debug)]
-pub struct Exec {
-    pub code: i32,
-    pub stdout: String,
-    pub stderr: String,
 }
 
 pub fn exit_code(status: ExitStatus) -> i32 {
@@ -330,10 +416,12 @@ impl Request {
 /// A host HTTP service on loopback, reachable from a box only through a
 /// route. It answers every request with `status` and records it. It runs
 /// in the test process, which on macOS holds the firewall exception
-/// (scripts/run-mac-e2e.sh).
+/// (scripts/run-mac-e2e.sh). Dropping it closes its listener.
 pub struct Fixture {
     port: u16,
     requests: Arc<Mutex<Vec<Request>>>,
+    stop: Arc<AtomicBool>,
+    accept: Option<JoinHandle<()>>,
 }
 
 impl Fixture {
@@ -341,14 +429,23 @@ impl Fixture {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the fixture");
         let port = listener.local_addr().expect("fixture address").port();
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::clone(&requests);
-        thread::spawn(move || {
+        let stop = Arc::new(AtomicBool::new(false));
+        let (seen, stopped) = (Arc::clone(&requests), Arc::clone(&stop));
+        let accept = thread::spawn(move || {
             for stream in listener.incoming().flatten() {
+                if stopped.load(Ordering::SeqCst) {
+                    return;
+                }
                 let seen = Arc::clone(&seen);
                 thread::spawn(move || serve(stream, &seen, status));
             }
         });
-        Fixture { port, requests }
+        Fixture {
+            port,
+            requests,
+            stop,
+            accept: Some(accept),
+        }
     }
 
     /// The `host:port` a route names to reach the fixture.
@@ -361,8 +458,24 @@ impl Fixture {
     }
 }
 
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        // Wake the blocked accept so the thread sees the flag and returns,
+        // dropping the listener.
+        if TcpStream::connect(("127.0.0.1", self.port)).is_ok()
+            && let Some(accept) = self.accept.take()
+        {
+            let _ = accept.join();
+        }
+    }
+}
+
 /// Read one Content-Length-framed request, record it and answer it.
 fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, status: u16) {
+    if stream.set_read_timeout(Some(COMMAND)).is_err() {
+        return;
+    }
     let mut reader = BufReader::new(&stream);
     let mut line = String::new();
     if reader.read_line(&mut line).unwrap_or(0) == 0 {

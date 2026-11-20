@@ -4,6 +4,12 @@
 use e2e::{Exec, Fixture, TestEnv, box_name, default_image};
 use serde_json::{Value, json};
 
+// Linux errno values, from the guest kernel on both runtimes.
+const ENETUNREACH: &str = "101";
+#[cfg(target_os = "linux")]
+const ECONNRESET: &str = "104";
+const ECONNREFUSED: &str = "111";
+
 /// `curl -sS --max-time 20 ARGS…` in the box. The bound turns a hang into
 /// a failure that names it; no expected outcome is a timeout.
 fn curl(env: &TestEnv, name: &str, args: &[&str]) -> Exec {
@@ -12,68 +18,69 @@ fn curl(env: &TestEnv, name: &str, args: &[&str]) -> Exec {
     env.exec(name, &argv)
 }
 
-/// From inside the box, connect a vsock stream to the host (CID 2) on
-/// `port` and print `connected` or the kernel's error. perl-base opens the
-/// socket by number: AF_VSOCK is 40, and a sockaddr_vm is family, reserved,
-/// port and CID. A dropped connection would hit the alarm and print
-/// `timeout`, which no assertion accepts.
-#[cfg(target_os = "linux")]
-fn vsock_to_host(env: &TestEnv, name: &str, port: u32) -> String {
-    let out = env.exec(
-        name,
-        &[
-            "perl",
-            "-e",
-            "$SIG{ALRM} = sub { print \"timeout\\n\"; exit }; alarm 5; \
-             socket(my $s, 40, 1, 0) or die \"socket: $!\\n\"; \
-             print connect($s, pack('SSLLx4', 40, 0, $ARGV[0], 2)) ? \"connected\\n\" : \"$!\\n\"",
-            &port.to_string(),
-        ],
-    );
-    assert_eq!(out.code, 0, "vsock probe: {out:?}");
+/// Run a perl probe in the box and return its stdout. perl-base has no
+/// socket modules, so addresses are packed by hand. A hang hits the alarm
+/// and prints `timeout`, which no assertion accepts.
+fn perl(env: &TestEnv, name: &str, script: &str, args: &[&str]) -> String {
+    let script = format!("$SIG{{ALRM}} = sub {{ print \"timeout\\n\"; exit }}; alarm 30; {script}");
+    let mut argv = vec!["perl", "-e", &script];
+    argv.extend_from_slice(args);
+    let out = env.exec(name, &argv);
+    assert_eq!(out.code, 0, "perl probe: {out:?}");
     out.stdout.trim().to_string()
+}
+
+/// From inside the box, a TCP connect to IPv4 `address:port`: `0` or the
+/// kernel's errno. A sockaddr_in is family, port (network order),
+/// address and padding.
+fn tcp_connect(env: &TestEnv, name: &str, address: &str, port: u16) -> String {
+    perl(
+        env,
+        name,
+        "socket(my $s, 2, 1, 6) or die \"socket: $!\\n\"; \
+         my $to = pack('SnC4x8', 2, $ARGV[1], split(/\\./, $ARGV[0])); \
+         print connect($s, $to) ? 0 : $! + 0, \"\\n\"",
+        &[address, &port.to_string()],
+    )
+}
+
+/// From inside the box, a vsock connect to the host (CID 2) on every port
+/// in 1..=4096. Prints `PORT ERRNO` for each port whose connect did not
+/// fail with ECONNRESET (`0` for a connect that succeeded), then `done`.
+/// AF_VSOCK is 40; a sockaddr_vm is family, reserved, port and CID.
+#[cfg(target_os = "linux")]
+fn vsock_sweep(env: &TestEnv, name: &str) -> String {
+    perl(
+        env,
+        name,
+        &format!(
+            "for my $port (1 .. 4096) {{ \
+               socket(my $s, 40, 1, 0) or die \"socket: $!\\n\"; \
+               my $errno = connect($s, pack('SSLLx4', 40, 0, $port, 2)) ? 0 : $! + 0; \
+               print \"$port $errno\\n\" if $errno != {ECONNRESET}; \
+             }} print \"done\\n\""
+        ),
+        &[],
+    )
 }
 
 #[test]
 fn box_has_no_network_but_loopback() {
     // Sabotage (run): on Apple, drop `--network none` from `container run`
-    // in runtime/apple.rs. The box gains an interface beside `lo` and
-    // reaches 1.1.1.1. Sabotage (Linux, not yet run): listen on the host
-    // proxy port without `egress`; the no-egress box's vsock connect to
-    // 3128 is accepted. The route through the proxy is the positive control.
+    // in runtime/apple.rs. The box gains an interface beside `lo`.
+    // Sabotage (Linux, not yet run): start the proxy's vsock listener even without
+    // `egress`; the no-egress sweep then shows port 3128 connected.
+    // The route through the proxy is the positive control.
     let env = TestEnv::new("network");
     let fixture = Fixture::start(418);
 
-    // Without `egress` the box has no proxy: its port refuses.
+    // Without `egress` the box has no proxy: its port refuses, and on
+    // Linux the host resets a vsock connect on every port, 3128 included.
     let name = box_name("no-egress");
     let up = env.up(&json!({ "name": name, "image": default_image() }));
-    let proxied = curl(
-        &env,
-        &name,
-        &[
-            "-v",
-            "-x",
-            "http://127.0.0.1:3128",
-            "http://fixture.internal/",
-        ],
-    );
-    assert_eq!(
-        proxied.code, 7,
-        "the no-egress box reached a proxy: {proxied:?}"
-    );
-    assert!(
-        proxied.stderr.contains("Connection refused"),
-        "the proxy port failed for another reason: {proxied:?}"
-    );
-    // The host refuses at once on every vsock port, the proxy's included.
+    assert_eq!(tcp_connect(&env, &name, "127.0.0.1", 3128), ECONNREFUSED);
     #[cfg(target_os = "linux")]
-    for port in [1024, 4000, 3128] {
-        assert_eq!(
-            vsock_to_host(&env, &name, port),
-            "Connection reset by peer",
-            "vsock CID 2 port {port} without egress"
-        );
-    }
+    assert_eq!(vsock_sweep(&env, &name), "done");
     drop(up);
 
     let name = box_name("route");
@@ -91,12 +98,11 @@ fn box_has_no_network_but_loopback() {
         .map(|(name, _)| name.trim())
         .collect();
     assert_eq!(interfaces, ["lo"], "the box's interfaces: {}", dev.stdout);
-    let public = curl(&env, &name, &["-v", "--noproxy", "*", "http://1.1.1.1/"]);
-    assert_eq!(public.code, 7, "1.1.1.1 answered: {public:?}");
-    assert!(
-        public.stderr.contains("Network is unreachable"),
-        "1.1.1.1 failed for another reason: {public:?}"
-    );
+    // A documentation address, so a failing check contacts nothing real.
+    assert_eq!(tcp_connect(&env, &name, "192.0.2.1", 80), ENETUNREACH);
+    // Only the proxy's port reaches the host.
+    #[cfg(target_os = "linux")]
+    assert_eq!(vsock_sweep(&env, &name), "3128 0\ndone");
 
     // Control: the same image reaches the host fixture through the proxy.
     let route = curl(
@@ -112,8 +118,6 @@ fn box_has_no_network_but_loopback() {
     );
     assert_eq!((route.code, route.stdout.as_str()), (0, "418"), "{route:?}");
     assert_eq!(fixture.requests().len(), 1, "the fixture's requests");
-    #[cfg(target_os = "linux")]
-    assert_eq!(vsock_to_host(&env, &name, 3128), "connected");
 }
 
 /// The host's own non-loopback address: the source of its default route.
@@ -137,12 +141,13 @@ fn decisions<'a>(log: &'a [Value], host: &str, decision: &str) -> Vec<&'a Value>
 
 #[test]
 fn only_allowlisted_hosts_get_through() {
-    // Sabotage (run): skip the refused-address loop in network::resolve.
-    // localhost then passes, so its CONNECT gets 200, not 403. Deleting
-    // only the loopback checks is not enough: `::1` is still refused as the
-    // IPv4-compatible `0.0.0.1`. Sabotage: skip the SNI comparison in
-    // tls.rs; the mismatched hello reaches api.github.com, whose
-    // certificate curl then rejects (60, not 35).
+    // Sabotage (run): delete the CONNECT IP-literal check in proxy.rs. The
+    // host address is then resolved and refused as `private`, not
+    // `ip literal`. Sabotage (run): delete the loopback checks in
+    // network.rs; localhost's `::1` is then refused as `unspecified`.
+    // Sabotage (run): skip the SNI comparison in tls.rs; curl then rejects
+    // api.github.com's certificate (60, not 35). Sabotage (run): drop the
+    // plain HTTP allowlist check; example.com over port 80 answers 200.
     // api.github.com and the route are the positive controls.
     let env = TestEnv::new("allowlist");
     let fixture = Fixture::start(418);
@@ -156,43 +161,55 @@ fn only_allowlisted_hosts_get_through() {
             "routes": { "fixture.internal": fixture.route() },
         },
     }));
-    let connect = |url: &str| {
-        curl(
-            &env,
-            &name,
-            &["-o", "/dev/null", "-w", "%{http_connect}", url],
-        )
+    let connect = |args: &[&str]| {
+        let mut argv = vec!["-o", "/dev/null", "-w", "%{http_connect}"];
+        argv.extend_from_slice(args);
+        curl(&env, &name, &argv)
     };
 
     // Control: the tunnel opens and TLS completes. GitHub's own status is
     // not asserted: it may rate-limit a shared CI address.
-    let github = connect("https://api.github.com/");
+    let github = connect(&["https://api.github.com/"]);
     assert_eq!(
         (github.code, github.stdout.as_str()),
         (0, "200"),
         "{github:?}"
     );
 
+    // curl exits 56 when the proxy answers CONNECT with an error status.
     for target in ["localhost", host.as_str(), "example.com"] {
-        let refused = connect(&format!("https://{target}/"));
-        assert_ne!(refused.code, 0, "{target} got through: {refused:?}");
-        assert_eq!(refused.stdout, "403", "{target}'s CONNECT: {refused:?}");
+        let refused = connect(&[&format!("https://{target}/")]);
+        assert_eq!(
+            (refused.code, refused.stdout.as_str()),
+            (56, "403"),
+            "{target}'s CONNECT: {refused:?}"
+        );
     }
-
-    // The proxy accepts CONNECT to api.github.com, then reads a ClientHello
-    // naming example.com. curl's handshake fails (35) when the proxy drops it.
-    let sni = curl(
+    let plain = curl(
         &env,
         &name,
         &[
             "-o",
             "/dev/null",
-            "--connect-to",
-            "example.com:443:api.github.com:443",
-            "https://example.com/",
+            "-w",
+            "%{http_code}",
+            "http://example.com/",
         ],
     );
-    assert_eq!(sni.code, 35, "the mismatched SNI: {sni:?}");
+    assert_eq!((plain.code, plain.stdout.as_str()), (0, "403"), "{plain:?}");
+
+    // The proxy accepts CONNECT to api.github.com, then reads a ClientHello
+    // naming example.com and drops it: curl's handshake fails (35).
+    let sni = connect(&[
+        "--connect-to",
+        "example.com:443:api.github.com:443",
+        "https://example.com/",
+    ]);
+    assert_eq!(
+        (sni.code, sni.stdout.as_str()),
+        (35, "200"),
+        "the mismatched SNI: {sni:?}"
+    );
 
     // Control: a route reaches the fixture with the route's name as Host,
     // whatever Host the box sent.
@@ -218,21 +235,23 @@ fn only_allowlisted_hosts_get_through() {
     assert_eq!(requests[0].method, "DELETE");
     assert_eq!(requests[0].header("host"), ["fixture.internal"]);
 
+    // Each refusal names the spec's token (Egress proxy, Log).
     let log = up.egress_log();
-    let reason = |host: &str| -> String {
-        let lines = decisions(&log, host, "refused");
-        assert_eq!(lines.len(), 1, "{host}'s refusals in {log:?}");
-        lines[0]["reason"].as_str().unwrap().to_string()
+    let refusals = |host: &str| -> Vec<&str> {
+        decisions(&log, host, "refused")
+            .iter()
+            .map(|line| line["reason"].as_str().unwrap_or_default())
+            .collect()
     };
-    assert_eq!(reason("example.com"), "not allowlisted");
-    // Allowlisted, so each refusal names its own reason.
-    let (loopback, own) = (reason("localhost"), reason(&host));
-    assert!(
-        loopback != own && ![&loopback, &own].contains(&&"not allowlisted".to_string()),
-        "localhost refused as {loopback:?}, {host} as {own:?}"
+    assert_eq!(refusals("localhost"), ["loopback"], "{log:?}");
+    assert_eq!(refusals(&host), ["ip literal"], "{log:?}");
+    assert_eq!(
+        refusals("example.com"),
+        ["not allowlisted", "not allowlisted"],
+        "{log:?}"
     );
     // The SNI refusal is logged under the CONNECT host.
-    reason("api.github.com");
+    assert_eq!(refusals("api.github.com"), ["sni mismatch"], "{log:?}");
     assert_eq!(decisions(&log, "api.github.com", "allowed").len(), 1);
 
     let routed = decisions(&log, "fixture.internal", "allowed");
