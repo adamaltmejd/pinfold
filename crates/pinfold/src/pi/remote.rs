@@ -97,9 +97,9 @@ pub fn run(args: &[String]) -> io::Result<i32> {
 
 /// Answer each `push SRC:DST` line: a branch lands in the box's
 /// `refs/remotes/host/*` and a tag in its `refs/tags/*`, every one in one
-/// transaction. A tag the box holds at another object needs `+`. The host
-/// reads nothing from the box but whether it succeeded and which unforced
-/// tags it left out.
+/// transaction. A tag the box holds at another object needs `+`, or the
+/// whole push fails. The host reads nothing from the box but its exit
+/// status.
 fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<String> {
     let cancel = AtomicBool::new(false);
     let repo = Path::new(".");
@@ -149,13 +149,16 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
         if let Err(error) = &pushed {
             eprintln!("pinfold: {}", describe(error));
         }
+        let reason = match &pushed {
+            Err(CrossingError::Failed(detail)) if detail == crossing::TAG_EXISTS_DETAIL => {
+                crossing::TAG_EXISTS_DETAIL
+            }
+            _ => "the box refused the push",
+        };
         for destination in accepted {
             report.push_str(&match &pushed {
-                Ok(left) if left.contains(&destination) => format!(
-                    "error {destination} already exists in the box; push with + to replace it\n"
-                ),
-                Ok(_) => format!("ok {destination}\n"),
-                Err(_) => format!("error {destination} the box refused the push\n"),
+                Ok(()) => format!("ok {destination}\n"),
+                Err(_) => format!("error {destination} {reason}\n"),
             });
         }
     }

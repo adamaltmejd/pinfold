@@ -153,7 +153,7 @@ Project
   stop            Shut down the project box
 
 Disk projects
-  git push box    Send a host branch into the box as host/*
+  git push box    Send host branches (as host/*) and tags into the box
                   In the box: git switch -c BRANCH host/BRANCH
   git fetch box   Bring guest branches back as box/*
                   Once first: git remote add box pinfold::ROOT

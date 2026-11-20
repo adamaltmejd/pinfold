@@ -31,20 +31,32 @@ only.
   `+refs/heads/SRC:refs/remotes/host/BRANCH`. Any other pairing is
   rejected. So are deletions and a stash or other source.
 - A non-forced tag that clobbers an existing one fails Git's atomic
-  fetch whole. Plain git showed this: `! [rejected] v1 -> v1 (would
-  clobber existing tag)` rolled back `host/main` too. So the box script
-  checks first. It takes each unforced refspec whose destination
-  `show-ref --verify` finds at an object other than the bundle's head.
-  It prints that destination, leaves the refspec out of the fetch and
-  fetches the rest atomically.
-- The host reads that stdout bounded to the unforced destinations'
-  total length. Every line must be one of those destinations, each at
-  most once; anything else fails the push. The host writes the reason
-  itself.
-- This weakens a control. Before, the push read only the box's exit
-  status; now it also reads this bounded reply. The script sends the
-  stdout of `git init` and of the fetch to `/dev/null`. A box hook that
-  prints to stdout therefore cannot fail the push.
+  fetch whole. Plain git 2.56.1 showed this: `! [rejected] v1 -> v1
+  (would clobber existing tag)`, exit 1, and `host/main` was rolled back
+  too.
+- The box script checks before it changes anything. For each unforced
+  refspec, it compares the destination that `show-ref --verify` finds
+  with that ref's head in the bundle. If any differs, the script exits
+  65 and changes nothing.
+- The host maps only exit 65 to `a pushed tag already exists in the box
+  with a different target; nothing was pushed (use --force to replace
+  box tags)`. Every ref of the push is rejected with that reason. Any
+  other nonzero code is still "the box refused the push", and only 0 is
+  success.
+- If a tag appears between the check and the fetch, the atomic fetch
+  rejects the clobber and fails every ref. The plain-git probe above
+  shows that. The host reads nothing from the box but its exit status,
+  and box stdout is discarded as before.
+- A first version had the box print the conflicting destinations so
+  the rest of the push could land. The operator vetoed it, because it
+  added a reply channel from the box.
+- `list for-push` answers with an empty list. Listing box tags there
+  would mean reading box data on the host, so Git believes the box has
+  no refs. With `push.followTags`, each push therefore resends every
+  reachable annotated tag and prints `* [new tag]` for it. Identical
+  tags pass the check, so the repeat exits 0, but it is not quiet.
+  Making it quiet needs a box listing on the host, which this design
+  does not have. The fetch direction is unaffected either way.
 
 ## Commands
 
@@ -115,18 +127,8 @@ found only in `R/bin`.
 - `pf git push box --tags` exited 0 for all four tags. In the box,
   `light` was a commit and the other three tag objects.
 - Repeating the followTags push exited 0. Identical tags were accepted.
-- Conflicts. The box re-tagged `v2` (annotated, at `v1`) and `light`
-  (at `v1^{}`). A new host commit was then pushed:
-  - `pf git -c push.followTags=true push box main` exited 1.
-    `main -> main` and `v1 -> v1` succeeded, and the box's `host/main`
-    moved to the new commit. The output also showed `! [remote
-    rejected] v2 -> v2 (already exists in the box; push with + to
-    replace it)`.
-  - `pf git push box --tags` exited 1. It rejected `light` and `v2`
-    with the same reason and accepted `v1` and `v3-topic`.
-  - `pf git push box +refs/tags/v2:refs/tags/v2` exited 0.
-  - `pf git push box --force --tags` exited 0. The box's `light` and
-    `v2` went back to the host's ids, `71a7bd5` and `d57e576`.
+- Conflicts are recorded under "Final behaviour" below. These first runs
+  used the vetoed per-ref version.
 - Odd host tags. `pf git push box --tags` exited 0 for each of these,
   and each landed with the host's object id and type:
   - `blobtag`, at a blob;
@@ -150,16 +152,46 @@ found only in `R/bin`.
   and `git describe --tags` printed `v2-1-gc601e64`.
 - Later owner: after `pf pinfold stop`, a transient box listed `v1` and
   `v2` at the same ids.
-- These ran on a second fresh disk project with the final build:
-  - Every ref rejected. The box held `v1` at another object, and the
-    push was `pf git push box refs/tags/v1:refs/tags/v1`. The script
-    skipped the fetch. Git printed `! [remote rejected] v1 -> v1
-    (already exists in the box; push with + to replace it)` and exited 1.
-  - A box hook writing to stdout. The box installed a
-    `reference-transaction` hook that echoes `hook-stdout`; run by hand,
-    it printed that. Then `pf git push box main
-    +refs/tags/v1:refs/tags/v1` exited 0, and the box's `v1` matched
-    the host's.
+
+### Final behaviour (A)
+
+These ran on a fresh disk project with the final build. The repo had
+`main` (three commits), annotated `v1` and `v2`, and lightweight
+`light`.
+
+- `pf git -c push.followTags=true push box main` exited 0. It printed
+  `* [new branch] main -> main`, `* [new tag] v1 -> v1` and
+  `* [new tag] v2 -> v2`.
+- Running the same push again printed the same three lines and exited 0.
+  It was not quiet; see Design.
+- The box installed a `reference-transaction` hook that echoes
+  `hook-stdout`; run by hand, it printed that. The box also re-tagged
+  `v2` at `v1`. The host then committed `00b3f87`.
+- Conflict without force: `pf git -c push.followTags=true push box main`
+  exited 1. It printed
+  `pinfold: a pushed tag already exists in the box with a different
+  target; nothing was pushed (use --force to replace box tags)`, then
+  `! [remote rejected] main -> main (…same reason…)` and the same for
+  `v1` and `v2`. The box's `host/main` stayed at `12ebe40`, and its
+  `v2` stayed at the box's `00882e8`.
+- `pf git push --force --follow-tags box main` exited 0. The box's
+  `host/main` moved to `00b3f87`, and its `v2` became the host's
+  `61c8ab0`.
+- The box re-tagged `v2` and `light` again. The hook printed
+  `hook-stdout` twice.
+  - `pf git push box +refs/tags/v2:refs/tags/v2` exited 0, and `v2` was
+    back at `61c8ab0`.
+  - `pf git push box refs/tags/light:refs/tags/light` exited 1 with the
+    same reason.
+  - `pf git push box +refs/tags/light:refs/tags/light` exited 0.
+- Branches are always forced. After `side` was moved back to
+  `main~2`, `pf git push box side` without `--force` exited 0, and the
+  box's `host/side` followed it back to `3798e89`.
+- The hook was present for every push after it was installed. No
+  outcome changed.
+- A tag that appears between the check and the apply is covered by the
+  plain-git probe in Design. The race could not be timed through the
+  CLI.
 
 ### Box tags stay in the box (A)
 
@@ -208,7 +240,7 @@ before this change, and the change leaves it as it was.
 ### Cleanup
 
 - Every box started was stopped.
-- Eleven disks were removed by name: `pi-repo-8800e3f439bd-{home,project}` (twice),
+- Thirteen disks were removed by name: `pi-repo-8800e3f439bd-{home,project}` (three times),
   `pi-r-{file,link,ro}-…-{home,project}` and
   `pi-r-share-7e8205bba800-home`.
 - `R` was removed.
