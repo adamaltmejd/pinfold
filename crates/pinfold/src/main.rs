@@ -106,7 +106,8 @@ fn main() -> ExitCode {
             | "__project-owner" | "remote",
             _,
         )
-        | ("box", Some("up" | "list" | "down" | "inspect" | "events")) => {}
+        // `box prune` reports each box it removes; the pass would remove them silently.
+        | ("box", Some("up" | "list" | "down" | "inspect" | "events" | "prune")) => {}
         _ => crate::core::clean::maintain(),
     }
     let result = run(args);
