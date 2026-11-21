@@ -107,9 +107,22 @@ jobs:
           path: dist/pinfold-*
           if-no-files-found: error
 
+  # A tag's own check. A pin update arrives already checked by its caller.
+  suite:
+    needs: version
+    if: ${{ !inputs.ref }}
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ github.sha }}
+
   release:
     name: Release
-    needs: [version, build, macos]
+    needs: [version, build, macos, suite]
+    if: >-
+      ${{ !cancelled() && needs.build.result == 'success' &&
+      needs.macos.result == 'success' &&
+      (needs.suite.result == 'success' ||
+      (inputs.ref && needs.suite.result == 'skipped')) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:

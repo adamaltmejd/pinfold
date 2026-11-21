@@ -171,7 +171,7 @@ jobs:
             echo 'Mac runner needs at least 20 GiB free before builds.' >&2
             exit 1
           fi
-      - name: Full Mac end-to-end suite, including live login
+      - name: Full Mac end-to-end suite
         env:
           CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: sh ${{ github.workspace }}/scripts/run-mac-e2e.sh
         run: |

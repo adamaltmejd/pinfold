@@ -2215,8 +2215,7 @@ project discovery. Inside a Git directory, the command refuses as `project-in-gi
 
 ## Guarantees
 
-The end-to-end suite is being rewritten row by row (`AGENTS.md`, Tests);
-a row is proven once its test lands. Each row is one test.
+Each row is one test in the end-to-end suite.
 "Shown by" names its hardest scenario and the positive control in the same
 run. Testing policy is in `AGENTS.md`. Row numbers are stable; gaps are
 cut rows.
