@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use e2e::{
     Exec, Leftover, TestEnv, box_name, default_image, exit_code, hold_maintenance, json_lines, run,
-    wait_until,
+    spawn, wait_until,
 };
 use serde_json::{Value, json};
 
@@ -173,14 +173,12 @@ fn project_client_exits_125(env: &TestEnv) {
     let config: Value = serde_json::from_str(&config.stdout).expect("config JSON");
     let id = config["project"]["id"].as_str().expect("project id");
 
-    let mut client = Client(
+    let mut client = Client(spawn(
         in_project(&["--", "sh", "-c", "echo started; exec sleep 600"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("spawn pinfold --"),
-    );
+            .stderr(Stdio::inherit()),
+    ));
     let stdout = client.0.stdout.take().unwrap();
     let (send, lines) = mpsc::channel();
     thread::spawn(move || {
