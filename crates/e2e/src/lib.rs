@@ -5,6 +5,7 @@
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,8 +24,8 @@ const COMMAND: Duration = Duration::from_secs(120);
 /// The `pinfold` binary built from this checkout. Linux boxes run the CLI
 /// itself as PID 1, so there it is the static musl release build.
 pub fn pinfold() -> &'static Path {
-    static BINARY: OnceLock<PathBuf> = OnceLock::new();
-    BINARY.get_or_init(|| {
+    static BINARY: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    once(&BINARY, || {
         let mut command = Command::new(env!("CARGO"));
         command
             .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
@@ -65,6 +66,22 @@ pub fn pinfold() -> &'static Path {
             .and_then(|message| message["executable"].as_str().map(PathBuf::from))
             .expect("cargo build reported the pinfold executable")
     })
+}
+
+/// Shared setup that runs once per suite run. A failure is kept, so every
+/// later caller fails at once with the first error instead of retrying it.
+fn once<T>(cell: &'static OnceLock<Result<T, String>>, init: impl FnOnce() -> T) -> &'static T {
+    cell.get_or_init(|| {
+        panic::catch_unwind(AssertUnwindSafe(init)).map_err(|payload| {
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|text| text.to_string()))
+                .unwrap_or_default()
+        })
+    })
+    .as_ref()
+    .unwrap_or_else(|error| panic!("shared setup failed earlier: {error}"))
 }
 
 /// A finished host command.
@@ -735,8 +752,8 @@ fn temp() -> PathBuf {
 /// (on Linux) the default image are fetched and built once. It lives with
 /// the runner's temp files and is reused by later runs.
 fn suite_cache() -> &'static Path {
-    static CACHE: OnceLock<PathBuf> = OnceLock::new();
-    CACHE.get_or_init(|| {
+    static CACHE: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+    once(&CACHE, || {
         // A project discovers an enclosing repository; the suite's own
         // must have none.
         let mut git = Command::new("git");
@@ -764,8 +781,8 @@ fn suite_cache() -> &'static Path {
 /// live in the suite cache, so the suite builds it once per run.
 pub fn default_image() -> &'static str {
     const IMAGE: &str = "localhost/pinfold/profile-default:latest";
-    static BUILT: OnceLock<()> = OnceLock::new();
-    BUILT.get_or_init(|| {
+    static BUILT: OnceLock<Result<(), String>> = OnceLock::new();
+    once(&BUILT, || {
         let present = cfg!(target_os = "macos")
             && run(
                 Command::new("container").args(["image", "inspect", IMAGE]),
