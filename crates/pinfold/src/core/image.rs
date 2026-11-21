@@ -56,7 +56,8 @@ pub struct Build<'a> {
 
 /// The image one build made.
 pub struct Built {
-    /// The unique ref, `pinfold/<family>-<source>:<build>`.
+    /// The unique ref, `pinfold/<family>-<source>:<build>`: this build's,
+    /// or the existing one's when the build left `latest` unchanged.
     pub reference: String,
     /// The stable ref, `pinfold/<family>-<source>:latest`, now naming the
     /// same image.
@@ -69,15 +70,16 @@ pub struct Built {
 }
 
 /// Build one source's image, tag it uniquely and move the stable ref to it,
-/// then run retention for the source's images. The inner `Err` is the
-/// build's output when the build ran and failed.
+/// then run retention for the source's images. A build whose image is the
+/// one the stable ref already named keeps no tag of its own. The inner
+/// `Err` is the build's output when the build ran and failed.
 pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built, String>> {
     check_build_allow(&build.allow)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     // A new build's id, the `<build>` of its unique tag. It starts with the
     // build's nanoseconds since the epoch in hex, which retention orders
     // builds by. It is never a label, so a cached build of unchanged inputs
-    // returns the existing image.
+    // makes the existing image.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -117,6 +119,12 @@ pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built
     let latest = format!("{repository}:latest");
     let reference = format!("{repository}:{id}");
     let tags = [latest.clone(), reference.clone()];
+    // Read before the build moves it.
+    let previous = images
+        .resolve_image(&latest)
+        .ok()
+        .and_then(Result::ok)
+        .map(|image| image.id);
     // Declared only by the agent resolver stage; other layers keep their cache.
     let build_arg = matches!(&build.context, Context::Alone(_))
         .then_some(("PINFOLD_AGENT_RESOLVE", id.as_str()));
@@ -147,23 +155,58 @@ pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built
     if let Err(output) = result {
         return Ok(Err(output));
     }
-    // The second image is for rollback. A failure here is reported but never
-    // fails the build that succeeded.
-    if let Err(error) = clean::keep_two_images(images, Some((build.label, build.source))) {
-        eprintln!("pinfold: maintenance: {error}");
-    }
     // A runtime that cannot answer does not fail a build that succeeded.
     let id = images
         .resolve_image(&reference)
         .ok()
         .and_then(Result::ok)
         .map(|image| image.id);
+    // An unchanged image keeps its existing build tag, so unchanged rebuilds
+    // never push the rollback image out. Untag before retention counts.
+    let mut reference = reference;
+    if let Some(id) = id.as_ref().filter(|id| previous.as_ref() == Some(*id))
+        && let Some(existing) = existing_build(images, &repository, id, &reference)
+    {
+        match images.remove_image(&reference) {
+            Ok(()) => reference = existing,
+            Err(error) => eprintln!("pinfold: maintenance: {error}"),
+        }
+    }
+    // The second image is for rollback. A failure here is reported but never
+    // fails the build that succeeded.
+    if let Err(error) = clean::keep_two_images(images, Some((build.label, build.source))) {
+        eprintln!("pinfold: maintenance: {error}");
+    }
     Ok(Ok(Built {
         reference,
         latest,
         id,
         labels,
     }))
+}
+
+/// The newest build tag in `repository`, other than `minted`, that names
+/// image `id`.
+fn existing_build(
+    images: &dyn ImageService,
+    repository: &str,
+    id: &str,
+    minted: &str,
+) -> Option<String> {
+    images
+        .list_images()
+        .ok()?
+        .into_iter()
+        .filter(|image| image.id == id && image.reference != minted)
+        .filter(|image| {
+            image
+                .reference
+                .strip_prefix(repository)
+                .is_some_and(|tag| tag.starts_with(':'))
+        })
+        .filter_map(|image| Some((clean::build_time(&image.reference)?, image.reference)))
+        .max()
+        .map(|(_, reference)| reference)
 }
 
 /// What a caller asks `pinfold image build` for.

@@ -539,7 +539,7 @@ pub fn remove_images(service: &dyn ImageService, source: &str) -> io::Result<Rem
 /// A build tag's time: its `<build>` starts with the build's nanoseconds
 /// since the epoch in hex. `None` for `latest`, a dangling image's id and
 /// any other reference that is not a build tag.
-fn build_time(reference: &str) -> Option<SystemTime> {
+pub(crate) fn build_time(reference: &str) -> Option<SystemTime> {
     let (_, tag) = reference.rsplit_once(':')?;
     let nanos = u64::from_str_radix(tag.split('-').next()?, 16).ok()?;
     Some(UNIX_EPOCH + Duration::from_nanos(nanos))

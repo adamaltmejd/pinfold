@@ -1094,8 +1094,8 @@ A project recipe typically `FROM`s the profile image.
   preserves the build result.
 - A build's identity is its unique tag, never an image label. Every
   build is tagged `<repo>:<build>` and moves the stable `<repo>:latest` to
-  it. A caller build whose layers and labels are unchanged returns the
-  existing image.
+  it. A build whose image is the one `<repo>:latest` already names
+  publishes no new tag and names the existing build tag.
 - Every build sets `dev.pinfold.profile`, `dev.pinfold.project` and
   `dev.pinfold.base`; a label not its own is empty:
 
