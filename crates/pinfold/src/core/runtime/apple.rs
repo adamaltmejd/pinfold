@@ -1241,6 +1241,7 @@ fn copy_in(name: &str, init: &Path, seeding: &Seeding, cancel: &AtomicBool) -> i
         return Err(io::Error::new(error.kind(), format!("seed copy: {error}")));
     }
     let mut exited = None;
+    let mut wait = crate::core::process::ExitWait::new();
     let status = loop {
         if cancel.load(Ordering::Acquire) {
             return Err(io::ErrorKind::Interrupted.into());
@@ -1254,7 +1255,11 @@ fn copy_in(name: &str, init: &Path, seeding: &Seeding, cancel: &AtomicBool) -> i
         {
             break child.finish()?;
         }
-        seed_poll(None, stderr.as_ref())?;
+        let mut fds: Vec<_> = stderr
+            .iter()
+            .map(|pipe| nix::poll::PollFd::new(pipe.as_fd(), nix::poll::PollFlags::POLLIN))
+            .collect();
+        wait.poll(&mut fds)?;
     };
     if status.success() {
         Ok(())
@@ -1287,7 +1292,7 @@ impl Write for SeedInput<'_> {
             crate::core::process::drain(self.stderr, self.diagnostics, Some(16 * 1024))?;
             match self.input.write(bytes) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    seed_poll(Some(self.input), self.stderr.as_ref())?
+                    seed_poll(self.input, self.stderr.as_ref())?
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
@@ -1300,12 +1305,12 @@ impl Write for SeedInput<'_> {
 }
 
 fn seed_poll(
-    input: Option<&std::process::ChildStdin>,
+    input: &std::process::ChildStdin,
     stderr: Option<&std::process::ChildStderr>,
 ) -> io::Result<()> {
     let mut fds = [
         libc::pollfd {
-            fd: input.map_or(-1, AsRawFd::as_raw_fd),
+            fd: input.as_raw_fd(),
             events: libc::POLLOUT,
             revents: 0,
         },

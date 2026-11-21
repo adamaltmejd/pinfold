@@ -66,9 +66,15 @@ pub fn print_intro() {
         Ok(Some(git_disk)) => {
             println!("\nRun a command    pinfold -- CMD\nKeep it running  pinfold start");
             if let Some(root) = git_disk {
+                let remote = crate::pi::remote::remote_name(&root).unwrap_or_else(|| {
+                    println!(
+                        "Add Git remote   git remote add box {}",
+                        crate::pi::remote::pinfold_url(&root)
+                    );
+                    "box".to_string()
+                });
                 println!(
-                    "Add Git remote   git remote add box {}\nSend a branch    git push box BRANCH\nBring work back  git fetch box",
-                    crate::pi::remote::pinfold_url(&root)
+                    "Send a branch    git push {remote} BRANCH\nBring work back  git fetch {remote}"
                 );
             }
             println!("Change settings  pinfold config edit\nAll commands     pinfold --help");

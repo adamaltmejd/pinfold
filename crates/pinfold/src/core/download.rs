@@ -1,6 +1,6 @@
 //! Bounded host downloads for pinned artifacts and verified updates.
 
-use crate::core::process::CommandGuard;
+use crate::core::process::{CommandGuard, ExitWait};
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -9,10 +9,9 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use nix::poll::PollFlags;
 use sha2::{Digest, Sha256};
 
-use crate::core::pipe::{self, nonblocking, wait_ready};
+use crate::core::pipe::{self, nonblocking};
 
 pub fn bytes(url: &str, timeout: Duration, limit: u64) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -66,6 +65,7 @@ fn transfer(
         nonblocking(&source, "download")?;
         let mut total = 0_u64;
         let mut buffer = [0_u8; 64 * 1024];
+        let mut exit = ExitWait::new();
         loop {
             let read = pipe::read(&mut source, &mut buffer, deadline, cancel, "download")?;
             if read == 0 {
@@ -76,7 +76,8 @@ fn transfer(
                         Err(io::Error::other(format!("download failed: {status}")))
                     };
                 }
-                wait_ready(None, PollFlags::empty(), deadline, cancel, "download")?;
+                pipe::remaining(deadline, cancel, "download")?;
+                exit.poll(&mut [])?;
                 continue;
             }
             total += read as u64;
