@@ -332,8 +332,16 @@ fn exec(args: &[String]) -> ! {
         }) {
             Ok(directory) => Some(directory),
             Err(error) => {
+                // A new project disk starts empty (#372).
+                let remedy = if error.kind() == io::ErrorKind::NotFound {
+                    ". If this is a disk project, run from the project root, or push \
+                     the branch with `git push box BRANCH` and run \
+                     `git switch -c BRANCH host/BRANCH` in the box"
+                } else {
+                    ""
+                };
                 eprintln!(
-                    "pinfold init exec: working-directory: {} below {}: {error}",
+                    "pinfold init exec: working-directory: {} below {}: {error}{remedy}",
                     formatting::terminal_text(&relative.to_string_lossy()),
                     formatting::terminal_text(&root.to_string_lossy())
                 );

@@ -85,7 +85,7 @@ impl Shutdown {
 
 /// Why `up` refused, serialized as the reason string of the process
 /// interface's `refused` line. Early refusals precede preparation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RefusalReason {
     Spec,
@@ -99,6 +99,20 @@ pub enum RefusalReason {
     DiskMissing,
     DiskUnclean,
     Limit,
+}
+
+impl RefusalReason {
+    pub fn token(self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// The reason a token names, if it names one.
+    pub fn from_token(token: &str) -> Option<RefusalReason> {
+        serde_json::from_value(serde_json::Value::String(token.to_owned())).ok()
+    }
 }
 
 /// A refused `up`: why, and the detail the runtime or host gave. `box_name`
@@ -131,9 +145,7 @@ impl From<UpError> for io::Error {
     fn from(error: UpError) -> io::Error {
         match error {
             UpError::Refused(refusal) => {
-                let reason = serde_json::to_value(refusal.reason).unwrap_or_default();
-                let reason = reason.as_str().unwrap_or_default();
-                io::Error::other(format!("{reason}: {}", refusal.detail))
+                io::Error::other(format!("{}: {}", refusal.reason.token(), refusal.detail))
             }
             UpError::Signal | UpError::Control => io::ErrorKind::Interrupted.into(),
             UpError::Other(error) => error,

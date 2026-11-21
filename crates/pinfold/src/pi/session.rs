@@ -117,6 +117,11 @@ fn reply_error(reply: Reply) -> io::Error {
         Reply::Error { reason, .. } if reason == "stopped" => {
             io::Error::other("stopped during startup")
         }
+        Reply::Error { reason, .. }
+            if crate::core::r#box::RefusalReason::from_token(&reason).is_some() =>
+        {
+            io::Error::other(format!("{reason}: the project box was refused at startup"))
+        }
         Reply::Ended {
             generation,
             reason,
@@ -1592,8 +1597,14 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
                     // The locator is bootstrap evidence only; failed core cleanup
                 // keeps the durable claim for checked recovery.
                 if ownership::record(&plan.name)?.is_none() { locator.remove()?; }
-                let reason = if matches!(error, crate::core::r#box::UpError::Control | crate::core::r#box::UpError::Signal) { "stopped" } else { "owner-unavailable" };
-                let _ = wire::write_reply(&mut writer, Reply::Error { reason: reason.into(), fields: vec![] }).await;
+                use crate::core::r#box::UpError;
+                // A refusal travels as its reason token only, never its detail.
+                let reason = match &error {
+                    UpError::Control | UpError::Signal => "stopped".into(),
+                    UpError::Refused(refusal) => refusal.reason.token(),
+                    UpError::Other(_) => "owner-unavailable".into(),
+                };
+                let _ = wire::write_reply(&mut writer, Reply::Error { reason, fields: vec![] }).await;
                 return Err(error.into());
             }
         };

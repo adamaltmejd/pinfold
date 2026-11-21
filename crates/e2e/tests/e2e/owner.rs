@@ -17,9 +17,10 @@ const COMMAND: Duration = Duration::from_secs(120);
 
 #[test]
 fn losing_the_owner_fails_closed() {
-    // Sabotage (run): skip `clean::prune_boxes` in cli.rs's `prune`. The
-    // other root's prune then prints no `pruned` line for the leftover.
-    // The same request before the kill is the positive control.
+    // Sabotage (run): skip `clean::prune_boxes` in cli.rs's `prune`, or
+    // drop `prune` from main.rs's list of commands that skip the daily
+    // pass (#377). The prune then prints no `pruned` line for the
+    // leftover. The same request before the kill is the positive control.
     let image = default_image();
     let env = TestEnv::new("owner");
     // A second state root, created before the hold below.
@@ -93,7 +94,17 @@ fn losing_the_owner_fails_closed() {
         "{}",
         listed[0]
     );
-    let pruned = run(other.command().args(["box", "prune"]), COMMAND);
+    // A state root whose daily pass is due, as when `box prune` is a
+    // root's first command. Nothing else runs in it, so its pass never
+    // runs outside the hold.
+    let fresh = other.root().join("fresh-state");
+    let pruned = run(
+        other
+            .command()
+            .env("XDG_STATE_HOME", &fresh)
+            .args(["box", "prune"]),
+        COMMAND,
+    );
     assert_eq!(pruned.code, 0, "{pruned:?}");
     assert!(
         json_lines(&pruned.stdout).contains(&json!({
