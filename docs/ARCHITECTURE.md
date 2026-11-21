@@ -1251,9 +1251,9 @@ with `build` and caller images with `image build`. The old Podman store,
 old derived-root cache and managed agent disks are left untouched.
 
 Built-in images use `debian:trixie-slim` and strip setuid/setgid bits.
-As a convenience, `default` names uid 501 `pinfold` and uid 1000 `pi`
-where its base image leaves those uids free, and its default interactive
-Bash prompt is `pinfold:\w\$ `.
+As a convenience, `default` names uids 501 and 1000 `pinfold`, home
+`/home/pinfold`, where its base image leaves those uids free, and its
+default interactive Bash prompt is `pinfold:\w\$ `.
 
 | Profile | Tools |
 |---|---|
@@ -1718,7 +1718,7 @@ project; executable replacement remains `update-busy`.
   The executable word must be nonempty. No shell or implicit agent is added.
 - **State:** a project has host state under
   `~/.local/state/pinfold/projects/<name>-<hash>/` and a persistent
-  `pi-<name>-<hash>-home` disk at `/home/pi`. A disk project also has
+  `pi-<name>-<hash>-home` disk at `/home/pinfold`. A disk project also has
   `pi-<name>-<hash>-project`. The hash is of the canonical project root
   path. Agent settings, sessions and caches sit at their default paths in
   the home disk. The cosmetic name is at most 32 ASCII bytes.
@@ -1781,7 +1781,7 @@ project; executable replacement remains `update-busy`.
   `rex --autostart=false version` succeeds in the box (exit status only);
   `defaults read com.superlogical.rex rex.client.remoteControl` prints `0`.
   It then runs `rex server run --listen
-  unix:///home/pi/.local/state/rex/run/server.sock` in the box and waits
+  unix:///home/pinfold/.local/state/rex/run/server.sock` in the box and waits
   until an exec of `pinfold init rex-dial` with closed stdin connects to
   that socket. It reads the preference again, and only then binds
   `<host directory>/<project key>.rex`, a host-only 0600 socket outside

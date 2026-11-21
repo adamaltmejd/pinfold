@@ -12,19 +12,23 @@ RUN set -eux; \
     git config --system user.email pi@pinfold.invalid; \
     rm -rf /var/lib/apt/lists/*
 
-# Box work runs as the host uid. Name the usual ones where Debian leaves
-# the uid and name free: 501:20 (macOS) pinfold, 1000:1000 (Linux) pi,
-# whose home /home/pi is the project box's. The prompt omits \u, so any
-# other uid gets no "I have no name!".
+# Box work runs as the host uid. Name the usual ones pinfold, with the
+# project box's home /home/pinfold, where Debian leaves the uid and name
+# free: 501:20 (macOS) and 1000:1000 (Linux). useradd refuses a second
+# account of one name, so uid 1000's line is appended; a lookup by name
+# finds uid 501. The prompt omits \u, so any other uid gets no
+# "I have no name!".
 RUN set -eu; \
-    if ! getent passwd 501 >/dev/null && ! getent passwd pinfold >/dev/null; then \
-        useradd -M -N -u 501 -g 20 -d /home/pi -s /bin/bash pinfold; \
-    fi; \
-    if ! getent group 1000 >/dev/null && ! getent group pi >/dev/null; then \
-        groupadd -g 1000 pi; \
-    fi; \
-    if ! getent passwd 1000 >/dev/null && ! getent passwd pi >/dev/null; then \
-        useradd -M -N -u 1000 -g 1000 -d /home/pi -s /bin/bash pi; \
+    if ! getent passwd pinfold >/dev/null && ! getent group pinfold >/dev/null; then \
+        if ! getent passwd 501 >/dev/null; then \
+            useradd -M -N -u 501 -g 20 -d /home/pinfold -s /bin/bash pinfold; \
+        fi; \
+        if ! getent group 1000 >/dev/null; then \
+            groupadd -g 1000 pinfold; \
+        fi; \
+        if ! getent passwd 1000 >/dev/null; then \
+            printf '%s\n' 'pinfold:x:1000:1000::/home/pinfold:/bin/bash' >> /etc/passwd; \
+        fi; \
     fi; \
     printf '%s\n' "PS1='pinfold:\\w\\\$ '" >> /etc/bash.bashrc
 

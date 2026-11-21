@@ -54,7 +54,7 @@ pub const BOX_ENV_PREFIX: &str = "PINFOLD_BOX_ENV_";
 const ENV_SOCKET: &[u8] = b"pinfold-env";
 
 /// The guest Rex server's socket. pinfold fixes it; guest output never names it.
-pub const REX_SOCKET: &str = "/home/pi/.local/state/rex/run/server.sock";
+pub const REX_SOCKET: &str = "/home/pinfold/.local/state/rex/run/server.sock";
 
 /// Private exec metadata is removed before restoring caller-named variables.
 pub const EXEC_METADATA: &str = "PINFOLD_EXEC_METADATA";
