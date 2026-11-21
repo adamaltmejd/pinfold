@@ -89,6 +89,27 @@ fn protected_paths(
 
 /// Runs as the host uid, before credentials, claims or preparation writes.
 pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -> io::Result<()> {
+    let init = guest_path(
+        init.parent()
+            .ok_or_else(|| invalid("init has no directory"))?,
+    );
+    // Apple attaches init's directory at its host path, and later execs
+    // resolve init through it; box work must not be able to rename an
+    // ancestor. Firecracker boots init from its own detached disk.
+    let supplied = |guest: &Path| {
+        overlaps(guest, &init)
+            || (plan.egress.is_some() && overlaps(guest, Path::new("/var/host-services")))
+    };
+    if cfg!(target_os = "macos")
+        && plan
+            .disks
+            .iter()
+            .any(|disk| !disk.readonly && supplied(&guest_path(&disk.guest)))
+    {
+        return Err(invalid(
+            "writable disk overlaps supplied init or forwarded socket",
+        ));
+    }
     let shares = plan
         .mounts
         .iter()
@@ -96,10 +117,6 @@ pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -
     if !shares {
         return Ok(());
     }
-    let init = guest_path(
-        init.parent()
-            .ok_or_else(|| invalid("init has no directory"))?,
-    );
     let paths = protected_paths(profile, [dirs::resolve_host_path(&init)?])?;
     for mount in plan.mounts.iter_mut() {
         mount.guest = guest_path(&mount.guest);
@@ -114,10 +131,7 @@ pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -
             }
             mount.host = fs::canonicalize(&mount.host)?;
             check_extra_paths_outside(&mount.host, paths.iter().cloned(), true)?;
-            if overlaps(&mount.guest, &init)
-                || (plan.egress.is_some()
-                    && overlaps(&mount.guest, Path::new("/var/host-services")))
-            {
+            if supplied(&mount.guest) {
                 return Err(invalid("share overlaps supplied init or forwarded socket"));
             }
         } else {

@@ -181,7 +181,10 @@ fn project_files(mount: crate::config::ProjectMount, root: &Path) -> String {
     match mount {
         crate::config::ProjectMount::Share => format!("Shared: the box edits {root}"),
         crate::config::ProjectMount::Disk => {
-            format!("Isolated disk: the box has its own files, separate from {root}.")
+            format!(
+                "Isolated disk: the box has its own files at {}, separate from {root}.",
+                crate::pi::state::PROJECT
+            )
         }
     }
 }
@@ -1488,7 +1491,7 @@ fn config_report(
         "project": {
             "id": project,
             "home": crate::pi::state::HOME,
-            "mount": { "kind": config.mount, "host": utf8(root, "project root")?, "guest": utf8(root, "project root")? },
+            "mount": { "kind": config.mount, "host": utf8(root, "project root")?, "guest": utf8(crate::pi::state::guest_root(config.mount, root), "project root")? },
             "disks": { "home": home_disk, "project": if config.mount == crate::config::ProjectMount::Disk { Some(project_disk) } else { None } },
         },
     }))

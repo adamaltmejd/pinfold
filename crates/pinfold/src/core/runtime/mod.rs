@@ -213,25 +213,12 @@ pub struct DiskInfo {
 /// Metadata for one command, independent of the box's environment.
 #[derive(Default)]
 pub struct ExecContext<'a> {
-    pub cwd: Option<&'a Path>,
-    pub project_root: Option<&'a Path>,
+    /// A project command's guest project root and its working directory
+    /// relative to it.
+    pub project_directory: Option<(&'a Path, &'a Path)>,
     pub tty: bool,
     pub agent: Option<&'a str>,
     pub cancel: Option<&'a AtomicBool>,
-}
-
-impl ExecContext<'_> {
-    fn project_directory(&self) -> io::Result<Option<(PathBuf, PathBuf)>> {
-        self.project_root
-            .map(|root| {
-                let cwd = self.cwd.unwrap_or(root);
-                let relative = cwd
-                    .strip_prefix(root)
-                    .map_err(|_| io::Error::other("working directory is outside the project"))?;
-                Ok((root.to_path_buf(), relative.to_path_buf()))
-            })
-            .transpose()
-    }
 }
 
 /// One OS's box runtime. Command lines and VM configurations are built as

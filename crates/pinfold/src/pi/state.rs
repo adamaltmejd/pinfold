@@ -23,6 +23,18 @@ struct StateFile {
 
 /// `$HOME` in a pi box: the home disk's guest path.
 pub const HOME: &str = "/home/pinfold";
+
+/// A disk project's guest path.
+pub const PROJECT: &str = "/project";
+
+/// Where the project's files appear in the box: a share at its canonical
+/// host root, a disk at [`PROJECT`].
+pub fn guest_root(mount: crate::config::ProjectMount, root: &Path) -> &Path {
+    match mount {
+        crate::config::ProjectMount::Share => root,
+        crate::config::ProjectMount::Disk => Path::new(PROJECT),
+    }
+}
 pub fn disk_origins() -> io::Result<BTreeMap<String, PathBuf>> {
     let mut origins = BTreeMap::new();
     for project in state_dirs()? {

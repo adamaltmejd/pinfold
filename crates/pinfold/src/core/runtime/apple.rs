@@ -86,6 +86,9 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         .args(["--network", "none", "--cap-drop", "ALL"])
         .args(["--kernel-arg", "sysctl.user.max_user_namespaces=0"])
         .args(["--read-only", "--tmpfs", "/tmp"])
+        // Apple creates the image's WORKDIR at creation, which could land
+        // on a fresh disk; `/` always exists.
+        .args(["--workdir", "/"])
         .arg("--user")
         .arg(format!("{uid}:{gid}"))
         .args(["--progress", "none"])
@@ -714,7 +717,7 @@ impl Runtime for Apple {
         argv: &[String],
     ) -> io::Result<ExitStatus> {
         #[cfg(not(target_os = "linux"))]
-        if context.project_root.is_some() {
+        if context.project_directory.is_some() {
             return project_exec(name, init, context, argv);
         }
         let size = if context.tty {
@@ -781,6 +784,7 @@ impl Runtime for Apple {
         command
             .args(["run", "-i", "--progress", "none", "--network", "none"])
             .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
+            .args(["--workdir", "/"])
             .args(["--name", name])
             .args(["--user", "0:0", "--mount"])
             .arg(init_mount(init));
@@ -967,8 +971,7 @@ fn project_exec(
     let stopped = AtomicBool::new(false);
     let result = std::thread::scope(|scope| {
         let worker_context = ExecContext {
-            cwd: context.cwd,
-            project_root: context.project_root,
+            project_directory: context.project_directory,
             tty: context.tty,
             agent: context.agent,
             cancel: Some(&stopped),
@@ -1153,9 +1156,6 @@ fn exec_command(
     }
     command.args(["--env", crate::init::EXEC_METADATA]);
     command.env(crate::init::EXEC_METADATA, metadata.encode());
-    if let Some(dir) = context.cwd {
-        command.arg("--workdir").arg(dir);
-    }
     command
         .arg(name)
         .arg(init)
