@@ -596,8 +596,9 @@ cleanup removes the run's directory:
 Every field is a value the box spec carries or that `ready`, `list`,
 `doctor --artifacts` or `doctor` already prints. It never holds an env value, a header name,
 value or prefix, a login token, argv or command output. `env` lists the
-names of the variables the box got, never their values: the declared ones
-and pinfold's own default `PINFOLD_ALLOW` (Process interface).
+names of the variables the box got, never their values: the declared ones,
+pinfold's own default `PINFOLD_ALLOW` and, for a project box,
+`PINFOLD_PROJECT` (Process interface).
 Always-applied names and Apple-generated Git configuration names are
 omitted unless the caller declared them. A route's `to` is its `host:port` or origin.
 The record is what this run applied at start; a later change to config leaves it as it is.
@@ -1253,7 +1254,9 @@ old derived-root cache and managed agent disks are left untouched.
 Built-in images use `debian:trixie-slim` and strip setuid/setgid bits.
 As a convenience, `default` names uids 501 and 1000 `pinfold`, home
 `/home/pinfold`, where its base image leaves those uids free, and its
-default interactive Bash prompt is `pinfold:\w\$ `.
+default interactive Bash prompt is `pinfold:\w\$ `. An interactive Bash
+that starts in `$HOME` changes to `$PINFOLD_PROJECT`, and each one marks
+that directory trusted in Claude Code's `~/.claude.json`.
 
 | Profile | Tools |
 |---|---|
@@ -1857,7 +1860,8 @@ project; executable replacement remains `update-busy`.
   directory on that walk works. A non-UTF-8 path in
   a project box spec or configuration
   report is refused as `path-not-utf8`, naming its field.
-- **Environment:** the core's proxy variables, `PINFOLD_ALLOW`, the
+- **Environment:** the core's proxy variables, `PINFOLD_ALLOW`,
+  `PINFOLD_PROJECT` (the project's guest path, unless `env` sets it), the
   configured `env` and `PINFOLD_ENV_*` (Configuration). Cwd, terminal metadata and the optional Herdr label are
   per-command execution metadata, carried through private transport, never
   environment-setting argv. They are applied after the restored box environment.
@@ -2118,8 +2122,8 @@ the profile the project's file names when `PINFOLD_PROFILE` overrides it),
 image and its availability, and settings path. It reads configuration
 without changing state, even when the runtime is unavailable.
 `pinfold config --json` prints the effective configuration. `env` maps each
-box variable to its literal or its `{"from": VAR}`, a `PINFOLD_ENV_<NAME>`
-as `{"from": "PINFOLD_ENV_<NAME>"}`. Its `project` reports its id, home path
+configured box variable to its literal or its `{"from": VAR}`, a `PINFOLD_ENV_<NAME>`
+as `{"from": "PINFOLD_ENV_<NAME>"}`; the box's default `PINFOLD_PROJECT` is not listed. Its `project` reports its id, home path
 and `mount`, containing `kind`, canonical `host` and `guest`.
 `project.disks.home` names the persistent home disk. `project.disks.project`
 names the disk for a disk project and is null for a share. `config` is the

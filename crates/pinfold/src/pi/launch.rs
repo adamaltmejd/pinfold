@@ -360,6 +360,9 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
     // over configured and forwarded entries.
     let mut env = config.env.clone();
     env.insert("HOME".to_string(), Env::Exact(state::HOME.to_string()));
+    // The project's guest path equals its host root for both mount kinds.
+    env.entry("PINFOLD_PROJECT".to_string())
+        .or_insert(Env::Exact(utf8(root, "project root")?.to_string()));
     let [home, project] = state::disk_names(id);
     let mut disks = vec![empty_writable_disk(home, Path::new(state::HOME))];
     let mounts = match config.mount {

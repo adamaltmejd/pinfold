@@ -32,6 +32,30 @@ RUN set -eu; \
     fi; \
     printf '%s\n' "PS1='pinfold:\\w\\\$ '" >> /etc/bash.bashrc
 
+# An interactive shell in a project box that starts in the home, such as a
+# Rex pane, moves to the project. Every interactive shell marks the project
+# trusted in ~/.claude.json, since the VM is the trust boundary; a
+# symlink, an unparseable file or one jq reads as empty is left alone. A Claude Code rewriting the file at the
+# same moment can drop the flag; the next shell restores it.
+RUN printf '%s\n' \
+    'case $- in *i*)' \
+    '    if [ -n "${PINFOLD_PROJECT-}" ] && [ -d "$PINFOLD_PROJECT" ]; then' \
+    '        [ "$PWD" = "$HOME" ] && cd "$PINFOLD_PROJECT"' \
+    '        (' \
+    '            f="$HOME/.claude.json"; p=".projects[\$project].hasTrustDialogAccepted"' \
+    '            [ -L "$f" ] && exit' \
+    '            jq -e --arg project "$PINFOLD_PROJECT" "$p == true" "$f" >/dev/null 2>&1 && exit' \
+    '            t=$(mktemp "$f.XXXXXX" 2>/dev/null) || exit' \
+    '            if [ -e "$f" ]; then' \
+    '                jq --arg project "$PINFOLD_PROJECT" "$p = true" "$f"' \
+    '            else' \
+    '                jq -n --arg project "$PINFOLD_PROJECT" "{} | $p = true"' \
+    '            fi >"$t" 2>/dev/null && [ -s "$t" ] && mv -f "$t" "$f" || rm -f "$t"' \
+    '        )' \
+    '    fi' \
+    '    ;;' \
+    'esac' >> /etc/bash.bashrc
+
 # Agents are resolved and installed only here; profiles built on this
 # image inherit them. Each build passes a new PINFOLD_AGENT_RESOLVE, so the
 # resolver reruns and the install reruns only when a version changed.
