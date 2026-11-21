@@ -3,7 +3,7 @@
 //! teardown.
 
 use std::io::{self, IsTerminal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,6 +101,7 @@ pub(crate) struct Rex {
 struct State {
     name: String,
     init: PathBuf,
+    root: PathBuf,
     leaf: String,
     relay: Option<Relay>,
 }
@@ -123,12 +124,13 @@ impl Drop for Relay {
 impl Rex {
     /// Called by a new owner while it holds the launch lock, so a socket a
     /// dead owner left is removed here.
-    pub(crate) fn new(name: &str, init: PathBuf, key: &str) -> Self {
+    pub(crate) fn new(name: &str, init: PathBuf, root: &Path, key: &str) -> Self {
         remove_left(key);
         Self {
             state: Arc::new(Mutex::new(State {
                 name: name.to_owned(),
                 init,
+                root: root.to_owned(),
                 leaf: leaf(key),
                 relay: None,
             })),
@@ -206,14 +208,10 @@ impl State {
 
     /// `argv` in this generation's box, through init. stdio is null
     /// unless the caller pipes it.
-    fn command(&self, argv: &[&str]) -> io::Result<Command> {
+    fn command(&self, context: &ExecContext, argv: &[&str]) -> io::Result<Command> {
         let argv: Vec<String> = argv.iter().map(|word| word.to_string()).collect();
-        let mut command = Command::from(runtime().exec_command(
-            &self.name,
-            &self.init,
-            &ExecContext::default(),
-            &argv,
-        )?);
+        let mut command =
+            Command::from(runtime().exec_command(&self.name, &self.init, context, &argv)?);
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -224,12 +222,12 @@ impl State {
 
     fn dial(&self) -> io::Result<Command> {
         let init = self.init.to_string_lossy().into_owned();
-        self.command(&[&init, "init", "rex-dial"])
+        self.command(&ExecContext::default(), &[&init, "init", "rex-dial"])
     }
 
     async fn succeeds(&self, argv: &[&str]) -> bool {
         let Ok(mut child) = self
-            .command(argv)
+            .command(&ExecContext::default(), argv)
             .and_then(|mut command| command.spawn_guarded())
         else {
             return false;
@@ -241,8 +239,13 @@ impl State {
     /// again, and only then bind the host socket.
     async fn open(&mut self) -> Status {
         let listen = format!("unix://{REX_SOCKET}");
+        // Rex opens new sessions in its server's working directory (#389).
+        let project = ExecContext {
+            cwd: Some(&self.root),
+            ..Default::default()
+        };
         let Ok(mut server) = self
-            .command(&["rex", "server", "run", "--listen", &listen])
+            .command(&project, &["rex", "server", "run", "--listen", &listen])
             .and_then(|mut command| command.spawn_guarded())
         else {
             return Status::Failed;

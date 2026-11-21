@@ -1781,7 +1781,8 @@ project; executable replacement remains `update-busy`.
   `rex --autostart=false version` succeeds in the box (exit status only);
   `defaults read com.superlogical.rex rex.client.remoteControl` prints `0`.
   It then runs `rex server run --listen
-  unix:///home/pinfold/.local/state/rex/run/server.sock` in the box and waits
+  unix:///home/pinfold/.local/state/rex/run/server.sock` in the box, in the
+  project directory, and waits
   until an exec of `pinfold init rex-dial` with closed stdin connects to
   that socket. It reads the preference again, and only then binds
   `<host directory>/<project key>.rex`, a host-only 0600 socket outside

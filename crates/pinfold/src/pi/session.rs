@@ -1625,7 +1625,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
                 result = &mut checking => break result.map_err(|_| timed_out()).and_then(|result| result).transpose(),
             }}
         };
-        let relay = rex::Rex::new(&plan.name, init.clone(), &key(&root));
+        let relay = rex::Rex::new(&plan.name, init.clone(), &root, &key(&root));
         // A first start's Rex setup yields to stop, box exit, a signal or the client leaving.
         let (stopped, status) = if stopped.is_none() && matches!(intent, Intent::KeepRex) {
             let request = relay.request();
