@@ -209,7 +209,7 @@ pub fn hold_maintenance() -> MutexGuard<'static, ()> {
 
 /// One test's throwaway config and state roots, removed on drop unless a
 /// box failed to end cleanly. The cache root is the suite run's own (see
-/// [`suite_cache`]). Every disk in its state root is removed by name on
+/// [`suite_cache`]) unless the test asks for its own. Every disk in its state root is removed by name on
 /// drop, after the test's boxes, which are declared after it.
 pub struct TestEnv {
     root: PathBuf,
@@ -218,11 +218,22 @@ pub struct TestEnv {
 
 impl TestEnv {
     pub fn new(test: &str) -> TestEnv {
+        TestEnv::with_cache(test, Some(suite_cache()))
+    }
+
+    /// A test with a cache root of its own, inside its directory. On Linux
+    /// that is its own builder and image store: its builds neither wait
+    /// for nor are cleaned with the suite's, and they start cold.
+    pub fn own_cache(test: &str) -> TestEnv {
+        TestEnv::with_cache(test, None)
+    }
+
+    fn with_cache(test: &str, cache: Option<&Path>) -> TestEnv {
         let root = temp().join(format!("pinfold-e2e-{}-{test}", std::process::id()));
         let roots = Roots {
             config: root.join("config"),
             state: root.join("state"),
-            cache: suite_cache().to_path_buf(),
+            cache: cache.map_or_else(|| root.join("cache"), Path::to_path_buf),
             keep: Arc::default(),
         };
         // A new directory, so cleanup never adopts an older run's state.
@@ -230,6 +241,7 @@ impl TestEnv {
         let env = TestEnv { root, roots };
         fs::create_dir(&env.roots.config).unwrap();
         fs::create_dir(&env.roots.state).unwrap();
+        fs::create_dir_all(&env.roots.cache).unwrap();
         // Spend this root's daily pass now (see MAINTENANCE).
         let _hold = hold_maintenance();
         let listed = run(env.command().args(["disk", "list", "--json"]), COMMAND);
@@ -990,6 +1002,15 @@ impl Below {
         }
         assert!(!found.is_empty(), "no process below {pid}: no VMM");
         Below(found)
+    }
+
+    /// The pids whose command name is `name`.
+    pub fn named(&self, name: &str) -> Vec<u32> {
+        self.0
+            .iter()
+            .filter(|(_, comm)| comm == name)
+            .map(|(pid, _)| *pid)
+            .collect()
     }
 
     /// Wait, bounded, until each process has exited: gone from /proc, or a

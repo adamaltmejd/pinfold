@@ -8,8 +8,8 @@ use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use e2e::{
-    Exec, Project, TestEnv, default_image, detached_children, hold_maintenance, json_lines, run,
-    tree, wait_exited, wait_until,
+    Exec, Project, TestEnv, detached_children, hold_maintenance, json_lines, run, tree,
+    wait_exited, wait_until,
 };
 use serde_json::Value;
 
@@ -21,10 +21,18 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Dropping only the live test passes: the owner's project lock still
     // keeps the project.
     // The idle project's state and disks going is the positive control.
-    default_image();
-    let env = TestEnv::new("clean");
+    // Its own cache root, so its `clean` empties only its own builder
+    // cache, and a small image of its own: the default image's tools are
+    // not needed.
+    let env = TestEnv::own_cache("clean");
+    let image = small_image(&env);
     let live = Project::new(&env, "live");
     let idle = Project::new(&env, "idle");
+    for project in [&live, &idle] {
+        let file = project.config_dir().join("pinfold.toml");
+        let saved = fs::read_to_string(&file).unwrap();
+        fs::write(&file, format!("image = \"{image}\"\n{saved}")).unwrap();
+    }
 
     // A kept project with a live box and no clients: its one session wrote
     // a file to its disk and one to the box's own tmpfs /tmp, which a
@@ -103,6 +111,23 @@ fn cleanup_removes_only_pinfolds_garbage() {
         .project
         .pinfold(&["--", "cat", "marker", "/tmp/e2e-box"]);
     assert_eq!(ok(read, "read back"), format!("kept\n{box_mark}"));
+}
+
+/// A caller image of the Debian base alone, built in `env`'s cache root.
+fn small_image(env: &TestEnv) -> String {
+    let dir = env.root().join("image");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("Containerfile"), "FROM debian:trixie-slim\n").unwrap();
+    let built = run(
+        env.command()
+            .args(["image", "build", "e2e-clean", "--containerfile"])
+            .arg(dir.join("Containerfile"))
+            .arg("--context")
+            .arg(&dir),
+        Duration::from_secs(600),
+    );
+    assert_eq!(built.code, 0, "image build: {built:?}");
+    "localhost/pinfold/image-e2e-clean:latest".to_string()
 }
 
 /// Every file under `dir` and its bytes.
