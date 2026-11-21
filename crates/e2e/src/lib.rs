@@ -96,12 +96,11 @@ pub struct Exec {
 /// is killed and the test fails naming it; nothing waits unbounded.
 pub fn run(command: &mut Command, timeout: Duration) -> Exec {
     scrub(command);
-    let mut child = command
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"));
+        .stderr(Stdio::piped());
+    let mut child = spawn(command);
     let (send, read) = mpsc::channel();
     for (index, mut pipe) in [
         Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>,
@@ -139,6 +138,18 @@ pub fn run(command: &mut Command, timeout: Duration) -> Exec {
         stdout,
         stderr,
     }
+}
+
+/// Spawn `command`, one spawn at a time in this process. On macOS std
+/// makes a child's stdio pipes without atomic CLOEXEC (no `pipe2`), so a
+/// spawn on another thread can inherit them: a refused `box up` then
+/// exits, but the other `box up` holds its stdout open (#379).
+pub fn spawn(command: &mut Command) -> Child {
+    static SPAWN: Mutex<()> = Mutex::new(());
+    let _spawning = SPAWN.lock().unwrap_or_else(PoisonError::into_inner);
+    command
+        .spawn()
+        .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"))
 }
 
 /// Wait for `child` until `deadline`; past it, kill and reap it and return
@@ -313,14 +324,13 @@ impl TestEnv {
     /// instead of `ready` once `up` has exited 1.
     pub fn start(&self, spec: &Value) -> Result<BoxUp, Value> {
         let name = spec["name"].as_str().expect("the spec names its box");
-        let mut child = self
-            .command()
-            .args(["box", "up"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("spawn pinfold box up");
+        let mut child = spawn(
+            self.command()
+                .args(["box", "up"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit()),
+        );
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().expect("box up stdout");
         let (send, lines) = mpsc::channel();
@@ -573,12 +583,12 @@ pub struct Client {
 
 impl Client {
     pub fn spawn(mut command: Command) -> Client {
-        let mut child = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"));
+        let mut child = spawn(
+            command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit()),
+        );
         let stdout = child.stdout.take().expect("client stdout");
         let (send, lines) = mpsc::channel();
         thread::spawn(move || {

@@ -8,7 +8,7 @@ use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use e2e::{
-    Exec, Project, TestEnv, detached_children, hold_maintenance, json_lines, run, tree,
+    Exec, Project, TestEnv, detached_children, hold_maintenance, json_lines, run, spawn, tree,
     wait_exited, wait_until,
 };
 use serde_json::Value;
@@ -53,14 +53,12 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // An idle project: one session, ended, and a host file in its
     // checkout. Its detached owner, the client's child while the session
     // runs, has exited before `clean`.
-    let mut client = Client(
+    let mut client = Client(spawn(
         idle.command(&["--", "sh", "-c", "echo started; read line; exit 0"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("spawn the idle session"),
-    );
+            .stderr(Stdio::inherit()),
+    ));
     let mut stdout = BufReader::new(client.0.stdout.take().unwrap());
     let mut line = String::new();
     stdout
