@@ -787,12 +787,29 @@ pub struct BoxUp {
 }
 
 impl BoxUp {
-    /// The decisions in this run's egress log, at the path `ready` names.
-    pub fn egress_log(&self) -> Vec<Value> {
-        let path = self.ready["egress_log"]
+    /// The egress log `ready` names, canonical, once checked to be a
+    /// regular file under the test's own state root.
+    pub fn egress_log_path(&self) -> PathBuf {
+        let named = self.ready["egress_log"]
             .as_str()
             .unwrap_or_else(|| panic!("ready names no egress log: {}", self.ready));
-        json_lines(&fs::read_to_string(path).unwrap_or_else(|error| panic!("read {path}: {error}")))
+        let path = fs::canonicalize(named).unwrap_or_else(|error| panic!("{named}: {error}"));
+        let root = fs::canonicalize(&self.roots.state).expect("the state root");
+        assert!(
+            path.starts_with(&root) && fs::metadata(&path).is_ok_and(|metadata| metadata.is_file()),
+            "the egress log {named} is not a regular file under {}",
+            root.display()
+        );
+        path
+    }
+
+    /// The decisions in this run's egress log.
+    pub fn egress_log(&self) -> Vec<Value> {
+        let path = self.egress_log_path();
+        json_lines(
+            &fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
+        )
     }
 
     /// Read `up`'s stdout to EOF within `timeout`; whether it ended.
@@ -861,12 +878,11 @@ impl BoxUp {
                 Err(RecvTimeoutError::Timeout) => panic!("box up {} did not end", self.name),
             }
         }
-        // The owner stays in the guard until it has exited, so a panic here
-        // still tears the box down.
+        // The owner stays in the guard until its `down` line is parsed, so a
+        // panic here still gets recovery and keeps the roots.
         let status = loop {
             let child = self.child.as_mut().expect("a running owner");
             if let Some(status) = child.try_wait().expect("wait for box up") {
-                self.child = None;
                 break status;
             }
             assert!(
@@ -878,8 +894,10 @@ impl BoxUp {
         };
         let last =
             last.unwrap_or_else(|| panic!("box up {} printed nothing after ready", self.name));
-        let line = serde_json::from_str(&last)
+        let line: Value = serde_json::from_str(&last)
             .unwrap_or_else(|error| panic!("box up's last line {last:?}: {error}"));
+        assert_eq!(line["event"], "down", "box up's last line {last:?}");
+        self.child = None;
         (line, exit_code(status))
     }
 
@@ -1169,10 +1187,12 @@ pub struct Fixture {
 enum Answer {
     /// This status and no body, to every request.
     Status(u16),
-    /// A streamed model reply holding this text: OpenAI's chat completion
-    /// at `…/chat/completions`, Anthropic's message at `/v1/messages`; an
-    /// empty 200 elsewhere.
-    Model(Arc<str>),
+    /// To a POST whose body holds the prompt (the second field), a
+    /// streamed model reply holding the first: OpenAI's chat completion at
+    /// `…/chat/completions`, Anthropic's message at `/v1/messages`, an
+    /// empty 200 elsewhere. Anything else gets 400, so a request whose body
+    /// was lost fails.
+    Model(Arc<str>, Arc<str>),
 }
 
 impl Fixture {
@@ -1181,9 +1201,10 @@ impl Fixture {
         Fixture::serving(Answer::Status(status))
     }
 
-    /// A fake model whose every completion is `reply`.
-    pub fn model(reply: &str) -> Fixture {
-        Fixture::serving(Answer::Model(reply.into()))
+    /// A fake model whose every completion is `reply`, given to a POST
+    /// whose body holds `prompt`.
+    pub fn model(reply: &str, prompt: &str) -> Fixture {
+        Fixture::serving(Answer::Model(reply.into(), prompt.into()))
     }
 
     fn serving(answer: Answer) -> Fixture {
@@ -1261,10 +1282,19 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, answer: &Answer) {
         }
         headers.push((name.to_string(), value.to_string()));
     }
-    let _ = std::io::copy(&mut reader.by_ref().take(length), &mut std::io::sink());
+    let mut sent = Vec::new();
+    let _ = reader.by_ref().take(length).read_to_end(&mut sent);
     let (status, body) = match answer {
         Answer::Status(status) => (*status, String::new()),
-        Answer::Model(reply) => (200, model_reply(&target, reply)),
+        Answer::Model(reply, prompt)
+            if method == "POST"
+                && sent
+                    .windows(prompt.len())
+                    .any(|window| window == prompt.as_bytes()) =>
+        {
+            (200, model_reply(&target, reply))
+        }
+        Answer::Model(..) => (400, String::new()),
     };
     seen.lock().unwrap().push(Request {
         method,

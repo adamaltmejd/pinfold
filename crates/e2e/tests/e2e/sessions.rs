@@ -108,7 +108,11 @@ fn a_projects_sessions_share_one_box() {
         .expect("a generation")
         .to_string();
     let owner = listed[0]["owner"].clone();
-    assert!(!owner.is_null(), "an owner: {}", listed[0]);
+    assert!(
+        owner.as_u64().is_some_and(|pid| pid > 0),
+        "an owner pid: {}",
+        listed[0]
+    );
 
     // Control: a client whose `from` variable holds the same value joins,
     // and sees both sessions' files in that box's own /tmp.

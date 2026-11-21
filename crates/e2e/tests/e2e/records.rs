@@ -1,6 +1,7 @@
 //! Guarantee 38: every egress decision is recorded, or the box stops. Each
 //! run has its own egress log and launch record.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -56,8 +57,9 @@ fn two_decisions(env: &TestEnv, up: &BoxUp, name: &str) -> Vec<(String, String, 
 }
 
 /// The first `len` bytes of the file at `path` and its length.
-fn head(path: &str, len: usize) -> (Vec<u8>, u64) {
-    let mut file = fs::File::open(path).unwrap_or_else(|error| panic!("open {path}: {error}"));
+fn head(path: &Path, len: usize) -> (Vec<u8>, u64) {
+    let mut file =
+        fs::File::open(path).unwrap_or_else(|error| panic!("open {}: {error}", path.display()));
     let mut bytes = vec![0; len];
     file.read_exact(&mut bytes).unwrap();
     (bytes, file.metadata().unwrap().len())
@@ -100,21 +102,14 @@ fn every_egress_decision_is_recorded_or_the_box_stops() {
         .as_str()
         .expect("run_id")
         .to_string();
-    let first_log = first.ready()["egress_log"]
-        .as_str()
-        .expect("egress_log")
-        .to_string();
     assert_eq!(
         two_decisions(&env, &first, &name),
         own,
         "the first run's log"
     );
-    // The log `ready` names is a regular file under the test's state root.
-    assert!(
-        Path::new(&first_log).starts_with(env.state_home())
-            && fs::symlink_metadata(&first_log).is_ok_and(|metadata| metadata.is_file()),
-        "{first_log}"
-    );
+    // Padded through the path the harness checked: a regular file under
+    // the test's own state root.
+    let first_log = first.egress_log_path();
     let recorded = fs::read(&first_log).unwrap();
     fs::File::options()
         .write(true)
@@ -174,33 +169,41 @@ fn every_egress_decision_is_recorded_or_the_box_stops() {
         assert_eq!(out.code, 0, "{out:?}");
         serde_json::from_str(&out.stdout).expect("inspect JSON")
     };
+    // A run's launch record holds its spec's policy; `env` is compared as
+    // a set of names.
+    let launched = |inspect: &Value, run_id: &str, spec: &Value| {
+        let launch = &inspect["launch"]["record"];
+        assert_eq!(inspect["launch"]["state"], "available", "{inspect}");
+        let names: BTreeSet<&str> = launch["env"]
+            .as_array()
+            .expect("env names")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(
+            (
+                &launch["run_id"],
+                &launch["box"],
+                &launch["egress"],
+                names,
+                &launch["memory"]
+            ),
+            (
+                &json!(run_id),
+                &json!(name),
+                &json!({
+                    "allow": spec["egress"]["allow"],
+                    "routes": { "fixture.internal": { "kind": "host-service", "to": fixture.route() } },
+                }),
+                BTreeSet::from(["E2E_LITERAL", "PINFOLD_ALLOW"]),
+                &spec["memory"],
+            ),
+            "{launch}"
+        );
+        assert_eq!(launch["cpus"].as_f64(), Some(2.0), "{launch}");
+    };
     let first_inspect = inspect(&first_id);
-    let launch = &first_inspect["launch"]["record"];
-    assert_eq!(
-        first_inspect["launch"]["state"], "available",
-        "{first_inspect}"
-    );
-    assert_eq!(
-        (
-            &launch["run_id"],
-            &launch["box"],
-            &launch["egress"],
-            &launch["env"],
-            &launch["memory"]
-        ),
-        (
-            &json!(first_id),
-            &json!(name),
-            &json!({
-                "allow": ["api.github.com"],
-                "routes": { "fixture.internal": { "kind": "host-service", "to": fixture.route() } },
-            }),
-            &json!(["E2E_LITERAL", "PINFOLD_ALLOW"]),
-            &json!("1G"),
-        ),
-        "{launch}"
-    );
-    assert_eq!(launch["cpus"].as_f64(), Some(2.0), "{launch}");
+    launched(&first_inspect, &first_id, &spec);
     assert!(
         !first_inspect.to_string().contains(&literal),
         "{first_inspect}"
@@ -216,8 +219,8 @@ fn every_egress_decision_is_recorded_or_the_box_stops() {
     );
 
     // Control: a second run of the same name, under another policy, has its
-    // own log holding its own two decisions once each. The first run's log
-    // and launch record are unchanged.
+    // own log holding its own two decisions once each and its own launch
+    // record. The first run's log and launch record are unchanged.
     let mut second_spec = spec.clone();
     second_spec["egress"]["allow"] = json!(["api.github.com", "example.org"]);
     second_spec["memory"] = json!("2G");
@@ -230,6 +233,7 @@ fn every_egress_decision_is_recorded_or_the_box_stops() {
         "the second run's log"
     );
     assert_eq!(second.egress_log().len(), 2);
+    launched(&inspect(second_id), second_id, &second_spec);
     assert_eq!(head(&first_log, recorded.len()), (recorded, CAP - 1));
     assert_eq!(
         inspect(&first_id)["launch"],

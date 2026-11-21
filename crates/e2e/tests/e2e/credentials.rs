@@ -28,22 +28,21 @@ fn hex(text: &str) -> String {
     text.bytes().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// The lines of `text` holding one of `values`, plain or hex in either
-/// case, with the value masked: a failure message never prints a secret.
-fn exposed(text: &str, values: &[&str]) -> Vec<String> {
-    let forms: Vec<String> = values
-        .iter()
-        .flat_map(|value| [value.to_string(), hex(value)])
-        .collect();
-    text.lines()
-        .map(str::to_ascii_lowercase)
-        .filter(|line| forms.iter().any(|form| line.contains(form.as_str())))
-        .map(|line| {
-            forms
-                .iter()
-                .fold(line, |line, form| line.replace(form.as_str(), "<secret>"))
-        })
-        .collect()
+/// The labels of the `(value, label)` pairs whose value `text` holds,
+/// plain or hex in either case: a failure names the value, never prints
+/// it or the text around it.
+fn exposed(text: &str, values: &[(&str, &str)]) -> Vec<String> {
+    let text = text.to_ascii_lowercase();
+    let mut labels = Vec::new();
+    for (value, label) in values {
+        if text.contains(value) {
+            labels.push(label.to_string());
+        }
+        if text.contains(&hex(value)) {
+            labels.push(format!("{label} hex"));
+        }
+    }
+    labels
 }
 
 /// The names of a request's credential fields (the login rules' fixed list
@@ -273,8 +272,13 @@ fn credentials_stay_on_the_host() {
     let project = Project::new(&env, "credentials");
     let inject = Fixture::start(418);
     let (claude_reply, pi_reply) = (format!("claude-{}", random()), format!("pi-{}", random()));
-    let claude = Fixture::model(&claude_reply);
-    let pi = Fixture::model(&pi_reply);
+    // A model fixture answers only a POST whose body holds its prompt.
+    let (claude_prompt, pi_prompt) = (
+        format!("pfprompt{}", random()),
+        format!("pfprompt{}", random()),
+    );
+    let claude = Fixture::model(&claude_reply, &claude_prompt);
+    let pi = Fixture::model(&pi_reply, &pi_prompt);
 
     // Every value starts with PREFIX, which the host sweep looks for; every
     // route credential with `pfsecretroute`, so the box can be searched for
@@ -282,10 +286,16 @@ fn credentials_stay_on_the_host() {
     let injected = format!("pfsecretrouteinject{}", random());
     let claude_login = format!("pfsecretrouteclaude{}", random());
     let pi_login = format!("pfsecretroutepi{}", random());
-    let routes = [injected.as_str(), claude_login.as_str(), pi_login.as_str()];
     let from = format!("pfsecretfrom{}", random());
     let penv = format!("pfsecretpenv{}", random());
-    let secrets = [&routes[..], &[from.as_str(), penv.as_str()]].concat();
+    let secrets = [
+        (injected.as_str(), "injected"),
+        (claude_login.as_str(), "claude login"),
+        (pi_login.as_str(), "pi login"),
+        (from.as_str(), "from"),
+        (penv.as_str(), "PINFOLD_ENV_"),
+    ];
+    let routes = &secrets[..3];
     // A literal is configuration: it is the file sweep's canary.
     let literal = format!("pfsecretliteral{}", random());
     let file = project.config_dir().join("pinfold.toml");
@@ -336,7 +346,7 @@ fn credentials_stay_on_the_host() {
         );
     }
     assert_eq!(
-        exposed(&environment, &routes),
+        exposed(&environment, routes),
         Vec::<String>::new(),
         "the box's env"
     );
@@ -360,10 +370,16 @@ fn credentials_stay_on_the_host() {
 
     // Through the Pi login route the guest's mixed-case duplicates of
     // fixed-list fields are dropped, with no Connection field naming them.
-    // A credential query is refused before any upstream request.
-    let forged = "-H 'authorization: Bearer pfbox-a' -H 'AUTHORIZATION: Bearer pfbox-b' \
-                  -H 'x-api-key: pfbox-c' -H 'X-API-KEY: pfbox-d' \
-                  -H 'X-E2E-Nominated: pfbox-n'";
+    // A credential query is refused before any upstream request. Each
+    // request posts the Pi fixture's prompt, so the fixture's 200 also
+    // shows the body arrived.
+    let completions = "http://openrouter.login/api/v1/chat/completions";
+    let forged = format!(
+        "-d '{pi_prompt}' \
+         -H 'authorization: Bearer pfbox-a' -H 'AUTHORIZATION: Bearer pfbox-b' \
+         -H 'x-api-key: pfbox-c' -H 'X-API-KEY: pfbox-d' \
+         -H 'X-E2E-Nominated: pfbox-n'"
+    );
     let log = env.state_home().join("pinfold/runs");
     let decisions = || -> Vec<serde_json::Value> {
         let mut lines = Vec::new();
@@ -377,9 +393,7 @@ fn credentials_stay_on_the_host() {
     };
     let before = decisions().len();
     assert_eq!(
-        ask(&curl(&format!(
-            "{forged} 'http://openrouter.login/api/v1/models?api_key=pfbox-e'"
-        ))),
+        ask(&curl(&format!("{forged} '{completions}?api_key=pfbox-e'"))),
         ["403"]
     );
     let lines = decisions()[before..].to_vec();
@@ -405,12 +419,7 @@ fn credentials_stay_on_the_host() {
     );
     // Control: the same request without the query. A field off the fixed
     // list that no Connection field names passes unchanged.
-    assert_eq!(
-        ask(&curl(&format!(
-            "{forged} http://openrouter.login/api/v1/models"
-        ))),
-        ["200"]
-    );
+    assert_eq!(ask(&curl(&format!("{forged} {completions}"))), ["200"]);
     let requests = pi.requests();
     assert_eq!(requests.len(), 1, "requests at the Pi fixture");
     assert!(
@@ -421,12 +430,14 @@ fn credentials_stay_on_the_host() {
     assert_eq!(requests[0].header("x-e2e-nominated"), ["pfbox-n"]);
 
     // A Connection field nominating that field, off the fixed list, in
-    // another letter case, removes it.
+    // another letter case, removes it. Nominating Authorization too does
+    // not suppress the host's.
     assert_eq!(
-        ask(&curl(
-            "-H 'X-E2E-Nominated: pfbox-n' -H 'Connection: x-e2e-NOMINATED' \
-             http://openrouter.login/api/v1/models"
-        )),
+        ask(&curl(&format!(
+            "-d '{pi_prompt}' -H 'Authorization: Bearer pfbox-f' \
+             -H 'X-E2E-Nominated: pfbox-n' -H 'Connection: x-e2e-NOMINATED, Authorization' \
+             {completions}"
+        ))),
         ["200"]
     );
     let requests = pi.requests();
@@ -445,17 +456,19 @@ fn credentials_stay_on_the_host() {
     // Control: Claude and Pi each complete one exchange with their fixture
     // through the generated configuration, which sends the host credential
     // only.
-    for (agent, fixture, reply, login, path) in [
+    for (agent, fixture, prompt, reply, login, path) in [
         (
-            "claude -p 'Reply.'",
+            "claude -p",
             &claude,
+            &claude_prompt,
             &claude_reply,
             &claude_login,
             "/v1/messages",
         ),
         (
-            "pi -p --provider openrouter --model openai/gpt-4o-mini 'Reply.'",
+            "pi -p --provider openrouter --model openai/gpt-4o-mini",
             &pi,
+            &pi_prompt,
             &pi_reply,
             &pi_login,
             "/api/v1/chat/completions",
@@ -463,23 +476,23 @@ fn credentials_stay_on_the_host() {
     ] {
         let seen = fixture.requests().len();
         assert_eq!(
-            ask(&format!("timeout 100 {agent}; echo \"exit $?\"")),
+            ask(&format!(
+                "timeout 100 {agent} 'Reply to {prompt}.'; echo \"exit $?\""
+            )),
             [reply.as_str(), "exit 0"],
             "{agent}"
         );
         let requests = fixture.requests()[seen..].to_vec();
-        let targets: Vec<&str> = requests.iter().map(|r| r.target.as_str()).collect();
-        assert!(
-            targets
-                .iter()
-                .any(|target| target.split('?').next() == Some(path)),
-            "{agent}: {targets:?}"
-        );
-        for request in &requests {
+        // Paths only: a query is the guest's and could carry anything.
+        let paths: Vec<&str> = requests
+            .iter()
+            .map(|request| request.target.split('?').next().unwrap_or_default())
+            .collect();
+        assert!(paths.contains(&path), "{agent}: {paths:?}");
+        for (request, path) in requests.iter().zip(&paths) {
             assert!(
                 only_bearer(request, login),
-                "{agent} at {}: credential fields {:?}",
-                request.target,
+                "{agent} at {path}: credential fields {:?}",
                 credential_fields(request)
             );
         }
@@ -488,15 +501,16 @@ fn credentials_stay_on_the_host() {
     // No file the box can read, its home disk included, holds a route
     // credential: the box prints every `pfsecretroute` word it finds, plain
     // or hex in either case, and the test compares them. The canary on the
-    // home disk shows the search reads it. Skipped: /proc, /sys and /dev,
-    // which are the kernel's views, not files on a disk; top-level
-    // symlinks, whose targets are searched; files box work may not read
-    // (No privilege: the host uid, no capabilities, no setuid files); and
+    // home disk shows the search reads it. Searched: every top-level entry,
+    // hidden ones included, and /dev/shm. Skipped: /proc, /sys and the rest
+    // of /dev, which are the kernel's views, not files; top-level symlinks,
+    // whose targets are searched; files box work may not read (No
+    // privilege: the host uid, no capabilities, no setuid files); and
     // sockets, which hold no bytes. Any other grep error fails the test.
     let found = ask(&format!(
-        "printf pfsecretroutecanary > \"$HOME/e2e-canary\"; \
-         for d in /*; do case $d in /proc|/sys|/dev) continue ;; esac; \
-         [ -L \"$d\" ] || set -- \"$@\" \"$d\"; done; \
+        "printf pfsecretroutecanary > \"$HOME/e2e-canary\"; set -- /dev/shm; \
+         for d in /* /.[!.]* /..?*; do case $d in /proc|/sys|/dev) continue ;; esac; \
+         [ -e \"$d\" ] && [ ! -L \"$d\" ] && set -- \"$@\" \"$d\"; done; \
          words=$(grep -rhoai -D skip -e 'pfsecretroute[0-9a-z]*' -e '{}[0-9a-f]*' \"$@\" \
          2>/tmp/e2e-grep-errors); status=$?; printf '%s\\n' \"$words\" | sort -u; \
          grep -v -e ': Permission denied$' -e ': No such device or address$' \
@@ -517,7 +531,7 @@ fn credentials_stay_on_the_host() {
         "the canary is not found"
     );
     assert_eq!(
-        exposed(&found.join("\n"), &routes),
+        exposed(&found.join("\n"), routes),
         Vec::<String>::new(),
         "box files"
     );
@@ -602,15 +616,9 @@ fn credentials_stay_on_the_host() {
     .into_iter()
     .chain(apple);
     let mut needles = Vec::new();
-    for (value, label) in [
-        (&injected, "injected"),
-        (&claude_login, "claude login"),
-        (&pi_login, "pi login"),
-        (&from, "from"),
-        (&penv, "PINFOLD_ENV_"),
-    ] {
+    for (value, label) in secrets {
         needles.push(Needle {
-            bytes: value.clone().into_bytes(),
+            bytes: value.as_bytes().to_vec(),
             label: label.to_string(),
         });
         needles.push(Needle {
