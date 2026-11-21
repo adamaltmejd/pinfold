@@ -1,7 +1,9 @@
 //! Guarantee 50: a profile with a base applies the base beneath it and is
 //! outdated when the base changes.
 
+use std::collections::hash_map::RandomState;
 use std::fs;
+use std::hash::{BuildHasher, Hasher};
 use std::thread;
 use std::time::Duration;
 
@@ -12,8 +14,9 @@ const BUILD: Duration = Duration::from_secs(900);
 
 /// The chain's root `FROM`. On Linux a small public base, built in the
 /// test's own cache root. On macOS images live in the host-wide store, and
-/// building on a public base re-pulls its shared tag; a pinfold-built base
-/// is never pulled, so the root builds on the default image.
+/// a build on a public base re-pulls its shared tag; a pinfold-built base
+/// is never pulled. So there the root builds on the default image, the one
+/// every other Mac test already needs: this test causes no pull of its own.
 fn root_base() -> &'static str {
     if cfg!(target_os = "macos") {
         e2e::default_image()
@@ -27,46 +30,68 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
     // Sabotage (run): in pi/launch.rs's freshness walk, give `None` where
     // a base is itself outdated (`builds on an outdated image`). After the
     // root changes, only the root names `image-outdated`.
-    // The box from the top link with every link's file and the top's seed,
-    // and the corrected cycle coming ready, are the positive controls.
+    // The box from the top link with every link's file and seed, the
+    // corrected cycle coming ready, and the root alone not outdated after
+    // its own rebuild are the positive controls.
     let env = TestEnv::own_cache("chain");
-    let pid = std::process::id();
-    let [root, mid, top] = ["root", "mid", "top"].map(|link| format!("e2e-{pid}-{link}"));
+    let word = format!("{:08x}", RandomState::new().build_hasher().finish() as u32);
+    let prefix = format!("e2e-{}-{word}", std::process::id());
+    let [root, mid, top] = ["root", "mid", "top"].map(|link| format!("{prefix}-{link}"));
     #[cfg(target_os = "macos")]
-    let _tags = Tags(format!("localhost/pinfold/profile-e2e-{pid}-"));
+    let _tags = Tags::claim(format!("localhost/pinfold/profile-{prefix}-"));
     let profiles = env.config_home().join("pinfold/profiles");
-    let link = |name: &str, base: Option<&str>, recipe: String, seed: Option<&str>| {
+    let link = |name: &str, base: Option<&str>, recipe: String, seeds: &[(&str, &str)]| {
         let dir = profiles.join(name);
         fs::create_dir_all(dir.join("home")).unwrap();
         let config = base.map_or(String::new(), |base| format!("base = \"{base}\"\n"));
         fs::write(dir.join("pinfold.toml"), config).unwrap();
         fs::write(dir.join("Containerfile"), recipe).unwrap();
-        if let Some(seed) = seed {
-            fs::write(dir.join("home/e2e-seed"), seed).unwrap();
+        for (path, text) in seeds {
+            fs::write(dir.join("home").join(path), text).unwrap();
         }
     };
     let recipe = |from: &str, file: &str, text: &str| {
         format!("FROM {from}\nRUN echo {text} > /etc/e2e-{file}\n")
     };
     let above = |base: &str| format!("localhost/pinfold/profile-{base}:latest");
-    let root_recipe = |text: &str| recipe(root_base(), "root", text);
-
-    // A cycle: the root names the top as its base.
-    link(&root, Some(&top), root_recipe("root"), Some("root"));
-    link(&mid, Some(&root), recipe(&above(&root), "mid", "mid"), None);
+    // Each lower link seeds a path of its own, and one the top replaces.
+    let root_link = |base: Option<&str>, text: &str| {
+        link(
+            &root,
+            base,
+            recipe(root_base(), "root", text),
+            &[("e2e-root-seed", "root-seed"), ("e2e-seed", "root")],
+        );
+    };
+    root_link(None, "root");
+    link(
+        &mid,
+        Some(&root),
+        recipe(&above(&root), "mid", "mid"),
+        &[("e2e-mid-seed", "mid-seed")],
+    );
     link(
         &top,
         Some(&mid),
         recipe(&above(&mid), "top", "top"),
-        Some("top"),
+        &[("e2e-seed", "top")],
     );
+    let build = |name: &str| {
+        let built = run(env.command().args(["build", "--profile", name]), BUILD);
+        assert_eq!(built.code, 0, "build --profile {name}: {built:?}");
+    };
+    build(&top);
+
+    // With the chain's images published, a cycle (the root names the top
+    // as its base) is refused; corrected, the same spec comes ready.
     // Seeds need `$HOME` on a disk.
     let spec = json!({
         "name": box_name("chain"),
         "profile": top,
         "env": { "HOME": "/home/e2e" },
-        "disks": [{ "name": format!("e2e-{pid}-chain"), "guest": "/home/e2e", "size": "1G" }],
+        "disks": [{ "name": format!("{prefix}-chain"), "guest": "/home/e2e", "size": "1G" }],
     });
+    root_link(Some(&top), "root");
     let refused = match env.start(&spec) {
         Ok(up) => panic!("a cycle came ready: {}", up.ready()),
         Err(line) => line,
@@ -76,14 +101,7 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
         (&json!("refused"), &json!("profile")),
         "{refused}"
     );
-
-    // Corrected, the chain builds root first and a box of the top runs.
-    link(&root, None, root_recipe("root"), Some("root"));
-    let build = || {
-        let built = run(env.command().args(["build", "--profile", &top]), BUILD);
-        assert_eq!(built.code, 0, "build --profile {top}: {built:?}");
-    };
-    build();
+    root_link(None, "root");
     drop(env.up(&spec));
 
     // A project on the top link.
@@ -96,7 +114,8 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
             "--",
             "sh",
             "-c",
-            "cat /etc/e2e-root /etc/e2e-mid /etc/e2e-top \"$HOME/e2e-seed\"",
+            "cd \"$HOME\" && cat /etc/e2e-root /etc/e2e-mid /etc/e2e-top \
+             e2e-root-seed e2e-mid-seed e2e-seed",
         ])
     };
     let outdated = |out: &Exec| -> Vec<String> {
@@ -112,17 +131,18 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
             .cloned()
             .collect()
     };
+    let files = |root_text: &str| format!("{root_text}\nmid\ntop\nroot-seedmid-seedtop");
 
-    // Control: every link's file and the top's replacement seed.
+    // Control: every link's file and seed, and the top's replacement.
     let first = launch();
     assert_eq!(
-        (first.code, first.stdout.as_str(), outdated(&first)),
-        (0, "root\nmid\ntop\ntop", vec![]),
+        (first.code, first.stdout.clone(), outdated(&first)),
+        (0, files("root"), vec![]),
         "{first:?}"
     );
 
     // A change at the root names every image above it.
-    link(&root, None, root_recipe("root-2"), Some("root"));
+    root_link(None, "root-2");
     let changed = launch();
     assert_eq!(changed.code, 0, "{changed:?}");
     assert_eq!(
@@ -132,18 +152,30 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
         changed.stderr
     );
 
-    // After the rebuild, none, and the top's box has the new root.
-    build();
+    // The root rebuilt alone is current; the two above it now record a
+    // base that is not the root's image, and are named.
+    build(&root);
+    let root_only = launch();
+    assert_eq!(root_only.code, 0, "{root_only:?}");
+    assert_eq!(
+        outdated(&root_only),
+        [mid.clone(), top.clone()],
+        "{}",
+        root_only.stderr
+    );
+
+    // After the chain's rebuild, none, and the top's box has the new root.
+    build(&top);
     let rebuilt = launch();
     assert_eq!(
-        (rebuilt.code, rebuilt.stdout.as_str(), outdated(&rebuilt)),
-        (0, "root-2\nmid\ntop\ntop", vec![]),
+        (rebuilt.code, rebuilt.stdout.clone(), outdated(&rebuilt)),
+        (0, files("root-2"), vec![]),
         "{rebuilt:?}"
     );
 
     // A second, unchanged rebuild keeps every image identity.
     let before = identities(&env, [&root, &mid, &top]);
-    build();
+    build(&top);
     assert_eq!(identities(&env, [&root, &mid, &top]), before);
 }
 
@@ -179,30 +211,68 @@ fn tokens(text: &str) -> impl Iterator<Item = &str> {
         .map(|token| token.trim_end_matches(['.', ':']))
 }
 
-/// On macOS, the test's own tags in the host-wide store, removed by name.
+/// On macOS, the test's own tags in the host-wide store: none may exist
+/// before it builds, and every one is removed by name afterwards.
 #[cfg(target_os = "macos")]
 struct Tags(String);
 
 #[cfg(target_os = "macos")]
+impl Tags {
+    fn claim(prefix: String) -> Tags {
+        let taken = tagged(&prefix).unwrap_or_else(|error| panic!("{error}"));
+        assert!(taken.is_empty(), "the store already holds {taken:?}");
+        Tags(prefix)
+    }
+}
+
+/// The store's references starting with `prefix`.
+#[cfg(target_os = "macos")]
+fn tagged(prefix: &str) -> Result<Vec<String>, String> {
+    let listed = run(
+        std::process::Command::new("container").args(["image", "list", "--format", "json"]),
+        Duration::from_secs(120),
+    );
+    let images: Value = serde_json::from_str(&listed.stdout)
+        .map_err(|error| format!("container image list: {error}: {listed:?}"))?;
+    let images = images
+        .as_array()
+        .filter(|_| listed.code == 0)
+        .ok_or_else(|| format!("container image list: {listed:?}"))?;
+    images
+        .iter()
+        .map(|image| {
+            image["configuration"]["name"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("an image without a name: {image}"))
+        })
+        .filter(|name| name.as_ref().map_or(true, |name| name.starts_with(prefix)))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
 impl Drop for Tags {
     fn drop(&mut self) {
-        let listed = run(
-            std::process::Command::new("container").args(["image", "list", "--format", "json"]),
-            Duration::from_secs(120),
-        );
-        let listed: Value = serde_json::from_str(&listed.stdout).unwrap_or_default();
-        for image in listed.as_array().into_iter().flatten() {
-            let Some(reference) = image["configuration"]["name"].as_str() else {
-                continue;
-            };
-            if reference.starts_with(&self.0) {
-                let deleted = run(
-                    std::process::Command::new("container").args(["image", "delete", reference]),
-                    Duration::from_secs(120),
-                );
-                if deleted.code != 0 {
-                    eprintln!("e2e: TAG LEFT {reference}: {deleted:?}");
+        let mut left = Vec::new();
+        match tagged(&self.0) {
+            Err(error) => left.push(error),
+            Ok(references) => {
+                for reference in references {
+                    let deleted = run(
+                        std::process::Command::new("container")
+                            .args(["image", "delete", &reference]),
+                        Duration::from_secs(120),
+                    );
+                    if deleted.code != 0 {
+                        left.push(format!("{reference}: {deleted:?}"));
+                    }
                 }
+            }
+        }
+        if !left.is_empty() {
+            eprintln!("e2e: TAGS LEFT in the image store: {left:?}");
+            if !std::thread::panicking() {
+                panic!("tags left in the image store (see stderr)");
             }
         }
     }

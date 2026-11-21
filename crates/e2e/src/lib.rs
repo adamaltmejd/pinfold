@@ -1017,11 +1017,7 @@ impl Below {
     /// zombie no one has reaped yet.
     pub fn wait_gone(&self) {
         let deadline = Instant::now() + COMMAND;
-        while self
-            .0
-            .iter()
-            .any(|(pid, _)| stat(*pid).is_some_and(|(_, state, _, _)| state != "Z"))
-        {
+        while self.0.iter().any(|(pid, _)| !exited(*pid)) {
             assert!(Instant::now() < deadline, "outlived their owner: {self:?}");
             thread::sleep(Duration::from_millis(10));
         }
@@ -1074,24 +1070,34 @@ pub fn detached_children(pid: u32) -> Vec<u32> {
     found
 }
 
-/// Wait, bounded, until `pid` has exited: gone from /proc, or a zombie. A
-/// stat that cannot be read for another reason fails the test.
+/// Wait, bounded, until `pid` has exited (see [`exited`]).
 #[cfg(target_os = "linux")]
 pub fn wait_exited(pid: u32) {
     let deadline = Instant::now() + COMMAND;
-    loop {
-        match fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-            Err(error) => panic!("read /proc/{pid}/stat: {error}"),
-            Ok(stat) => {
-                let (_, tail) = stat.rsplit_once(')').expect("a stat line");
-                if tail.split_whitespace().next() == Some("Z") {
-                    return;
-                }
-            }
-        }
+    while !exited(pid) {
         assert!(Instant::now() < deadline, "{pid} did not exit");
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Whether `pid` has exited: gone from /proc (ENOENT, or ESRCH while it
+/// goes), or a zombie. A stat that cannot be read for another reason fails
+/// the test.
+#[cfg(target_os = "linux")]
+fn exited(pid: u32) -> bool {
+    const ESRCH: i32 = 3;
+    match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(ESRCH) =>
+        {
+            true
+        }
+        Err(error) => panic!("read /proc/{pid}/stat: {error}"),
+        Ok(stat) => {
+            let (_, tail) = stat.rsplit_once(')').expect("a stat line");
+            tail.split_whitespace().next() == Some("Z")
+        }
     }
 }
 
