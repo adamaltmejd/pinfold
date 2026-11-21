@@ -595,9 +595,11 @@ cleanup removes the run's directory:
 
 Every field is a value the box spec carries or that `ready`, `list`,
 `doctor --artifacts` or `doctor` already prints. It never holds an env value, a header name,
-value or prefix, a login token, argv or command output. `env` lists declared
-variable names only; Apple-generated Git configuration names are omitted
-unless the caller declared them. A route's `to` is its `host:port` or origin.
+value or prefix, a login token, argv or command output. `env` lists the
+names of the variables the box got, never their values: the declared ones
+and pinfold's own default `PINFOLD_ALLOW` (Process interface).
+Always-applied names and Apple-generated Git configuration names are
+omitted unless the caller declared them. A route's `to` is its `host:port` or origin.
 The record is what this run applied at start; a later change to config leaves it as it is.
 Each recorded mount includes its applied access kind.
 

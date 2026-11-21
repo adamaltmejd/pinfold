@@ -8,9 +8,12 @@
 // Linux both live in the suite's cache root.
 #[cfg(target_os = "linux")]
 mod clean;
+mod credentials;
 mod crossing;
 mod disk;
 mod network;
 mod owner;
 mod privilege;
+mod records;
+mod sessions;
 mod share;
