@@ -1840,8 +1840,8 @@ project; executable replacement remains `update-busy`.
   oversized private messages fail as `session-protocol`; their contents are
   never reported. An owner whose box start is refused passes only the
   refusal's reason token to the client, which exits 125 naming it.
-  Unavailable ownership, including any other owner startup failure, refuses
-  as `owner-unavailable`;
+  An owner start failing for another runtime or host reason, and
+  unavailable ownership, refuse as `owner-unavailable`;
   a control deadline expires as `owner-timeout`. Transport failures retain a
   fixed source (`connect`, `inspect` or `reply`) without request contents.
   Peer and recoverable accept errors reject only that connection. Queued
