@@ -141,8 +141,8 @@ pub fn run(command: &mut Command, timeout: Duration) -> Exec {
 }
 
 /// Spawn `command`, one spawn at a time in this process. On macOS std
-/// makes a child's stdio pipes without atomic CLOEXEC (no `pipe2`), so a
-/// spawn on another thread can inherit them: a refused `box up` then
+/// makes a child's stdio pipes with `pipe()` and sets CLOEXEC in separate
+/// calls, so a spawn on another thread can inherit them: a refused `box up` then
 /// exits, but the other `box up` holds its stdout open (#379).
 pub fn spawn(command: &mut Command) -> Child {
     static SPAWN: Mutex<()> = Mutex::new(());

@@ -13,10 +13,10 @@ its `container run`. The harness reads "still running" from stdout not
 reaching EOF, so it reported a process that had already exited.
 
 Cause: the test starts both `box up`s on two threads. On macOS, Rust std
-makes a child's stdio pipes with `pipe()` and then sets `FD_CLOEXEC`
-(`library/std/src/sys/pipe/unix.rs`; macOS has no `pipe2`). A spawn on the
-other thread between those two calls inherits the descriptors. Linux uses
-`pipe2(O_CLOEXEC)` and cannot leak this way.
+1.99.1 makes a child's stdio pipes with `pipe()` followed by separate
+`FD_CLOEXEC` calls (`library/std/src/sys/pipe/unix.rs`). A spawn on the
+other thread between those calls inherits the descriptors. On Linux std
+uses `pipe2(O_CLOEXEC)` and cannot leak this way.
 
 ## Reproduction, before the fix
 
@@ -74,5 +74,8 @@ Before the first run and after the last, `container ls -a`, `container
 image ls` and `container volume ls` were identical: the user's project
 box, its two volumes and every image tag untouched. Before running, the
 harness's cleanup was read: disks are removed by name from the test's own
-state root, and `box down` names only the test's boxes. The one kept root
+state root, and `box down` names only the test's boxes. The test's state
+root also runs the automatic maintenance pass and an unfiltered `box
+prune`, which on a host with an unrelated orphaned pinfold box could
+remove it (#382); none existed here. The one kept root
 was deleted; the build output was deleted afterwards.
