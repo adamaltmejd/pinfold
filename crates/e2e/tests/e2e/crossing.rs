@@ -31,18 +31,19 @@ const HOOKS: [&str; 18] = [
 ];
 
 /// The box's PATH: a home directory the box writes first, then the image's.
-const BOX_PATH: &str = "/home/pi/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const BOX_PATH: &str =
+    "/home/pinfold/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 /// The box's `git` on that PATH. The fetch runs whatever `git` the box
-/// runs; while `/home/pi/.hostile` holds an object id, this one adds a
+/// runs; while `/home/pinfold/.hostile` holds an object id, this one adds a
 /// branch `stolen` at that id to the branch listing. Otherwise it is the
 /// image's git.
 const HOSTILE_GIT: &str = r#"#!/bin/sh
-if [ -s /home/pi/.hostile ] && [ "$3" = for-each-ref ] && [ "$5" = refs/heads/ ]; then
+if [ -s /home/pinfold/.hostile ] && [ "$3" = for-each-ref ] && [ "$5" = refs/heads/ ]; then
   case $4 in
   *objectname*)
     /usr/bin/git "$@" || exit
-    printf '%s refs/heads/stolen\n' "$(cat /home/pi/.hostile)"
+    printf '%s refs/heads/stolen\n' "$(cat /home/pinfold/.hostile)"
     exit ;;
   esac
 fi
@@ -137,7 +138,7 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     let planted_quoted = shell_quote(&planted.display().to_string());
     let mut setup = vec![
         "set -e
-         mkdir -p /home/pi/bin; printf %s \"$1\" > /home/pi/bin/git; chmod 755 /home/pi/bin/git
+         mkdir -p /home/pinfold/bin; printf %s \"$1\" > /home/pinfold/bin/git; chmod 755 /home/pinfold/bin/git
          marker=$2; shift 2
          git switch -q -c main host/main
          mkdir .githooks .husky
@@ -172,7 +173,7 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     let refs = || git(&["for-each-ref", "--format=%(objectname) %(refname)"]);
     let (refs_before, objects_before) = (refs(), tree(&project.root().join(".git/objects")));
     in_box(&[
-        "printf %s \"$1\" > /home/pi/.hostile",
+        "printf %s \"$1\" > /home/pinfold/.hostile",
         "sh",
         secret.as_str(),
     ]);
@@ -188,7 +189,7 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     );
     assert_eq!(refs(), refs_before);
     assert_eq!(tree(&project.root().join(".git/objects")), objects_before);
-    in_box(&["rm /home/pi/.hostile"]);
+    in_box(&["rm /home/pinfold/.hostile"]);
 
     // (b) A valid listing carries `light` and `Light` at other objects. A
     // forced, pruning tag fetch moves and deletes no host branch or tag and

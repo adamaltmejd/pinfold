@@ -22,7 +22,7 @@ struct StateFile {
 }
 
 /// `$HOME` in a pi box: the home disk's guest path.
-pub const HOME: &str = "/home/pi";
+pub const HOME: &str = "/home/pinfold";
 pub fn disk_origins() -> io::Result<BTreeMap<String, PathBuf>> {
     let mut origins = BTreeMap::new();
     for project in state_dirs()? {
