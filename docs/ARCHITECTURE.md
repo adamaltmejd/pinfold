@@ -1090,9 +1090,8 @@ A project recipe typically `FROM`s the profile image.
   Each image's publication is a separate operation: a failed build may leave
   successfully rebuilt images beneath it published, reported on stderr.
 - After each completed Apple build, pinfold attempts to prune the shared
-  builder's unused cache to 4 GiB, least recently used first, then
-  return unused builder blocks; failure only warns and preserves the
-  build result.
+  builder's unused cache to 4 GB, then return unused builder blocks;
+  failure only warns and preserves the build result.
 - A build's identity is its unique tag, never an image label. Every
   build is tagged `<repo>:<build>` and moves the stable `<repo>:latest` to
   it. A caller build whose layers and labels are unchanged returns the

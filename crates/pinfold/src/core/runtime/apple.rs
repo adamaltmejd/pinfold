@@ -1514,8 +1514,8 @@ fn image_info(image: ListedImage) -> io::Result<ImageInfo> {
     })
 }
 
-/// Builder cache kept after each build, in MB: a measured four-image chain
-/// needs 2.5 GB, and Apple's own GC keeps 32 GiB (#392).
+/// Builder cache kept after each build, 4 GB in decimal MB: a measured
+/// four-image chain needs 2.5 GB, and Apple's own GC keeps 32 GiB (#392).
 const BUILDER_KEEP_MB: &str = "4096";
 
 /// Prune unused BuildKit records in the shared builder. BuildKit keeps
@@ -1574,7 +1574,7 @@ impl ImageService for Apple {
     }
 
     fn build_cache(&self) -> &'static str {
-        "the shared builder's backing storage (pruned to 4 GiB after each build, emptied by clean)"
+        "the shared builder's backing storage (pruned to 4 GB after each build, emptied by clean)"
     }
 
     fn build_cache_bytes(&self) -> io::Result<Option<u64>> {
@@ -1602,7 +1602,7 @@ impl ImageService for Apple {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
         let result = crate::core::image::service::build("container", cache_flags, request)?;
-        // Least recently used records go first. Neither step fails the build.
+        // Neither step fails the build.
         if prune_builder(&["--keep-storage", BUILDER_KEEP_MB]).is_err() {
             eprintln!("pinfold: could not prune the builder cache");
         }
