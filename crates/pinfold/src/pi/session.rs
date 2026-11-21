@@ -1605,6 +1605,9 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
                     UpError::Other(_) => "owner-unavailable".into(),
                 };
                 let _ = wire::write_reply(&mut writer, Reply::Error { reason, fields: vec![] }).await;
+                // The client may still drain this owner's stderr, so a refusal's
+                // detail is not reported there either.
+                if matches!(error, UpError::Refused(_)) { return Ok(125); }
                 return Err(error.into());
             }
         };

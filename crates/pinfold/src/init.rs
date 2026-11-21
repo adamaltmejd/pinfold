@@ -335,8 +335,8 @@ fn exec(args: &[String]) -> ! {
                 // A new project disk starts empty (#372).
                 let remedy = if error.kind() == io::ErrorKind::NotFound {
                     ". If this is a disk project, run from the project root, or push \
-                     the branch with `git push box BRANCH` and run \
-                     `git switch -c BRANCH host/BRANCH` in the box"
+                     the branch into the box through a pinfold Git remote (`pinfold \
+                     --help`, Disk projects) and check it out there"
                 } else {
                     ""
                 };
