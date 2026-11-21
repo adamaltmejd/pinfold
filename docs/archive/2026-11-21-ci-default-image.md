@@ -3,13 +3,13 @@
 ## The failure
 
 The CI run for da25738 (run 44862496801, attempt 1) failed 12 of 15
-tests. Each panicked in `default_image` with `curl: (22) The requested
-URL returned error: 403` from the `agent-resolve` stage. The rerun
+tests. All 12 panicked in `default_image` with `curl: (22) The requested
+URL returned error: 403` from the `agent-resolve` stage. The log does not
+show whether the pi or the codex request got the 403. The rerun
 (attempt 2) passed, with the suite finishing in 190.88 s.
 
 The panic leaves `default_image`'s `OnceLock` unset, so every later test
-rebuilt the image and asked the API again. One rate-limit 403 cost more
-than a dozen extra API requests from the same address.
+rebuilt the image and asked the API again.
 
 ## What the resolver fetched
 
@@ -21,8 +21,9 @@ Before (main at 087b7c0), per build:
 | `claude-code-releases/stable`, `<version>/manifest.json` | downloads.claude.ai | Claude version, checksum |
 | `repos/openai/codex/releases/latest` | api.github.com | codex tag, asset URL, asset `digest` |
 
-These were unauthenticated, so GitHub allows 60 per hour per address.
-A shared runner address can use that up before the build starts.
+These were unauthenticated, so GitHub's REST quota of 60 per hour per
+address applies. A shared runner address can use that up before the
+build starts.
 
 After, per build:
 
@@ -58,9 +59,8 @@ The step fails before writing `/resolved.json` in these cases:
 | tag not matching the version pattern | grep exit 1 |
 | repository with no release (404) | curl exit 56 |
 
-GitHub's `/releases/latest` names the same release as the API's
-`releases/latest`: the newest one that is neither a draft nor a
-prerelease. The tag pattern check is kept.
+On this date `/releases/latest` returned the same tag as the API's
+`releases/latest` for both repositories. The tag pattern check is kept.
 
 ## CI
 
@@ -77,7 +77,8 @@ run, not from a CI egress log.
 ## What remains
 
 - github.com web pages and release asset downloads can still be throttled
-  for an address. They have no 60-per-hour limit, and the install stage
+  for an address. The REST quota does not apply to them; github.com has
+  its own unauthenticated throttling, of unknown size. The install stage
   already depended on them.
 - The `FROM debian:trixie-slim` pull from Docker Hub is anonymous, and
   Docker Hub limits anonymous pulls per address.
