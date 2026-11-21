@@ -209,7 +209,7 @@ pub fn hold_maintenance() -> MutexGuard<'static, ()> {
 
 /// One test's throwaway config and state roots, removed on drop unless a
 /// box failed to end cleanly. The cache root is the suite run's own (see
-/// [`suite_cache`]). Every disk in its state root is removed by name on
+/// [`suite_cache`]) unless the test asks for its own. Every disk in its state root is removed by name on
 /// drop, after the test's boxes, which are declared after it.
 pub struct TestEnv {
     root: PathBuf,
@@ -218,11 +218,22 @@ pub struct TestEnv {
 
 impl TestEnv {
     pub fn new(test: &str) -> TestEnv {
+        TestEnv::with_cache(test, Some(suite_cache()))
+    }
+
+    /// A test with a cache root of its own, inside its directory. On Linux
+    /// that is its own builder and image store: its builds neither wait
+    /// for nor are cleaned with the suite's, and they start cold.
+    pub fn own_cache(test: &str) -> TestEnv {
+        TestEnv::with_cache(test, None)
+    }
+
+    fn with_cache(test: &str, cache: Option<&Path>) -> TestEnv {
         let root = temp().join(format!("pinfold-e2e-{}-{test}", std::process::id()));
         let roots = Roots {
             config: root.join("config"),
             state: root.join("state"),
-            cache: suite_cache().to_path_buf(),
+            cache: cache.map_or_else(|| root.join("cache"), Path::to_path_buf),
             keep: Arc::default(),
         };
         // A new directory, so cleanup never adopts an older run's state.
@@ -230,6 +241,7 @@ impl TestEnv {
         let env = TestEnv { root, roots };
         fs::create_dir(&env.roots.config).unwrap();
         fs::create_dir(&env.roots.state).unwrap();
+        fs::create_dir_all(&env.roots.cache).unwrap();
         // Spend this root's daily pass now (see MAINTENANCE).
         let _hold = hold_maintenance();
         let listed = run(env.command().args(["disk", "list", "--json"]), COMMAND);
@@ -379,7 +391,7 @@ fn remove_disks(roots: &Roots) -> Result<(), String> {
 
 /// Run `work` on its own thread, so a panic or a deadline in it never
 /// panics a Drop.
-fn in_drop(work: impl FnOnce() -> Result<(), String> + Send + 'static) -> Result<(), String> {
+pub fn in_drop(work: impl FnOnce() -> Result<(), String> + Send + 'static) -> Result<(), String> {
     let (send, done) = mpsc::channel();
     thread::spawn(move || {
         let _ = send.send(work());
@@ -992,15 +1004,20 @@ impl Below {
         Below(found)
     }
 
+    /// The pids whose command name is `name`.
+    pub fn named(&self, name: &str) -> Vec<u32> {
+        self.0
+            .iter()
+            .filter(|(_, comm)| comm == name)
+            .map(|(pid, _)| *pid)
+            .collect()
+    }
+
     /// Wait, bounded, until each process has exited: gone from /proc, or a
     /// zombie no one has reaped yet.
     pub fn wait_gone(&self) {
         let deadline = Instant::now() + COMMAND;
-        while self
-            .0
-            .iter()
-            .any(|(pid, _)| stat(*pid).is_some_and(|(_, state, _, _)| state != "Z"))
-        {
+        while self.0.iter().any(|(pid, _)| !exited(*pid)) {
             assert!(Instant::now() < deadline, "outlived their owner: {self:?}");
             thread::sleep(Duration::from_millis(10));
         }
@@ -1053,24 +1070,34 @@ pub fn detached_children(pid: u32) -> Vec<u32> {
     found
 }
 
-/// Wait, bounded, until `pid` has exited: gone from /proc, or a zombie. A
-/// stat that cannot be read for another reason fails the test.
+/// Wait, bounded, until `pid` has exited (see [`exited`]).
 #[cfg(target_os = "linux")]
 pub fn wait_exited(pid: u32) {
     let deadline = Instant::now() + COMMAND;
-    loop {
-        match fs::read_to_string(format!("/proc/{pid}/stat")) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-            Err(error) => panic!("read /proc/{pid}/stat: {error}"),
-            Ok(stat) => {
-                let (_, tail) = stat.rsplit_once(')').expect("a stat line");
-                if tail.split_whitespace().next() == Some("Z") {
-                    return;
-                }
-            }
-        }
+    while !exited(pid) {
         assert!(Instant::now() < deadline, "{pid} did not exit");
         thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Whether `pid` has exited: gone from /proc (ENOENT, or ESRCH while it
+/// goes), or a zombie. A stat that cannot be read for another reason fails
+/// the test.
+#[cfg(target_os = "linux")]
+fn exited(pid: u32) -> bool {
+    const ESRCH: i32 = 3;
+    match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(ESRCH) =>
+        {
+            true
+        }
+        Err(error) => panic!("read /proc/{pid}/stat: {error}"),
+        Ok(stat) => {
+            let (_, tail) = stat.rsplit_once(')').expect("a stat line");
+            tail.split_whitespace().next() == Some("Z")
+        }
     }
 }
 

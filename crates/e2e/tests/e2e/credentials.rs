@@ -264,6 +264,11 @@ fn credentials_stay_on_the_host() {
     // reach the Pi fixture.
     // Sabotage (run): in `login_removals`, skip `remove.push(option)`. The
     // nominated X-E2E-Nominated field then reaches the Pi fixture.
+    // Sabotage (run): in proxy.rs's `forward`, drop an injected field that
+    // the request's Connection field names. The nominating request then
+    // reaches the Pi fixture with no Authorization.
+    // Sabotage (run): in `forward`, send no body and no Content-Length. The
+    // model fixture then answers the control request 400, not 200.
     // The same login request without the query, the unnominated field
     // arriving, both agents' exchanges and the env values arriving in the
     // box are the positive controls.
