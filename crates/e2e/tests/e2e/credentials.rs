@@ -144,10 +144,10 @@ fn sweep(dir: &Path, needles: &[String], found: &mut BTreeSet<(PathBuf, String)>
 
 #[test]
 fn credentials_stay_on_the_host() {
-    // Sabotage (run): in proxy.rs, forward a login route's request without
-    // its credential filter. The box's own Authorization and X-Api-Key then
-    // reach the Pi fixture beside the host's, and the `?api_key=` query is
-    // forwarded.
+    // Sabotage (run): in proxy.rs's `route`, set `login_policy` false. The
+    // `?api_key=` query is then forwarded: curl prints 200, not 403.
+    // Sabotage (run): pass `&[]` for `remove` to the plain-HTTP `forward`.
+    // The box's two X-Api-Key fields then reach the Pi fixture.
     // The same login request without the query, both agents' exchanges and
     // the env values arriving in the box are the positive controls.
     default_image();
