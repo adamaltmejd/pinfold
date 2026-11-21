@@ -304,10 +304,12 @@ fn matching_claims(root: &Path) -> io::Result<Vec<ownership::Record>> {
 }
 
 /// Under launch ownership, retire dead claims before allowing a replacement.
-fn discover(root: &Path) -> io::Result<Option<Locator>> {
+/// Also returns whether it removed an orphan box.
+fn discover(root: &Path) -> io::Result<(Option<Locator>, bool)> {
     let locator = read_locator(root)?;
     let claims = matching_claims(root)?;
     let mut live = Vec::new();
+    let mut removed = false;
     for record in claims {
         if ownership::name_alive(&record.name)? {
             live.push(record);
@@ -317,13 +319,13 @@ fn discover(root: &Path) -> io::Result<Option<Locator>> {
             return Err(unavailable());
         };
         // Strict targeted removal checks liveness and resumes durable retirement.
-        clean::remove_orphan(runtime(), &record.name, Some(&record.generation), &lock)?;
+        removed |= clean::remove_orphan(runtime(), &record.name, Some(&record.generation), &lock)?;
     }
     if live.len() > 1 {
         return Err(unavailable());
     }
     match (locator, live.pop()) {
-        (None, None) => Ok(None),
+        (None, None) => Ok((None, removed)),
         (None, Some(_)) => Err(unavailable()),
         (Some(mut locator), Some(record)) => {
             if locator.name != record.name
@@ -346,7 +348,7 @@ fn discover(root: &Path) -> io::Result<Option<Locator>> {
                 locator.generation = Some(record.generation);
                 locator.publish()?;
             }
-            Ok(Some(locator))
+            Ok((Some(locator), removed))
         }
         (Some(locator), None) => {
             let Some(lock) = ownership::try_name_lock(&locator.name)? else {
@@ -361,14 +363,14 @@ fn discover(root: &Path) -> io::Result<Option<Locator>> {
             }) {
                 return Err(unavailable());
             }
-            clean::remove_orphan(
+            removed |= clean::remove_orphan(
                 runtime(),
                 &locator.name,
                 record.as_ref().map(|r| r.generation.as_str()),
                 &lock,
             )?;
             locator.remove()?;
-            Ok(None)
+            Ok((None, removed))
         }
     }
 }
@@ -683,7 +685,7 @@ async fn admit(
         let deadline = Instant::now() + CONTROL;
         let discovery_root = root.to_path_buf();
         let discovered =
-            match control_work(signals, deadline, move || discover(&discovery_root)).await {
+            match control_work(signals, deadline, move || Ok(discover(&discovery_root)?.0)).await {
                 Ok(value) => value,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     wait_tick(signals, deadline).await?;
@@ -750,6 +752,7 @@ async fn admit(
                     generation,
                     rex,
                 } if name == locator.name && Some(&generation) == locator.generation.as_ref() => {
+                    drop(launch);
                     let _ =
                         forward_diagnostics(b"pinfold start: already running".to_vec(), signals)
                             .await;
@@ -2090,11 +2093,11 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                         })
                         .await?
                         {
-                            Some(locator) => {
+                            (Some(locator), _) => {
                                 target = Some(locator);
                                 continue;
                             }
-                            None => return Ok(false),
+                            (None, removed) => return Ok(removed),
                         }
                     }
                     wait_tick(&mut signals, deadline).await?;
@@ -2110,19 +2113,20 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
             {
                 rex::remove_left(&key(&root));
             }
-            let line = if stopped {
-                "pinfold stop: stopped"
-            } else {
-                "pinfold stop: no box running"
-            };
-            let _ = forward_diagnostics(line.as_bytes().to_vec(), &mut signals).await;
-            Ok(0)
+            Ok(stopped)
         }
         .await;
-        match signals.last() {
-            Some(signal) => Ok(128 + signal as i32),
-            None => result,
+        if let Some(signal) = signals.last() {
+            return Ok(128 + signal as i32);
         }
+        // The exit status is settled; the line's write cannot change it.
+        let line = if result? {
+            "pinfold stop: stopped"
+        } else {
+            "pinfold stop: no box running"
+        };
+        let _ = forward_diagnostics(line.as_bytes().to_vec(), &mut signals).await;
+        Ok(0)
     })
 }
 
@@ -2379,7 +2383,7 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
         let deadline = Instant::now() + CONTROL;
         let discovery_root = root.to_path_buf();
         let discovered =
-            match control_work(signals, deadline, move || discover(&discovery_root)).await {
+            match control_work(signals, deadline, move || Ok(discover(&discovery_root)?.0)).await {
                 Ok(value) => value,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     wait_tick(signals, deadline).await?;
