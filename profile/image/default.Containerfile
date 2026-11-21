@@ -31,6 +31,9 @@ RUN set -eu; \
 # Agents are resolved and installed only here; profiles built on this
 # image inherit them. Each build passes a new PINFOLD_AGENT_RESOLVE, so the
 # resolver reruns and the install reruns only when a version changed.
+# GitHub releases resolve through github.com's latest-release redirect and
+# each release's SHA256SUMS, not api.github.com, whose unauthenticated rate
+# limit fails builds from shared addresses (#385).
 FROM base AS agent-resolve
 ARG TARGETARCH
 ARG PINFOLD_AGENT_RESOLVE=default
@@ -41,27 +44,30 @@ RUN set -eu; \
         amd64) arch=x64; target=x86_64-unknown-linux-musl ;; \
         *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
+    github_latest() { \
+        location=$(curl -fsS -o /dev/null -w '%{redirect_url}' -H 'Cache-Control: no-cache' "https://github.com/$1/releases/latest"); \
+        printf '%s\n' "${location#"https://github.com/$1/releases/tag/"}" | grep -Ex "$2"; \
+    }; \
     github_asset() { \
-        jq -ec --arg name "$2" --arg url "$3" \
-            '.assets | map(select(.name == $name)) | select(length == 1) | .[0] | {url: .browser_download_url, sha256: (.digest | strings | select(test("^sha256:[a-f0-9]{64}$")) | ltrimstr("sha256:"))} | select(.url == $url)' "$1"; \
+        curl -fsSL "https://github.com/$1/releases/download/$2/$3" -o /tmp/SHA256SUMS; \
+        jq -nRec --arg name "$4" --arg url "https://github.com/$1/releases/download/$2/$4" \
+            '[inputs | capture("^(?<sha256>[a-f0-9]{64})  (?<name>.+)$") | select(.name == $name)] | select(length == 1) | {url: $url, sha256: .[0].sha256}' /tmp/SHA256SUMS; \
     }; \
     echo "resolving stable agent releases"; \
-    curl -fsSL -H 'Cache-Control: no-cache' https://api.github.com/repos/earendil-works/pi/releases/latest -o /tmp/pi-release.json; \
-    pi_version=$(jq -er 'select(.draft == false and .prerelease == false) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))' /tmp/pi-release.json); \
-    pi_asset=$(github_asset /tmp/pi-release.json "pi-linux-$arch.tar.gz" "https://github.com/earendil-works/pi/releases/download/$pi_version/pi-linux-$arch.tar.gz"); \
+    pi_version=$(github_latest earendil-works/pi 'v[0-9]+\.[0-9]+\.[0-9]+'); \
+    pi_asset=$(github_asset earendil-works/pi "$pi_version" SHA256SUMS "pi-linux-$arch.tar.gz"); \
     claude_base=https://downloads.claude.ai/claude-code-releases; \
     claude_version=$(curl -fsSL -H 'Cache-Control: no-cache' "$claude_base/stable"); \
     printf '%s\n' "$claude_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; \
     curl -fsSL "$claude_base/$claude_version/manifest.json" -o /tmp/claude-manifest.json; \
     claude_checksum=$(jq -er --arg platform "linux-$arch" '.platforms[$platform].checksum | strings | select(test("^[a-f0-9]{64}$"))' /tmp/claude-manifest.json); \
-    curl -fsSL -H 'Cache-Control: no-cache' https://api.github.com/repos/openai/codex/releases/latest -o /tmp/codex-release.json; \
-    codex_version=$(jq -er 'select(.draft == false and .prerelease == false) | .tag_name | select(test("^rust-v[0-9]+\\.[0-9]+\\.[0-9]+$"))' /tmp/codex-release.json); \
-    codex_asset=$(github_asset /tmp/codex-release.json "codex-package-$target.tar.gz" "https://github.com/openai/codex/releases/download/$codex_version/codex-package-$target.tar.gz"); \
+    codex_version=$(github_latest openai/codex 'rust-v[0-9]+\.[0-9]+\.[0-9]+'); \
+    codex_asset=$(github_asset openai/codex "$codex_version" codex-package_SHA256SUMS "codex-package-$target.tar.gz"); \
     jq -nSc --arg pi "$pi_version" --argjson pi_asset "$pi_asset" \
         --arg claude "$claude_version" --arg claude_url "$claude_base/$claude_version/linux-$arch/claude" --arg claude_sha256 "$claude_checksum" \
         --arg codex "$codex_version" --argjson codex_asset "$codex_asset" \
         '{pi: ($pi_asset + {version: $pi}), claude: {version: $claude, url: $claude_url, sha256: $claude_sha256}, codex: ($codex_asset + {version: $codex})}' > /resolved.json; \
-    rm -f /tmp/pi-release.json /tmp/claude-manifest.json /tmp/codex-release.json
+    rm -f /tmp/SHA256SUMS /tmp/claude-manifest.json
 
 FROM base AS agents
 ARG TARGETARCH
