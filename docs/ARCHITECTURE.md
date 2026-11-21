@@ -1757,9 +1757,12 @@ project; executable replacement remains `update-busy`.
   Public box-up checks and orphan recovery keep their existing order.
 - **Keep/stop:** `pinfold start` keeps the project box past its last session.
   Repeated matching starts succeed. For a share, start commits keep without
-  executing a command. `pinfold stop` targets the observed
+  executing a command. On success `start` prints one stderr line,
+  `pinfold start: started` or `pinfold start: already running`, before any
+  Rex lines. `pinfold stop` targets the observed
   generation, works without current configuration, and succeeds only after
-  teardown or confirmed absence. For a share, it revokes that box’s filesystem
+  teardown or confirmed absence, printing on stderr `pinfold stop: stopped`
+  or `pinfold stop: no box running`. For a share, it revokes that box’s filesystem
   access; existing edits remain. It neither commits nor rolls back files and
   cannot stop host processes already executing box-written content. On Apple,
   owner death closes egress but may leave an orphan box able to access its

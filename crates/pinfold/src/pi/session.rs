@@ -750,6 +750,9 @@ async fn admit(
                     generation,
                     rex,
                 } if name == locator.name && Some(&generation) == locator.generation.as_ref() => {
+                    let _ =
+                        forward_diagnostics(b"pinfold start: already running".to_vec(), signals)
+                            .await;
                     let _ = rex::report(rex, &key(root), signals).await;
                     return Ok(None);
                 }
@@ -845,6 +848,7 @@ async fn admit(
             }
             Reply::Kept { rex, .. } => {
                 let _ = child.1.try_wait();
+                let _ = forward_diagnostics(b"pinfold start: started".to_vec(), signals).await;
                 let _ = rex::report(rex, &key(root), signals).await;
                 return Ok(None);
             }
@@ -2022,7 +2026,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                 }
             };
             let _maintenance = maintenance(&root, &mut signals).await?;
-            let code = async {
+            let stopped = async {
                 let deadline = Instant::now() + CONTROL;
                 let mut target: Option<Locator> = None;
                 loop {
@@ -2036,10 +2040,9 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                                 .as_ref()
                                 .is_some_and(|g| g != &record.generation)
                             {
-                                return Ok(0);
+                                return Ok(false);
                             }
-                            stop_target(root.clone(), record, &mut signals, deadline).await?;
-                            return Ok(0);
+                            return stop_target(root.clone(), record, &mut signals, deadline).await;
                         }
                         if locator.generation.is_some() {
                             // A completed observation remains the target across replacement.
@@ -2051,17 +2054,17 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                                 continue;
                             }
                             let locator = locator.clone();
-                            control_work(&mut signals, deadline, move || {
-                                clean::remove_orphan(
+                            return control_work(&mut signals, deadline, move || {
+                                let removed = clean::remove_orphan(
                                     runtime(),
                                     &locator.name,
                                     locator.generation.as_deref(),
                                     &lock,
                                 )?;
-                                remove_matching_locator(&locator)
+                                remove_matching_locator(&locator)?;
+                                Ok(removed)
                             })
-                            .await?;
-                            return Ok(0);
+                            .await;
                         }
                     }
                     if let Some(_launch) = try_launch(&root)? {
@@ -2073,12 +2076,13 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                                 return Err(unavailable());
                             };
                             let locator = locator.clone();
-                            control_work(&mut signals, deadline, move || {
-                                clean::remove_orphan(runtime(), &locator.name, None, &lock)?;
-                                remove_matching_locator(&locator)
+                            return control_work(&mut signals, deadline, move || {
+                                let removed =
+                                    clean::remove_orphan(runtime(), &locator.name, None, &lock)?;
+                                remove_matching_locator(&locator)?;
+                                Ok(removed)
                             })
-                            .await?;
-                            return Ok(0);
+                            .await;
                         }
                         let discovery_root = root.clone();
                         match control_work(&mut signals, deadline, move || {
@@ -2090,7 +2094,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                                 target = Some(locator);
                                 continue;
                             }
-                            None => return Ok(0),
+                            None => return Ok(false),
                         }
                     }
                     wait_tick(&mut signals, deadline).await?;
@@ -2106,7 +2110,13 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
             {
                 rex::remove_left(&key(&root));
             }
-            Ok(code)
+            let line = if stopped {
+                "pinfold stop: stopped"
+            } else {
+                "pinfold stop: no box running"
+            };
+            let _ = forward_diagnostics(line.as_bytes().to_vec(), &mut signals).await;
+            Ok(0)
         }
         .await;
         match signals.last() {
@@ -2121,7 +2131,7 @@ async fn stop_target(
     record: ownership::Record,
     signals: &mut Signals,
     deadline: Instant,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let cancel = Arc::new(AtomicBool::new(false));
     let accepted = Arc::new(AtomicBool::new(false));
     let (worker_cancel, worker_accepted) = (cancel.clone(), accepted.clone());
@@ -2221,13 +2231,13 @@ fn stop_observed(
     deadline: std::time::Instant,
     cancel: &AtomicBool,
     accepted: &AtomicBool,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let current = ownership::record(&observed.name)?;
     if current
         .as_ref()
         .is_some_and(|r| r.generation != observed.generation)
     {
-        return Ok(());
+        return Ok(false);
     }
     let answered = if current.is_none() {
         false
@@ -2239,7 +2249,7 @@ fn stop_observed(
         .as_ref()
         .is_some_and(|r| r.generation != observed.generation)
     {
-        return Ok(());
+        return Ok(false);
     }
     let acknowledged = answered || after.is_none();
     if acknowledged {
@@ -2256,9 +2266,11 @@ fn stop_observed(
     let Some(lock) = ownership::try_name_lock(&observed.name)? else {
         return Err(unavailable());
     };
+    let mut removed = false;
     match ownership::record(&observed.name)? {
         Some(record) if record.generation == observed.generation => {
-            clean::remove_orphan(runtime(), &record.name, Some(&record.generation), &lock)?;
+            removed =
+                clean::remove_orphan(runtime(), &record.name, Some(&record.generation), &lock)?;
             if ownership::record(&record.name)?.is_some() {
                 return Err(unavailable());
             }
@@ -2274,7 +2286,7 @@ fn stop_observed(
     {
         locator.remove()?;
     }
-    Ok(())
+    Ok(answered || removed)
 }
 
 /// The locator filters candidates; only the live owner can refuse crossing.
