@@ -54,7 +54,7 @@ rules for changing the repository.
 
 The suite is `crates/e2e`: one test per row of the Guarantees table in
 ARCHITECTURE.md. It runs on Linux in CI for every pull request, push to
-main and tag, and on the Mac with `scripts/run-mac-e2e.sh` as the test
+main and release tag, and on the Mac with `scripts/run-mac-e2e.sh` as the test
 runner. Rows 15, 43 and 44 are tested on Linux only; row 15's Apple
 clause has no test yet (#297).
 
