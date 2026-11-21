@@ -34,8 +34,8 @@ RUN set -eu; \
 
 # An interactive shell in a project box that starts in the home, such as a
 # Rex pane, moves to the project. Every interactive shell marks the project
-# trusted in ~/.claude.json, since the VM is the trust boundary; an
-# unparseable file is left alone. A Claude Code rewriting the file at the
+# trusted in ~/.claude.json, since the VM is the trust boundary; a
+# symlink, an unparseable file or one jq reads as empty is left alone. A Claude Code rewriting the file at the
 # same moment can drop the flag; the next shell restores it.
 RUN printf '%s\n' \
     'case $- in *i*)' \
@@ -43,13 +43,14 @@ RUN printf '%s\n' \
     '        [ "$PWD" = "$HOME" ] && cd "$PINFOLD_PROJECT"' \
     '        (' \
     '            f="$HOME/.claude.json"; p=".projects[\$project].hasTrustDialogAccepted"' \
+    '            [ -L "$f" ] && exit' \
     '            jq -e --arg project "$PINFOLD_PROJECT" "$p == true" "$f" >/dev/null 2>&1 && exit' \
     '            t=$(mktemp "$f.XXXXXX" 2>/dev/null) || exit' \
     '            if [ -e "$f" ]; then' \
     '                jq --arg project "$PINFOLD_PROJECT" "$p = true" "$f"' \
     '            else' \
     '                jq -n --arg project "$PINFOLD_PROJECT" "{} | $p = true"' \
-    '            fi >"$t" 2>/dev/null && mv -f "$t" "$f" || rm -f "$t"' \
+    '            fi >"$t" 2>/dev/null && [ -s "$t" ] && mv -f "$t" "$f" || rm -f "$t"' \
     '        )' \
     '    fi' \
     '    ;;' \
