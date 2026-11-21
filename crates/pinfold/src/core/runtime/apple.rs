@@ -784,6 +784,7 @@ impl Runtime for Apple {
         command
             .args(["run", "-i", "--progress", "none", "--network", "none"])
             .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
+            .args(["--workdir", "/"])
             .args(["--name", name])
             .args(["--user", "0:0", "--mount"])
             .arg(init_mount(init));
