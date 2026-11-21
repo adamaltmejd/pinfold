@@ -163,7 +163,9 @@ configuration, and cannot stop a replacement. From the recorded main root,
 it also works with a hostile Git marker added during a share run. Share edits remain after stop; it neither
 commits nor rolls them back. On Apple an orphan box may retain share access
 after owner death until checked removal. Both take no arguments and
-print nothing to stdout on success; infrastructure failures return 125.
+print nothing to stdout. On success each prints a status line on stderr:
+`start` says `started` or `already running`, before any Rex lines; `stop`
+says `stopped` or `no box running`. Infrastructure failures return 125.
 Admission and silent-owner control waits have a ten-second deadline; timeout
 leaves ownership intact. Waiting for a busy launcher has no startup deadline
 and remains signal-cancellable. The last client and stop wait for acknowledged
