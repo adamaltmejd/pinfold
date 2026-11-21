@@ -1514,6 +1514,32 @@ fn image_info(image: ListedImage) -> io::Result<ImageInfo> {
     })
 }
 
+/// Builder cache kept after each build, in MB: a measured four-image chain
+/// needs 2.5 GB, and Apple's own GC keeps 32 GiB (#392).
+const BUILDER_KEEP_MB: &str = "4096";
+
+/// Prune unused BuildKit records in the shared builder. BuildKit keeps
+/// records in active use; deleting the shared builder instead interrupts
+/// builds in other processes (#75).
+fn prune_builder(flags: &[&str]) -> io::Result<()> {
+    let mut command = vec![
+        "container",
+        "exec",
+        "buildkit",
+        "buildctl",
+        "prune",
+        "--all",
+    ];
+    command.extend_from_slice(flags);
+    output(&command).map(drop)
+}
+
+/// Return freed guest blocks to the host by online trim, without replacing
+/// the builder or stopping active builds (#86).
+fn trim_builder() -> io::Result<()> {
+    output(&["container", "clean", "buildkit"]).map(drop)
+}
+
 impl ImageService for Apple {
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
         let json = output(&["container", "image", "list", "--format", "json"])?;
@@ -1543,23 +1569,12 @@ impl ImageService for Apple {
             // defaults changed; start this instance without replacing it.
             output(&["container", "start", "buildkit"])?;
         }
-        // BuildKit holds active records while pruning. Deleting the shared
-        // builder instead interrupts builds in other processes (#75).
-        output(&[
-            "container",
-            "exec",
-            "buildkit",
-            "buildctl",
-            "prune",
-            "--all",
-        ])?;
-        // Pruning frees guest blocks; online trim returns them to the host
-        // without replacing the builder or stopping active builds (#86).
-        output(&["container", "clean", "buildkit"]).map(drop)
+        prune_builder(&[])?;
+        trim_builder()
     }
 
     fn build_cache(&self) -> &'static str {
-        "the shared builder's backing storage (unused cache is pruned)"
+        "the shared builder's backing storage (pruned to 4 GiB after each build, emptied by clean)"
     }
 
     fn build_cache_bytes(&self) -> io::Result<Option<u64>> {
@@ -1587,8 +1602,11 @@ impl ImageService for Apple {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
         let result = crate::core::image::service::build("container", cache_flags, request)?;
-        // Return deleted temporary blocks without pruning cached layers.
-        if output(&["container", "clean", "buildkit"]).is_err() {
+        // Least recently used records go first. Neither step fails the build.
+        if prune_builder(&["--keep-storage", BUILDER_KEEP_MB]).is_err() {
+            eprintln!("pinfold: could not prune the builder cache");
+        }
+        if trim_builder().is_err() {
             eprintln!("pinfold: could not reclaim unused builder blocks");
         }
         Ok(result)
