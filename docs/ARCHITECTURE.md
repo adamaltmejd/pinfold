@@ -1725,12 +1725,13 @@ project; executable replacement remains `update-busy`.
   `pi-<name>-<hash>-project`. The hash is of the canonical project root
   path. Agent settings, sessions and caches sit at their default paths in
   the home disk. The cosmetic name is at most 32 ASCII bytes.
-- **Project mount:** appears at the canonical host project path. A share
-  exposes host files directly and creates no project disk. A disk is created
-  empty and reused across owners; code enters it only through the box or
-  an explicit push (Git). Linux requires a Git project. Git metadata
-  directories and operational discovery errors never become non-Git projects.
-  Independent nested repositories retain their own project discovery.
+- **Project mount:** a share appears at the canonical host project path,
+  exposes host files directly and creates no project disk. A disk appears
+  at `/project`, is created empty and is reused across owners; code enters
+  it only through the box or an explicit push (Git). Linux requires a Git
+  project. Git metadata directories and operational discovery errors never
+  become non-Git projects. Independent nested repositories retain their own
+  project discovery.
 - **Git metadata:** For a share, pinfold reads Git metadata as data and never
   executes Git on the host. Main-root and linked-worktree topology, including
   `gitdir:` files and `commondir` in directory-form repositories, uses bounded,
@@ -1852,8 +1853,9 @@ project; executable replacement remains `update-busy`.
   Peer and recoverable accept errors reject only that connection. Queued
   requests and in-flight parsers receive `Draining` concurrently with teardown.
 - **Arguments** pass through unchanged, including empty arguments and
-  `--help`. Commands start at the canonical invoking directory. Trusted init
-  opens the guest project root and walks the relative cwd by directory
+  `--help`. Commands start at the canonical invoking directory's path
+  relative to the project root, below the guest project root. Trusted
+  init opens the guest project root and walks the relative cwd by directory
   descriptors without following any symlink component, then enters that
   descriptor. An escape, missing directory or any symlink component,
   including a symlink within the project, fails setup. An execute-only
@@ -2124,7 +2126,7 @@ without changing state, even when the runtime is unavailable.
 `pinfold config --json` prints the effective configuration. `env` maps each
 configured box variable to its literal or its `{"from": VAR}`, a `PINFOLD_ENV_<NAME>`
 as `{"from": "PINFOLD_ENV_<NAME>"}`; the box's default `PINFOLD_PROJECT` is not listed. Its `project` reports its id, home path
-and `mount`, containing `kind`, canonical `host` and `guest`.
+and `mount`, containing `kind`, canonical `host` and `guest` (Project mount).
 `project.disks.home` names the persistent home disk. `project.disks.project`
 names the disk for a disk project and is null for a share. `config` is the
 project’s configuration file. `image_built` is true or false when

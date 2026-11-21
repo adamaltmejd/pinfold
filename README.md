@@ -271,10 +271,11 @@ macOS, set this in the project’s configuration:
 mounts = [{ host = ".", kind = "disk" }]
 ```
 
-A new project disk starts empty; no start copies code into it or changes
-your repository. Clone inside the box, or send branches yourself. Only
-committed branches cross; commit local work (a WIP commit is enough) to
-send it in. After the first start has created the disk:
+A project disk appears in the box at `/project`, where a share appears
+at the folder's own path. A new disk starts empty; no start copies code
+into it or changes your repository. Clone inside the box, or send
+branches yourself. Only committed branches cross; commit local work (a
+WIP commit is enough) to send it in. After the first start has created the disk:
 
 ```sh
 git remote add box pinfold::"$(pwd -P)"   # once, at the project root
@@ -301,9 +302,8 @@ Without a running box, crossing starts a transient one on the project
 disk, without egress.
 
 Outside Git on macOS, a share exposes the folder’s existing host files and
-retains its home. An explicit disk instead starts empty at the folder’s
-canonical path and imports no host files. On Linux a folder outside Git is
-refused as `not-git`. See
+retains its home. An explicit disk instead starts empty and imports no
+host files. On Linux a folder outside Git is refused as `not-git`. See
 [Configuration](docs/ARCHITECTURE.md#configuration) for precedence and recipes.
 
 To save a stopped disk into a new host directory, run

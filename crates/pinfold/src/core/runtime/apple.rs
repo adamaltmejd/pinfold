@@ -714,7 +714,7 @@ impl Runtime for Apple {
         argv: &[String],
     ) -> io::Result<ExitStatus> {
         #[cfg(not(target_os = "linux"))]
-        if context.project_root.is_some() {
+        if context.project_directory.is_some() {
             return project_exec(name, init, context, argv);
         }
         let size = if context.tty {
@@ -967,8 +967,7 @@ fn project_exec(
     let stopped = AtomicBool::new(false);
     let result = std::thread::scope(|scope| {
         let worker_context = ExecContext {
-            cwd: context.cwd,
-            project_root: context.project_root,
+            project_directory: context.project_directory,
             tty: context.tty,
             agent: context.agent,
             cancel: Some(&stopped),
@@ -1153,9 +1152,6 @@ fn exec_command(
     }
     command.args(["--env", crate::init::EXEC_METADATA]);
     command.env(crate::init::EXEC_METADATA, metadata.encode());
-    if let Some(dir) = context.cwd {
-        command.arg("--workdir").arg(dir);
-    }
     command
         .arg(name)
         .arg(init)

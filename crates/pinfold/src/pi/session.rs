@@ -1424,14 +1424,18 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             }
         }
         let argv = args.expect("join has a command").to_vec();
+        let mount = if lease.share { ProjectMount::Share } else { ProjectMount::Disk };
+        let guest = state::guest_root(mount, &root).to_path_buf();
         let name = lease.name.clone();
         let init = artifacts::init()?;
         let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let mut exec = tokio::task::spawn_blocking(move || {
+            let relative = cwd.strip_prefix(&root)
+                .map_err(|_| io::Error::other("working directory is outside the project"))?;
             runtime().exec(&name, &init, &ExecContext {
-                cwd: Some(&cwd), project_root: Some(&root), tty, agent: Some(&argv[0]), cancel: Some(&worker_cancel),
+                project_directory: Some((&guest, relative)), tty, agent: Some(&argv[0]), cancel: Some(&worker_cancel),
             }, &argv)
         });
         let (result, exec_finished, completed) = tokio::select! {

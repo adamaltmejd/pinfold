@@ -88,7 +88,8 @@ where
             config.check_host_paths(&root)?;
             let id = project_id(&root);
             let [_, disk] = state::disk_names(&id);
-            let guest = utf8(&root, "project root")?.to_string();
+            utf8(&root, "project root")?;
+            let guest = state::PROJECT.to_string();
             let box_runtime = crate::core::runtime::runtime();
             let init = artifacts::init_path()?;
             let (name, mut box_) = if let Some(name) = lease.name().map(str::to_string) {
@@ -109,7 +110,7 @@ where
                 let image = resolve_image(&config, &id);
                 ensure_image(&config, &image)?;
                 let plan = Plan {
-                    disks: vec![empty_writable_disk(disk, &root)],
+                    disks: vec![empty_writable_disk(disk, Path::new(state::PROJECT))],
                     ..box_plan(&config, &id, &image)?
                 };
                 let box_ = match Box::up(&plan, &mut signals).await {
@@ -360,14 +361,14 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
     // over configured and forwarded entries.
     let mut env = config.env.clone();
     env.insert("HOME".to_string(), Env::Exact(state::HOME.to_string()));
-    // The project's guest path equals its host root for both mount kinds.
+    let guest = state::guest_root(config.mount, root);
     env.entry("PINFOLD_PROJECT".to_string())
-        .or_insert(Env::Exact(utf8(root, "project root")?.to_string()));
+        .or_insert(Env::Exact(utf8(guest, "project root")?.to_string()));
     let [home, project] = state::disk_names(id);
     let mut disks = vec![empty_writable_disk(home, Path::new(state::HOME))];
     let mounts = match config.mount {
         ProjectMount::Disk => {
-            disks.push(empty_writable_disk(project, root));
+            disks.push(empty_writable_disk(project, guest));
             Vec::new()
         }
         ProjectMount::Share => vec![Mount {
@@ -408,10 +409,10 @@ fn box_plan(config: &Config, id: &str, image: &str) -> io::Result<Plan> {
 }
 
 /// An empty writable disk; no host tree is copied into it.
-fn empty_writable_disk(name: String, root: &Path) -> Disk {
+fn empty_writable_disk(name: String, guest: &Path) -> Disk {
     Disk {
         name,
-        guest: root.to_path_buf(),
+        guest: guest.to_path_buf(),
         size: None,
         from: None,
         readonly: false,

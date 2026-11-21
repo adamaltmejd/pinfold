@@ -45,7 +45,9 @@ pub fn exec(
     connection.set_nonblocking(true)?;
     let mut metadata = crate::init::ExecMetadata {
         agent: context.agent.map(str::to_string),
-        project_directory: context.project_directory()?,
+        project_directory: context
+            .project_directory
+            .map(|(root, relative)| (root.to_path_buf(), relative.to_path_buf())),
         ..Default::default()
     };
     if tty {
@@ -58,12 +60,8 @@ pub fn exec(
     for arg in argv {
         put(&mut payload, arg.as_bytes());
     }
-    put(
-        &mut payload,
-        context
-            .cwd
-            .map_or(&[][..], |dir| dir.as_os_str().as_bytes()),
-    );
+    // Init enters a project command's directory from its metadata.
+    put(&mut payload, &[]);
     payload.push(u8::from(tty));
     put(&mut payload, metadata.encode().as_bytes());
     // Terminal setup must finish before EXEC can start the command.
