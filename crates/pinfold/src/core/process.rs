@@ -283,8 +283,10 @@ pub(crate) fn diagnostic(message: impl std::fmt::Display) {
             "diagnostic",
         )?;
         relay.close();
+        let mut wait = ExitWait::new();
         while !relay.finished()? {
-            super::pipe::wait_ready(None, PollFlags::empty(), deadline, None, "diagnostic")?;
+            super::pipe::remaining(deadline, None, "diagnostic")?;
+            wait.poll(&mut [])?;
         }
         Ok(())
     })();
@@ -568,6 +570,7 @@ fn output_with_limit(
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let mut exited = None;
     let mut input_failed = false;
+    let mut wait = ExitWait::new();
     loop {
         if exited.is_none() && child.exited()? {
             exited = Some(Instant::now());
@@ -619,9 +622,33 @@ fn output_with_limit(
         if let Some(pipe) = stderr.as_ref() {
             ready.push(PollFd::new(pipe.as_fd(), PollFlags::POLLIN));
         }
-        match poll(&mut ready, 100u16) {
-            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-            Err(error) => return Err(error.into()),
+        wait.poll(&mut ready)?;
+    }
+}
+
+/// Polls a child's pipes. With none left, the exit their EOF announces is
+/// usually microseconds away, so the wait starts at 1 ms and doubles to
+/// 100 ms: a child that closed its pipes but runs on is not spun on, and
+/// cancellation is still checked every 100 ms. Blocking on the exit itself
+/// would never see cancellation.
+pub(crate) struct ExitWait(u16);
+
+impl ExitWait {
+    pub(crate) fn new() -> Self {
+        Self(1)
+    }
+
+    pub(crate) fn poll(&mut self, fds: &mut [PollFd]) -> io::Result<()> {
+        let timeout = if fds.is_empty() {
+            let timeout = self.0;
+            self.0 = (timeout * 2).min(100);
+            timeout
+        } else {
+            100
+        };
+        match poll(fds, timeout) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => Ok(()),
+            Err(error) => Err(error.into()),
         }
     }
 }

@@ -5,11 +5,11 @@
 //! host only verifies a bundle and indexes its objects with fsck into a
 //! quarantine. Git, through the remote helper, writes the refs.
 
-use crate::core::process::{GroupChild, drain};
+use crate::core::process::{ExitWait, GroupChild, drain};
 pub(crate) use crate::core::process::{output_cancellable, output_discard_cancellable};
 
 use nix::fcntl::{Flock, FlockArg};
-use nix::poll::{PollFd, PollFlags, poll};
+use nix::poll::{PollFd, PollFlags};
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
@@ -863,6 +863,7 @@ fn receive(
     let mut failed = None;
     let mut errors = Vec::new();
     let mut exited = None;
+    let mut wait = ExitWait::new();
     loop {
         if exited.is_none() && child.exited()? {
             exited = Some(Instant::now());
@@ -935,10 +936,7 @@ fn receive(
         if let Some(pipe) = &stderr {
             fds.push(PollFd::new(pipe.as_fd(), PollFlags::POLLIN));
         }
-        match poll(&mut fds, 100u16) {
-            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-            Err(error) => return Err(io::Error::from(error).into()),
-        }
+        wait.poll(&mut fds)?;
     }
 }
 
