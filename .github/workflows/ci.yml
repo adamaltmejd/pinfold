@@ -49,7 +49,7 @@ jobs:
       - name: Lint
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      # The release executable, profiled with the restriction on.
+      # The executable the suite runs, profiled with the restriction on.
       - name: AppArmor profile
         run: |
           cargo build -p pinfold --locked --release --target x86_64-unknown-linux-musl
@@ -57,3 +57,9 @@ jobs:
           sudo install -m 0644 "$RUNNER_TEMP/pinfold" /etc/apparmor.d/pinfold
           sudo apparmor_parser -r /etc/apparmor.d/pinfold
           test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = 1
+
+      # Row 43 needs TMPDIR under the home and outside the checkout.
+      - name: End-to-end tests
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: PATH="/usr/sbin:$PATH" cargo test -p e2e --locked --test e2e

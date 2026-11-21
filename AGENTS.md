@@ -52,9 +52,11 @@ rules for changing the repository.
 
 ## Tests
 
-The suite is being rewritten row by row from the Guarantees table in
-ARCHITECTURE.md, in `crates/e2e`. A row without its test is listed in
-issue #297. No release is cut until every row has its test.
+The suite is `crates/e2e`: one test per row of the Guarantees table in
+ARCHITECTURE.md. It runs on Linux in CI for every pull request, push to
+main and release tag, and on the Mac with `scripts/run-mac-e2e.sh` as the test
+runner. Rows 15, 43 and 44 are tested on Linux only; row 15's Apple
+clause has no test yet (#297).
 
 - **End-to-end only.** No unit tests, mocks, runtime stubs, or test-only code
   paths or flags in the binary. A test builds the real binary, starts real

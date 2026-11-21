@@ -124,20 +124,23 @@ fn the_vmm_reaches_only_its_own_box() {
         // No directory from the home's filesystem is mounted in the jail:
         // each mount point on the home's device is a single file, and the
         // box's own disks are among them. The jail's root is a tmpfs, on
-        // a device of its own, so it is not exempted.
+        // a device of its own, so it is not exempted. The one directory
+        // allowed is the vsock socket directory, identified below: where
+        // /tmp is on the home's filesystem, it is on that device too.
         let home_dev = fs::metadata(&home).unwrap().dev();
         let mountinfo = fs::read_to_string(format!("/proc/{}/mountinfo", vmm.pid)).unwrap();
         let mut from_home = BTreeSet::new();
+        let mut directories = Vec::new();
         for line in mountinfo.lines() {
             let point = unescape(line.split(' ').nth(4).expect("a mount point"));
             let meta = fs::metadata(vmm.root().join(point.trim_start_matches('/')))
                 .unwrap_or_else(|e| panic!("{point}: {e}"));
             if meta.dev() == home_dev {
-                assert!(
-                    meta.is_file(),
-                    "a mount from the home that is not a file: {line}"
-                );
-                from_home.insert((meta.dev(), meta.ino()));
+                if meta.is_file() {
+                    from_home.insert((meta.dev(), meta.ino()));
+                } else {
+                    directories.push(((meta.dev(), meta.ino()), line));
+                }
             }
         }
         for path in own {
@@ -171,6 +174,12 @@ fn the_vmm_reaches_only_its_own_box() {
         let dir = listener.parent().expect("a socket directory");
         let name = listener.file_name().unwrap().to_str().unwrap();
         let vsock_dir = inode(&vmm.root().join(dir.strip_prefix("/").unwrap()));
+        for (identity, line) in &directories {
+            assert_eq!(
+                *identity, vsock_dir,
+                "a mount from the home's filesystem that is not a file: {line}"
+            );
+        }
         for entry in seen.iter().filter(|entry| entry.socket) {
             let entry_name = entry.path.file_name().and_then(|n| n.to_str());
             let vsock_name = entry_name.is_some_and(|entry_name| {
