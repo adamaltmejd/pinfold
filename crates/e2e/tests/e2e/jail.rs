@@ -121,52 +121,72 @@ fn the_vmm_reaches_only_its_own_box() {
             );
         }
 
-        // No directory under the home is mounted in the jail: what comes
-        // from the home (the state root, so the disks) is single files.
-        // mountinfo's fourth field is the mount's root in its filesystem,
-        // the fifth its point in the jail.
+        // No directory from the home's filesystem is mounted in the jail:
+        // each mount point on the home's device is a single file, and the
+        // box's own disks are among them. The jail's root is a tmpfs, on
+        // a device of its own, so it is not exempted.
+        let home_dev = fs::metadata(&home).unwrap().dev();
         let mountinfo = fs::read_to_string(format!("/proc/{}/mountinfo", vmm.pid)).unwrap();
-        let mut from_home = 0;
+        let mut from_home = BTreeSet::new();
         for line in mountinfo.lines() {
-            let fields: Vec<&str> = line.split(' ').collect();
-            if Path::new(fields[3]).starts_with(&home) {
-                from_home += 1;
-                let point = vmm.root().join(fields[4].trim_start_matches('/'));
+            let point = unescape(line.split(' ').nth(4).expect("a mount point"));
+            let meta = fs::metadata(vmm.root().join(point.trim_start_matches('/')))
+                .unwrap_or_else(|e| panic!("{point}: {e}"));
+            if meta.dev() == home_dev {
                 assert!(
-                    !fs::symlink_metadata(&point).unwrap().is_dir(),
-                    "a home directory in the jail: {line}"
+                    meta.is_file(),
+                    "a mount from the home that is not a file: {line}"
                 );
+                from_home.insert((meta.dev(), meta.ino()));
             }
         }
-        assert!(from_home >= own.len(), "{mountinfo}");
+        for path in own {
+            assert!(
+                from_home.contains(&inode(path)),
+                "{} is not mounted: {mountinfo}",
+                path.display()
+            );
+        }
 
         // Socket identity. The vsock socket directory is the one holding
         // the socket the VMM itself listens on, as the kernel names it.
-        // Only sockets in that directory are in the jail; no other host
-        // socket, the project's session and shutdown control sockets and
-        // the other box's vsock sockets among them, shares a device and
-        // inode with anything in the jail.
-        let listening = vmm.listening();
+        // The jail's only sockets are that listener and, beside it, its
+        // host listeners for guest ports, `<listener>_<port>`
+        // (Firecracker's vsock convention). No other host socket, the
+        // project's session and shutdown control sockets and the other
+        // box's vsock sockets among them, shares a device and inode with
+        // anything in the jail.
+        let bound = vmm.bound();
+        let listening: Vec<&PathBuf> = bound
+            .iter()
+            .filter(|socket| socket.listening)
+            .map(|socket| &socket.path)
+            .collect();
         assert_eq!(
             listening.len(),
             1,
             "the VMM's listening sockets: {listening:?}"
         );
-        let vsock_dir = inode(
-            &vmm.root().join(
-                listening[0]
-                    .parent()
-                    .expect("a socket directory")
-                    .strip_prefix("/")
-                    .expect("an absolute socket path"),
-            ),
-        );
+        let listener = listening[0];
+        let dir = listener.parent().expect("a socket directory");
+        let name = listener.file_name().unwrap().to_str().unwrap();
+        let vsock_dir = inode(&vmm.root().join(dir.strip_prefix("/").unwrap()));
         for entry in seen.iter().filter(|entry| entry.socket) {
-            let dir = entry.path.parent().unwrap().strip_prefix("/").unwrap();
-            assert_eq!(
-                inode(&vmm.root().join(dir)),
-                vsock_dir,
-                "a socket in the jail outside its vsock directory: {}",
+            let entry_name = entry.path.file_name().and_then(|n| n.to_str());
+            let vsock_name = entry_name.is_some_and(|entry_name| {
+                entry_name == name
+                    || entry_name
+                        .strip_prefix(name)
+                        .and_then(|rest| rest.strip_prefix('_'))
+                        .is_some_and(|port| {
+                            !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+                        })
+            });
+            let parent = entry.path.parent().unwrap().strip_prefix("/").unwrap();
+            assert!(
+                vsock_name && inode(&vmm.root().join(parent)) == vsock_dir,
+                "a socket in the jail that is not its vsock listener or a guest \
+                 port's: {}",
                 entry.path.display()
             );
         }
@@ -187,15 +207,29 @@ fn the_vmm_reaches_only_its_own_box() {
         }
 
         // Every descriptor the VMM holds is in its jail, the spec's
-        // `/dev/null` standard descriptors, or an anonymous kernel object.
+        // `/dev/null` standard descriptors, a socket bound in its vsock
+        // directory, or an anonymous kernel object.
         let null = inode(Path::new("/dev/null"));
+        let in_vsock: BTreeSet<&str> = bound
+            .iter()
+            .filter(|socket| socket.path.parent() == Some(dir))
+            .map(|socket| socket.inode.as_str())
+            .collect();
         for fd in fs::read_dir(format!("/proc/{}/fd", vmm.pid)).unwrap() {
             let fd = fd.unwrap().path();
             let Ok(link) = fs::read_link(&fd) else {
                 continue;
             };
             let text = link.to_string_lossy();
-            if ["socket:", "pipe:", "anon_inode:"]
+            if let Some(socket) = socket_inode(&link) {
+                assert!(
+                    in_vsock.contains(socket.as_str()),
+                    "VMM {} holds {text}, not bound in its vsock directory: {bound:?}",
+                    vmm.pid
+                );
+                continue;
+            }
+            if ["pipe:", "anon_inode:"]
                 .iter()
                 .any(|kind| text.starts_with(kind))
             {
@@ -272,19 +306,12 @@ impl Vmm {
             .collect()
     }
 
-    /// The paths, as the VMM sees them, of the Unix sockets it listens
-    /// on: its descriptors' socket inodes, named in its own network
-    /// namespace's socket table.
-    fn listening(&self) -> Vec<PathBuf> {
+    /// The Unix sockets the VMM holds that are bound to a path, as its
+    /// own network namespace's socket table names them.
+    fn bound(&self) -> Vec<Bound> {
         let held: BTreeSet<String> = fs::read_dir(format!("/proc/{}/fd", self.pid))
             .unwrap()
-            .filter_map(|entry| fs::read_link(entry.ok()?.path()).ok())
-            .filter_map(|link| {
-                link.to_str()?
-                    .strip_prefix("socket:[")?
-                    .strip_suffix(']')
-                    .map(str::to_string)
-            })
+            .filter_map(|entry| socket_inode(&fs::read_link(entry.ok()?.path()).ok()?))
             .collect();
         // `Num RefCount Protocol Flags Type St Inode Path`; Flags 00010000
         // is a listening socket.
@@ -295,7 +322,11 @@ impl Vmm {
             .filter_map(|line| {
                 let fields: Vec<&str> = line.split_whitespace().collect();
                 let path = fields.get(7)?;
-                (fields[3] == "00010000" && held.contains(fields[6])).then(|| PathBuf::from(path))
+                held.contains(fields[6]).then(|| Bound {
+                    path: PathBuf::from(path),
+                    inode: fields[6].to_string(),
+                    listening: fields[3] == "00010000",
+                })
             })
             .collect()
     }
@@ -332,24 +363,37 @@ struct HostSocket {
     dir: (u64, u64),
 }
 
-/// Every socket file under `roots`, without following symlinks.
+/// Every socket file under `roots`, without following symlinks. Parallel
+/// tests remove their directories under the shared runtime directory, so
+/// an entry gone during the walk is skipped; any other error fails.
 fn sockets_under(roots: &[PathBuf]) -> Vec<HostSocket> {
+    fn gone<T>(result: std::io::Result<T>, path: &Path) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => panic!("{}: {error}", path.display()),
+        }
+    }
     let mut found = Vec::new();
     let mut seen = BTreeSet::new();
     let mut dirs = roots.to_vec();
     while let Some(dir) = dirs.pop() {
-        let Ok(meta) = fs::symlink_metadata(&dir) else {
+        let Some(meta) = gone(fs::symlink_metadata(&dir), &dir) else {
             continue;
         };
-        if !meta.is_dir() || !seen.insert((meta.dev(), meta.ino())) {
+        let dir_inode = (meta.dev(), meta.ino());
+        if !meta.is_dir() || !seen.insert(dir_inode) {
             continue;
         }
-        let Ok(entries) = fs::read_dir(&dir) else {
+        let Some(entries) = gone(fs::read_dir(&dir), &dir) else {
             continue;
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let Some(entry) = gone(entry, &dir) else {
+                continue;
+            };
             let path = entry.path();
-            let Ok(meta) = fs::symlink_metadata(&path) else {
+            let Some(meta) = gone(fs::symlink_metadata(&path), &path) else {
                 continue;
             };
             if meta.is_dir() {
@@ -357,11 +401,49 @@ fn sockets_under(roots: &[PathBuf]) -> Vec<HostSocket> {
             } else if meta.file_type().is_socket() {
                 found.push(HostSocket {
                     inode: (meta.dev(), meta.ino()),
-                    dir: inode(&dir),
+                    dir: dir_inode,
                     path,
                 });
             }
         }
     }
     found
+}
+
+#[derive(Debug)]
+struct Bound {
+    path: PathBuf,
+    inode: String,
+    listening: bool,
+}
+
+/// The inode of a `socket:[N]` descriptor link.
+fn socket_inode(link: &Path) -> Option<String> {
+    link.to_str()?
+        .strip_prefix("socket:[")?
+        .strip_suffix(']')
+        .map(str::to_string)
+}
+
+/// A mountinfo field with its octal escapes (`\040` and the like) decoded.
+fn unescape(field: &str) -> String {
+    let bytes = field.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let octal = bytes
+            .get(i + 1..i + 4)
+            .and_then(|digits| u8::from_str_radix(std::str::from_utf8(digits).ok()?, 8).ok());
+        match (bytes[i], octal) {
+            (b'\\', Some(byte)) => {
+                out.push(byte);
+                i += 4;
+            }
+            (byte, _) => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).expect("a UTF-8 mount point")
 }

@@ -96,6 +96,8 @@ issue #297. No release is cut until every row has its test.
   public endpoints are `api.github.com` (allowed) and `example.com`
   (denied by default, and allowed only as guarantee 44's control).
 - **Budget:** the suite runs in under 5 minutes in CI.
+- **Linux TMPDIR:** the Linux suite runs with `TMPDIR` under the home and
+  outside any Git checkout; row 43 needs it.
 
 ## Checks
 

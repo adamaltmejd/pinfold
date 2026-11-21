@@ -164,13 +164,22 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
         root_only.stderr
     );
 
-    // After the chain's rebuild, none, and the top's box has the new root.
+    // After the chain's rebuild, no image is named at all, and the top's
+    // box has the new root.
     build(&top);
     let rebuilt = launch();
     assert_eq!(
-        (rebuilt.code, rebuilt.stdout.clone(), outdated(&rebuilt)),
-        (0, files("root-2"), vec![]),
+        (rebuilt.code, rebuilt.stdout.clone()),
+        (0, files("root-2")),
         "{rebuilt:?}"
+    );
+    assert!(
+        !rebuilt
+            .stderr
+            .lines()
+            .any(|line| tokens(line).any(|token| token == "image-outdated")),
+        "{}",
+        rebuilt.stderr
     );
 
     // A second, unchanged rebuild keeps every image identity.
@@ -232,19 +241,23 @@ fn tagged(prefix: &str) -> Result<Vec<String>, String> {
         std::process::Command::new("container").args(["image", "list", "--format", "json"]),
         Duration::from_secs(120),
     );
+    // The listing holds other images' labels and environment: an error
+    // names neither.
+    if listed.code != 0 {
+        return Err(format!("container image list exited {}", listed.code));
+    }
     let images: Value = serde_json::from_str(&listed.stdout)
-        .map_err(|error| format!("container image list: {error}: {listed:?}"))?;
+        .map_err(|error| format!("container image list: {error}"))?;
     let images = images
         .as_array()
-        .filter(|_| listed.code == 0)
-        .ok_or_else(|| format!("container image list: {listed:?}"))?;
+        .ok_or("container image list: not an array")?;
     images
         .iter()
         .map(|image| {
             image["configuration"]["name"]
                 .as_str()
                 .map(str::to_string)
-                .ok_or_else(|| format!("an image without a name: {image}"))
+                .ok_or_else(|| "container image list: an image without a name".to_string())
         })
         .filter(|name| name.as_ref().map_or(true, |name| name.starts_with(prefix)))
         .collect()
@@ -253,24 +266,29 @@ fn tagged(prefix: &str) -> Result<Vec<String>, String> {
 #[cfg(target_os = "macos")]
 impl Drop for Tags {
     fn drop(&mut self) {
-        let mut left = Vec::new();
-        match tagged(&self.0) {
-            Err(error) => left.push(error),
-            Ok(references) => {
-                for reference in references {
-                    let deleted = run(
-                        std::process::Command::new("container")
-                            .args(["image", "delete", &reference]),
-                        Duration::from_secs(120),
-                    );
-                    if deleted.code != 0 {
-                        left.push(format!("{reference}: {deleted:?}"));
-                    }
+        // On its own thread: a panic there never aborts an unwinding test.
+        let prefix = self.0.clone();
+        let removed = e2e::in_drop(move || {
+            let mut left = Vec::new();
+            for reference in tagged(&prefix)? {
+                let deleted = run(
+                    std::process::Command::new("container").args(["image", "delete", &reference]),
+                    Duration::from_secs(120),
+                );
+                if deleted.code != 0 {
+                    left.push(format!("{reference}: {deleted:?}"));
                 }
             }
-        }
-        if !left.is_empty() {
-            eprintln!("e2e: TAGS LEFT in the image store: {left:?}");
+            match left.is_empty() {
+                true => Ok(()),
+                false => Err(format!("{left:?}")),
+            }
+        });
+        if let Err(error) = removed {
+            eprintln!(
+                "e2e: TAGS LEFT in the image store under {}: {error}",
+                self.0
+            );
             if !std::thread::panicking() {
                 panic!("tags left in the image store (see stderr)");
             }

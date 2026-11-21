@@ -59,10 +59,13 @@ fn linux_image_work_stays_in_its_own_vm() {
         .iter()
         .find(|address| address.is_ipv4())
         .expect("an IPv4 address for example.com");
-    let v6 = *addresses
+    // Without an AAAA record as the host resolves it, a fixed public
+    // literal (Cloudflare's resolver, which serves port 80).
+    let v6 = addresses
         .iter()
-        .find(|address| address.is_ipv6())
-        .expect("an IPv6 address for example.com");
+        .copied()
+        .find(SocketAddr::is_ipv6)
+        .unwrap_or_else(|| "[2606:4700:4700::1111]:80".parse().unwrap());
     TcpStream::connect_timeout(&v4, Duration::from_secs(20))
         .expect("the host connects to example.com directly");
 
@@ -184,10 +187,14 @@ fn results(env: &TestEnv, name: &str) -> Results {
         assert_eq!(out.code, 0, "cat {file}: {out:?}");
         out.stdout.trim().to_string()
     };
-    // `HTTP/1.1 CODE REASON`: the code alone.
+    // `HTTP/1.1 CODE REASON`: the code alone, from a status line.
     let status = |file: &str| {
         let line = read(file);
-        line.split(' ').nth(1).unwrap_or_default().to_string()
+        let mut words = line.split(' ');
+        match (words.next(), words.next()) {
+            (Some(version), Some(code)) if version.starts_with("HTTP/") => code.to_string(),
+            _ => panic!("{file}: no HTTP status line: {line:?}"),
+        }
     };
     let results = Results {
         direct: [

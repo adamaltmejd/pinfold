@@ -391,7 +391,7 @@ fn remove_disks(roots: &Roots) -> Result<(), String> {
 
 /// Run `work` on its own thread, so a panic or a deadline in it never
 /// panics a Drop.
-fn in_drop(work: impl FnOnce() -> Result<(), String> + Send + 'static) -> Result<(), String> {
+pub fn in_drop(work: impl FnOnce() -> Result<(), String> + Send + 'static) -> Result<(), String> {
     let (send, done) = mpsc::channel();
     thread::spawn(move || {
         let _ = send.send(work());
