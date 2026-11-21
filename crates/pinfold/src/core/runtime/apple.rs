@@ -86,6 +86,9 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
         .args(["--network", "none", "--cap-drop", "ALL"])
         .args(["--kernel-arg", "sysctl.user.max_user_namespaces=0"])
         .args(["--read-only", "--tmpfs", "/tmp"])
+        // Apple creates the image's WORKDIR at creation, which could land
+        // on a fresh disk; `/` always exists.
+        .args(["--workdir", "/"])
         .arg("--user")
         .arg(format!("{uid}:{gid}"))
         .args(["--progress", "none"])

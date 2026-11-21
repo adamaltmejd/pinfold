@@ -521,7 +521,10 @@ The box spec `up` reads from stdin:
 - A share mounts the whole directory writable, `.git` included. Share
   sources must be plain directories. Admission resolves their host ancestors
   without following a final source symlink. The supplied init attaches
-  read-only after every caller attachment.
+  read-only after every caller attachment. On Apple it attaches at its
+  host directory's path, and a share or writable disk whose destination
+  contains or lies within that directory, or with egress
+  `/var/host-services`, refuses as `spec`.
 - A symlink in the image can make two declared destinations name one guest
   path. This can change which declared source the box sees there. Admission
   does not inspect the image tree.
