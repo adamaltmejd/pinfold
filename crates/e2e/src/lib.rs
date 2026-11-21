@@ -584,13 +584,20 @@ impl Client {
     }
 
     /// In a [`READER`] session: run `line`, and return the lines it printed.
+    /// The whole exchange is bounded by the command timeout.
     pub fn ask(&mut self, line: &str) -> Vec<String> {
         self.send(line);
+        let deadline = Instant::now() + COMMAND;
         let mut out = Vec::new();
         loop {
-            match self.line() {
-                done if done == "done" => return out,
-                other => out.push(other),
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(done) if done == "done" => return out,
+                Ok(other) => out.push(other),
+                Err(error) => panic!(
+                    "client {}: {line:?} did not finish: {error}",
+                    self.child.id()
+                ),
             }
         }
     }
@@ -854,9 +861,21 @@ impl BoxUp {
                 Err(RecvTimeoutError::Timeout) => panic!("box up {} did not end", self.name),
             }
         }
-        let status = self
-            .reap(COMMAND)
-            .unwrap_or_else(|| panic!("box up {} was not reaped", self.name));
+        // The owner stays in the guard until it has exited, so a panic here
+        // still tears the box down.
+        let status = loop {
+            let child = self.child.as_mut().expect("a running owner");
+            if let Some(status) = child.try_wait().expect("wait for box up") {
+                self.child = None;
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "box up {} was not reaped",
+                self.name
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
         let last =
             last.unwrap_or_else(|| panic!("box up {} printed nothing after ready", self.name));
         let line = serde_json::from_str(&last)

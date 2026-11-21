@@ -108,18 +108,18 @@ fn a_projects_sessions_share_one_box() {
         .expect("a generation")
         .to_string();
     let owner = listed[0]["owner"].clone();
+    assert!(!owner.is_null(), "an owner: {}", listed[0]);
 
     // Control: a client whose `from` variable holds the same value joins,
     // and sees both sessions' files in that box's own /tmp.
-    let joined = run(
-        &mut session("one", &["--", "cat", "/tmp/e2e-a", "/tmp/e2e-b"]),
-        COMMAND,
-    );
+    let both = ["--", "cat", "/tmp/e2e-a", "/tmp/e2e-b"];
+    let joined = run(&mut session("one", &both), COMMAND);
     assert_eq!(joined.code, 0, "{joined:?}");
     assert_eq!(joined.stdout.lines().count(), 2, "{joined:?}");
 
-    // Another value is refused, naming the differing field.
-    let other = run(&mut session("two", &["--", "true"]), COMMAND);
+    // The same command with another value is refused, naming the differing
+    // field.
+    let other = run(&mut session("two", &both), COMMAND);
     assert_eq!(other.code, 125, "{other:?}");
     let named: Vec<&str> = tokens(&other.stderr).collect();
     assert!(
@@ -141,7 +141,12 @@ fn a_projects_sessions_share_one_box() {
     assert_eq!(missing.code, 125, "{missing:?}");
 
     // Killing A's client ends A's command group, background child
-    // included, while B keeps working in the same box.
+    // included, while B keeps working in the same box. Both are alive
+    // before.
+    assert_eq!(
+        b.ask("kill -0 \"$(cat /tmp/e2e-a)\" \"$(cat /tmp/e2e-a-child)\"; echo $?"),
+        ["0"]
+    );
     a.kill();
     assert_eq!(
         b.ask(

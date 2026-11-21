@@ -3,6 +3,7 @@
 
 use std::fs;
 use std::io::Read;
+use std::path::Path;
 use std::time::Duration;
 
 use e2e::{BoxUp, Fixture, TestEnv, box_name, default_image, run};
@@ -108,6 +109,12 @@ fn every_egress_decision_is_recorded_or_the_box_stops() {
         own,
         "the first run's log"
     );
+    // The log `ready` names is a regular file under the test's state root.
+    assert!(
+        Path::new(&first_log).starts_with(env.state_home())
+            && fs::symlink_metadata(&first_log).is_ok_and(|metadata| metadata.is_file()),
+        "{first_log}"
+    );
     let recorded = fs::read(&first_log).unwrap();
     fs::File::options()
         .write(true)
@@ -151,38 +158,34 @@ fn every_egress_decision_is_recorded_or_the_box_stops() {
         (recorded.clone(), CAP - 1)
     );
 
-    // Control: a second run of the same name has its own log, holding its
-    // own two decisions once each; the first run's log is unchanged.
-    let second = env.up(&spec);
-    let second_id = second.ready()["run_id"].as_str().expect("run_id");
-    assert_ne!(second_id, first_id);
-    assert_eq!(
-        two_decisions(&env, &second, &name),
-        own,
-        "the second run's log"
-    );
-    assert_eq!(second.egress_log().len(), 2);
-    assert_eq!(head(&first_log, recorded.len()), (recorded, CAP - 1));
-
     // `inspect` reads the first run's records with no runtime on PATH. The
-    // launch record is the spec's policy, naming env without values.
+    // launch record is the spec's policy, naming the box's variables
+    // without values: the spec's and pinfold's default PINFOLD_ALLOW (Run
+    // records).
     let empty = env.root().join("empty-path");
     fs::create_dir(&empty).unwrap();
-    let inspect = run(
-        env.command()
-            .env("PATH", &empty)
-            .args(["box", "inspect", &first_id]),
-        COMMAND,
+    let inspect = |run_id: &str| -> Value {
+        let out = run(
+            env.command()
+                .env("PATH", &empty)
+                .args(["box", "inspect", run_id]),
+            COMMAND,
+        );
+        assert_eq!(out.code, 0, "{out:?}");
+        serde_json::from_str(&out.stdout).expect("inspect JSON")
+    };
+    let first_inspect = inspect(&first_id);
+    let launch = &first_inspect["launch"]["record"];
+    assert_eq!(
+        first_inspect["launch"]["state"], "available",
+        "{first_inspect}"
     );
-    assert_eq!(inspect.code, 0, "{inspect:?}");
-    let inspect: Value = serde_json::from_str(&inspect.stdout).expect("inspect JSON");
-    let launch = &inspect["launch"]["record"];
-    assert_eq!(inspect["launch"]["state"], "available", "{inspect}");
     assert_eq!(
         (
             &launch["run_id"],
             &launch["box"],
             &launch["egress"],
+            &launch["env"],
             &launch["memory"]
         ),
         (
@@ -192,23 +195,45 @@ fn every_egress_decision_is_recorded_or_the_box_stops() {
                 "allow": ["api.github.com"],
                 "routes": { "fixture.internal": { "kind": "host-service", "to": fixture.route() } },
             }),
+            &json!(["E2E_LITERAL", "PINFOLD_ALLOW"]),
             &json!("1G"),
         ),
         "{launch}"
     );
     assert_eq!(launch["cpus"].as_f64(), Some(2.0), "{launch}");
-    // The record also names PINFOLD_ALLOW, which pinfold applies itself
-    // (Process interface); only the spec's own name is asserted.
-    let names = launch["env"].as_array().expect("env names");
-    assert!(names.contains(&json!("E2E_LITERAL")), "{launch}");
-    assert!(!inspect.to_string().contains(&literal), "{inspect}");
+    assert!(
+        !first_inspect.to_string().contains(&literal),
+        "{first_inspect}"
+    );
     assert_eq!(
         (
-            &inspect["terminal"]["state"],
-            &inspect["terminal"]["record"]["reason"],
-            &inspect["egress_log"]["bytes"],
+            &first_inspect["terminal"]["state"],
+            &first_inspect["terminal"]["record"]["reason"],
+            &first_inspect["egress_log"]["bytes"],
         ),
         (&json!("available"), &json!("audit-log"), &json!(CAP - 1)),
-        "{inspect}"
+        "{first_inspect}"
+    );
+
+    // Control: a second run of the same name, under another policy, has its
+    // own log holding its own two decisions once each. The first run's log
+    // and launch record are unchanged.
+    let mut second_spec = spec.clone();
+    second_spec["egress"]["allow"] = json!(["api.github.com", "example.org"]);
+    second_spec["memory"] = json!("2G");
+    let second = env.up(&second_spec);
+    let second_id = second.ready()["run_id"].as_str().expect("run_id");
+    assert_ne!(second_id, first_id);
+    assert_eq!(
+        two_decisions(&env, &second, &name),
+        own,
+        "the second run's log"
+    );
+    assert_eq!(second.egress_log().len(), 2);
+    assert_eq!(head(&first_log, recorded.len()), (recorded, CAP - 1));
+    assert_eq!(
+        inspect(&first_id)["launch"],
+        first_inspect["launch"],
+        "the first run's launch record after the second run"
     );
 }
