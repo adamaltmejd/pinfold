@@ -195,20 +195,25 @@ pub(crate) fn pinfold_url(root: &Path) -> String {
     url_word(&format!("pinfold::{}", root.to_string_lossy()))
 }
 
-/// Whether ROOT's repository has a remote whose URL is `pinfold::ROOT`.
-/// A configuration Git cannot read counts as none.
-pub(crate) fn has_remote(root: &Path) -> bool {
-    config(root, &["-z", "--get-regexp", r"^remote\..*\.url$"])
-        .ok()
-        .flatten()
-        .is_some_and(|entries| {
-            entries.split('\0').any(|entry| {
-                entry
-                    .split_once('\n')
-                    .and_then(|(_, url)| url.strip_prefix("pinfold::"))
-                    .is_some_and(|address| Path::new(address) == root)
-            })
+/// The name of ROOT's remote whose URL is `pinfold::ROOT`; of several,
+/// `box` if it is one, else the first. A configuration Git cannot read
+/// counts as none.
+pub(crate) fn remote_name(root: &Path) -> Option<String> {
+    let entries = config(root, &["-z", "--get-regexp", r"^remote\..*\.url$"]).ok()??;
+    let names: Vec<&str> = entries
+        .split('\0')
+        .filter_map(|entry| {
+            let (key, url) = entry.split_once('\n')?;
+            let address = url.strip_prefix("pinfold::")?;
+            (Path::new(address) == root).then_some(())?;
+            key.strip_prefix("remote.")?.strip_suffix(".url")
         })
+        .collect();
+    names
+        .iter()
+        .find(|name| **name == "box")
+        .or(names.first())
+        .map(|name| name.to_string())
 }
 
 /// URL as one shell word; the placeholder `pinfold::ROOT` stands in for
