@@ -195,6 +195,22 @@ pub(crate) fn pinfold_url(root: &Path) -> String {
     url_word(&format!("pinfold::{}", root.to_string_lossy()))
 }
 
+/// Whether ROOT's repository has a remote whose URL is `pinfold::ROOT`.
+/// A configuration Git cannot read counts as none.
+pub(crate) fn has_remote(root: &Path) -> bool {
+    config(root, &["-z", "--get-regexp", r"^remote\..*\.url$"])
+        .ok()
+        .flatten()
+        .is_some_and(|entries| {
+            entries.split('\0').any(|entry| {
+                entry
+                    .split_once('\n')
+                    .and_then(|(_, url)| url.strip_prefix("pinfold::"))
+                    .is_some_and(|address| Path::new(address) == root)
+            })
+        })
+}
+
 /// URL as one shell word; the placeholder `pinfold::ROOT` stands in for
 /// one that cannot be.
 fn url_word(url: &str) -> String {
