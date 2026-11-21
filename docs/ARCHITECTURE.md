@@ -1253,7 +1253,9 @@ old derived-root cache and managed agent disks are left untouched.
 Built-in images use `debian:trixie-slim` and strip setuid/setgid bits.
 As a convenience, `default` names uids 501 and 1000 `pinfold`, home
 `/home/pinfold`, where its base image leaves those uids free, and its
-default interactive Bash prompt is `pinfold:\w\$ `.
+default interactive Bash prompt is `pinfold:\w\$ `. An interactive Bash
+that starts in `$HOME` changes to `$PINFOLD_PROJECT`, and each one marks
+that directory trusted in Claude Code's `~/.claude.json`.
 
 | Profile | Tools |
 |---|---|
@@ -1857,7 +1859,8 @@ project; executable replacement remains `update-busy`.
   directory on that walk works. A non-UTF-8 path in
   a project box spec or configuration
   report is refused as `path-not-utf8`, naming its field.
-- **Environment:** the core's proxy variables, `PINFOLD_ALLOW`, the
+- **Environment:** the core's proxy variables, `PINFOLD_ALLOW`,
+  `PINFOLD_PROJECT` (the project's guest path, unless `env` sets it), the
   configured `env` and `PINFOLD_ENV_*` (Configuration). Cwd, terminal metadata and the optional Herdr label are
   per-command execution metadata, carried through private transport, never
   environment-setting argv. They are applied after the restored box environment.
