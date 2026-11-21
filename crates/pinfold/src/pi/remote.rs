@@ -195,9 +195,10 @@ pub(crate) fn pinfold_url(root: &Path) -> String {
     url_word(&format!("pinfold::{}", root.to_string_lossy()))
 }
 
-/// The name of ROOT's remote whose URL is `pinfold::ROOT`; of several,
-/// `box` if it is one, else the first. A configuration Git cannot read
-/// counts as none.
+/// The name of ROOT's remote whose URL is `pinfold::ROOT` and whose name
+/// the helper accepts; of several, `box` if it is one, else the first. A
+/// configuration Git cannot read counts as none. An accepted name starts
+/// alphanumeric, so it is no option and needs no shell quoting.
 pub(crate) fn remote_name(root: &Path) -> Option<String> {
     let entries = config(root, &["-z", "--get-regexp", r"^remote\..*\.url$"]).ok()??;
     let names: Vec<&str> = entries
@@ -206,7 +207,8 @@ pub(crate) fn remote_name(root: &Path) -> Option<String> {
             let (key, url) = entry.split_once('\n')?;
             let address = url.strip_prefix("pinfold::")?;
             (Path::new(address) == root).then_some(())?;
-            key.strip_prefix("remote.")?.strip_suffix(".url")
+            let name = key.strip_prefix("remote.")?.strip_suffix(".url")?;
+            valid_name(name).then_some(name)
         })
         .collect();
     names

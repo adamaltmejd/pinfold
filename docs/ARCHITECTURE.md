@@ -2181,7 +2181,8 @@ Unavailable details are identified. It ends with next steps, including
 `pinfold -- CMD`, `pinfold config edit` (noted, before setup, as creating
 the settings file), and for a configured Git disk project `git push REMOTE
 BRANCH` and `git fetch REMOTE`, and succeeds. REMOTE is the remote whose
-URL is `pinfold::ROOT`; of several, `box` if it is one, else the first.
+URL is `pinfold::ROOT` and whose name the remote helper accepts; of
+several, `box` if it is one, else the first.
 With none, REMOTE is `box`, preceded by `git remote add box pinfold::ROOT`.
 Explicit help groups the command inventory
 by task. Report commands use human output unless `--json` is requested,

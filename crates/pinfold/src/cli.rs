@@ -73,8 +73,6 @@ pub fn print_intro() {
                     );
                     "box".to_string()
                 });
-                let remote =
-                    crate::pi::remote::shell_word(&remote).unwrap_or_else(|| "REMOTE".to_string());
                 println!(
                     "Send a branch    git push {remote} BRANCH\nBring work back  git fetch {remote}"
                 );
