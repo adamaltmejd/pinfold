@@ -205,11 +205,10 @@ pub(crate) fn push_cancellable(
     }
 }
 
-/// What the box holds where a push writes, for Git's push plan only: its
-/// `refs/remotes/host/NAME` as `refs/heads/NAME` and its `refs/tags/NAME`,
-/// read through the fetch listing's checks. It carries no objects and
-/// never feeds a fetch; a lying box can only make Git skip or attempt a
-/// ref.
+/// What the box holds where a push writes, its `refs/remotes/host/*` and
+/// `refs/tags/*`, read through the fetch listing's checks. It carries no
+/// objects and never feeds a fetch; a lying box can only make a push skip
+/// or attempt a ref.
 pub(crate) fn pushed_cancellable(
     runtime: &dyn Runtime,
     init: &Path,
@@ -242,10 +241,6 @@ pub(crate) fn pushed_cancellable(
     )?;
     let mut refs = Refs::new();
     for (name, oid) in listed {
-        let name = match name.strip_prefix("refs/remotes/host/") {
-            Some(branch) => format!("refs/heads/{branch}"),
-            None => name,
-        };
         if !valid_ref(repo, &name, cancel)? || refs.insert(name, oid).is_some() {
             return Err(malformed_listing());
         }

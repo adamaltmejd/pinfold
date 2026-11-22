@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 
 use nix::fcntl::{FcntlArg, FdFlag, fcntl};
 
-use crate::core::crossing::{self, CrossingError, Fetched};
+use crate::core::crossing::{self, CrossingError, Fetched, Refs};
 use crate::core::plan::valid_name;
 use crate::formatting::terminal_text;
 use crate::pi::launch;
@@ -36,6 +36,8 @@ pub fn run(args: &[String]) -> io::Result<i32> {
     let guard = |root: &Path| check(root, remote, address);
     let mut fetched: Option<Fetched> = None;
     let mut listed = false;
+    // The box's `refs/remotes/host/*`, from `list for-push`.
+    let mut held = Refs::new();
     loop {
         let line = read_line(&mut input)?;
         match line.as_str() {
@@ -70,10 +72,12 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                 send(&mut output, &listing)?;
             }
             "list for-push" => {
-                // Only Git's push plan reads this; `fetched` stays empty, so
+                // Only the push plan reads this; `fetched` stays empty, so
                 // nothing listed here can land. Any failure but a signal
                 // lists nothing and the push goes ahead: the push crosses
-                // again and reports whatever still stands in its way.
+                // again and reports whatever still stands in its way. Git
+                // sees only the tags: it would move the host's `box/BRANCH`
+                // for a branch it calls up to date.
                 let pushed =
                     match launch::cross(guard, |runtime, init, name, root, guest, cancel| {
                         crossing::pushed_cancellable(runtime, init, name, root, guest, cancel)
@@ -83,8 +87,12 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                         }
                         crossed => crossed.ok().and_then(Result::ok).unwrap_or_default(),
                     };
+                let tags: Refs;
+                (held, tags) = pushed
+                    .into_iter()
+                    .partition(|(name, _)| name.starts_with("refs/remotes/host/"));
                 let mut listing = format!(":object-format {}\n", object_format()?);
-                for (name, oid) in &pushed {
+                for (name, oid) in &tags {
                     listing.push_str(&format!("{oid} {name}\n"));
                 }
                 listing.push('\n');
@@ -106,7 +114,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                     }
                     batch.push(line);
                 }
-                let report = push(&batch, guard)?;
+                let report = push(&batch, &held, guard)?;
                 send(&mut output, &report)?;
             }
             line => {
@@ -122,9 +130,14 @@ pub fn run(args: &[String]) -> io::Result<i32> {
 /// Answer each `push SRC:DST` line: a branch lands in the box's
 /// `refs/remotes/host/*` and a tag in its `refs/tags/*`, every one in one
 /// transaction. A tag the box holds at another object needs `+`, or the
-/// whole push fails. The host reads nothing from the box but its exit
-/// status.
-fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<String> {
+/// whole push fails. A branch HELD already names at the host's tip does
+/// not cross; when none crosses, no push runs in the box. The host reads
+/// nothing from the box but its exit status.
+fn push(
+    batch: &[String],
+    held: &Refs,
+    check: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<String> {
     let cancel = AtomicBool::new(false);
     let repo = Path::new(".");
     let (mut sources, mut refspecs, mut accepted) = (Vec::new(), Vec::new(), Vec::new());
@@ -160,16 +173,27 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
         };
         // A branch always moves `host/BRANCH`; a tag keeps Git's rule.
         let force = forced || target.starts_with("refs/remotes/");
-        refspecs.push(format!("{}{source}:{target}", if force { "+" } else { "" }));
-        sources.push(source.to_string());
+        // HELD is non-empty only once `list for-push` passed CHECK.
+        let current = match held.get(&target) {
+            Some(id) => *id == rev_parse(source, "a pushed branch")?,
+            None => false,
+        };
+        if !current {
+            refspecs.push(format!("{}{source}:{target}", if force { "+" } else { "" }));
+            sources.push(source.to_string());
+        }
         accepted.push(destination.to_string());
     }
     if !accepted.is_empty() {
-        let pushed = launch::cross(check, move |runtime, init, name, root, guest, cancel| {
-            crossing::push_cancellable(
-                runtime, init, name, root, guest, &sources, &refspecs, cancel,
-            )
-        })?;
+        let pushed = if refspecs.is_empty() {
+            Ok(())
+        } else {
+            launch::cross(check, move |runtime, init, name, root, guest, cancel| {
+                crossing::push_cancellable(
+                    runtime, init, name, root, guest, &sources, &refspecs, cancel,
+                )
+            })?
+        };
         if let Err(error) = &pushed {
             eprintln!("pinfold: {}", describe(error));
         }
@@ -181,7 +205,15 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
         };
         for destination in accepted {
             report.push_str(&match &pushed {
-                Ok(()) => format!("ok {destination}\n"),
+                // Git updates the tracking ref for the reported name, the
+                // box's `refs/remotes/host/BRANCH`, so the host's
+                // `box/BRANCH` keeps naming the box's own branch.
+                Ok(()) => match destination.strip_prefix("refs/heads/") {
+                    Some(branch) => {
+                        format!("ok {destination}\noption refname refs/remotes/host/{branch}\n")
+                    }
+                    None => format!("ok {destination}\n"),
+                },
                 Err(_) => format!("error {destination} {reason}\n"),
             });
         }
@@ -327,18 +359,23 @@ fn check(root: &Path, remote: &str, address: &str) -> io::Result<()> {
 
 /// The repository's object format, as `git rev-parse` names it.
 fn object_format() -> io::Result<String> {
+    rev_parse("--show-object-format", "the object format")
+}
+
+/// `git rev-parse ARG`'s one line; WHAT names it in a refusal.
+fn rev_parse(arg: &str, what: &str) -> io::Result<String> {
     let mut command = crossing::git_command(Path::new("."));
     command
-        .args(["rev-parse", "--show-object-format"])
+        .args(["rev-parse", arg])
         .stdin(std::process::Stdio::null());
     let output = crossing::output_cancellable(&mut command, None, &AtomicBool::new(false))?;
-    let format = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !output.status.success() || format.is_empty() {
-        return Err(refused(
-            "remote-repository: Git could not name the object format",
-        ));
+    let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || line.is_empty() {
+        return Err(refused(&format!(
+            "remote-repository: Git could not name {what}"
+        )));
     }
-    Ok(format)
+    Ok(line)
 }
 
 /// `git config ARGS` in ROOT: the value, `None` when unset, and a refusal
