@@ -116,12 +116,12 @@ revs() {
 revs | exec git -C "$repo" -c core.warnAmbiguousRefs=false bundle create -q - --stdin
 "#;
 
-/// `$1` is GUEST_REPO. Prints, in the fetch listing's format, the box's
-/// tags, then an empty line and nothing after it.
+/// `$1` is GUEST_REPO. Prints, in the fetch listing's format, the refs a
+/// push writes, then an empty line and nothing after it.
 const PUSHED_SCRIPT: &str = r#"
 repo=$1
 git -C "$repo" rev-parse --git-dir >/dev/null || exit 64
-git -C "$repo" for-each-ref --format='%(objectname) %(refname)' refs/tags/ || exit
+git -C "$repo" for-each-ref --format='%(objectname) %(refname)' refs/remotes/host/ refs/tags/ || exit
 echo
 "#;
 
@@ -205,11 +205,10 @@ pub(crate) fn push_cancellable(
     }
 }
 
-/// The box's tags, for Git's push plan only, read through the fetch
-/// listing's checks. Branches are left out: Git would move the host's
-/// `box/BRANCH` to a branch it calls up to date. It carries no objects
-/// and never feeds a fetch; a lying box can only make Git skip or attempt
-/// a tag.
+/// What the box holds where a push writes, its `refs/remotes/host/*` and
+/// `refs/tags/*`, read through the fetch listing's checks. It carries no
+/// objects and never feeds a fetch; a lying box can only make a push skip
+/// or attempt a ref.
 pub(crate) fn pushed_cancellable(
     runtime: &dyn Runtime,
     init: &Path,
@@ -236,7 +235,7 @@ pub(crate) fn pushed_cancellable(
         b"",
         None,
         width,
-        &["refs/tags/"],
+        &["refs/remotes/host/", "refs/tags/"],
         guest_repo,
         cancel,
     )?;

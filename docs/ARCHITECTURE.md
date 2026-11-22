@@ -1962,16 +1962,18 @@ cross. The helper:
   that push. It reports each pushed branch as the box's
   `refs/remotes/host/BRANCH`, which host Git 2.29 or later reads, so Git
   leaves `refs/remotes/box/BRANCH` where the last fetch put it;
-- answers `list for-push` with the box's `refs/tags/NAME`, read through
-  Fetch's listing checks (line bound, object id width, 4096 refs, prefixes,
+- at `list for-push`, reads the box's `refs/remotes/host/*` and
+  `refs/tags/*` through Fetch's listing checks (line bound, object id width, 4096 refs, prefixes,
   `check-ref-format`); a byte after the empty line fails it, and
   nothing of it is written to disk. pinfold then keeps only entries
   whose id is the id of a host `refs/heads/*` or `refs/tags/*` ref (a
   tag ref's own id), from one `git for-each-ref`; it looks up no
   box-supplied id, and every id Git sees is one a host ref points at.
-  Git plans the push from what remains:
+  It answers Git with the tags only, and Git plans the push from them:
   - every branch looks absent, so Git prints it as a new reference and
-    pushes it, each time;
+    sends it each time; pinfold crosses only a branch whose box
+    `host/NAME` is not at the host's tip, and starts no box when none
+    is;
   - an unchanged tag is up to date;
   - a box tag at an object no host ref points at looks absent, so
     `push.followTags` sends the host's tag of that name when Git
@@ -1982,7 +1984,7 @@ cross. The helper:
     unless forced.
 
   pinfold always forces branches into `refs/remotes/host/*`. A
-  lying box can only make Git skip or attempt a tag, and the listing
+  lying box can only make a push skip or attempt a ref, and the listing
   never feeds a fetch. Any listing failure but a signal lists nothing
   and the push goes ahead;
 - speaks Git's protocol on its own descriptors: its standard input is

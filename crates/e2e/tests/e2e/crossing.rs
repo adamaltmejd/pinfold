@@ -273,9 +273,9 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     // and after a repeat of it, which sends nothing new.
     // Sabotage (run): in pi/remote.rs's `push`, drop the `option refname`
     // line. Git then moves `box/main` to the host's main after the first
-    // push. Sabotage (run): in core/crossing.rs's `pushed_cancellable`, list
-    // the box's `refs/remotes/host/NAME` as `refs/heads/NAME` again. Git
-    // then calls the repeat up to date and moves `box/main` after it.
+    // push. Sabotage (run): in its `list for-push`, list the box's
+    // `refs/remotes/host/NAME` to Git as `refs/heads/NAME`. Git then calls
+    // the repeat up to date and moves `box/main` after it.
     for push in ["first", "repeat"] {
         if push == "repeat" {
             git(&["push", "-q", "box", "main"]);
