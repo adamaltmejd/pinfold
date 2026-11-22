@@ -161,8 +161,8 @@ fn a_projects_sessions_share_one_box() {
     ));
     assert_eq!(a.line(), "started");
     assert_eq!(b.line(), "started");
-    // Sabotage (run): in pi/session.rs's `resolve_spec`, call `read_op`
-    // for a join too. The first launch that joins then asks `op` as well,
+    // Sabotage (run): in pi/session.rs, read `op` in `resolve_spec`,
+    // which a join runs too. The first launch that joins then asks `op` as well,
     // and the stand-in logs more than one call.
     // The one that started the box asked `op` once; the other joined
     // without it. The value is the box's.

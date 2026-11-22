@@ -763,6 +763,7 @@ async fn admit(
             .as_ref()
             .map_err(|error| io::Error::new(error.kind(), error.to_string()))?
             .check_worktree(resolved.config.mount)?;
+        let resolved = read_op(resolved, signals).await?;
         let share = resolved.config.mount == crate::config::ProjectMount::Share;
         let mut child = spawn_owner(
             &resolved.snapshot,
@@ -864,20 +865,12 @@ async fn resolve_spec(
     let root = root.to_path_buf();
     let mut worker = tokio::task::spawn_blocking(move || {
         crate::core::process::with_cancellation(worker_cancel, || {
-            let mut resolved = Snapshot::resolve(&root, expected_mount, None)?;
+            let resolved = Snapshot::resolve(&root, expected_mount, None)?;
             let warnings = if startup {
-                let warnings = launch::image_warnings(
+                launch::image_warnings(
                     &resolved.config,
                     resolved.plan.image.as_deref().ok_or_else(unavailable)?,
-                )?;
-                // Only a start reads `op`, after every other check, so a
-                // join or a refused start never waits on 1Password.
-                resolved.values.read_op(&resolved.plan);
-                resolved
-                    .plan
-                    .check_variables(&resolved.values)
-                    .map_err(io::Error::other)?;
-                warnings
+                )?
             } else {
                 Vec::new()
             };
@@ -893,6 +886,31 @@ async fn resolve_spec(
         forward_diagnostics(warning.into_bytes(), signals).await?;
     }
     Ok(resolved)
+}
+
+/// Read the start's `op` values, the last check before its owner is
+/// spawned, so a join or a refused start never waits on 1Password.
+async fn read_op(mut resolved: Resolved, signals: &mut Signals) -> io::Result<Resolved> {
+    if !resolved.plan.reads_op() {
+        return Ok(resolved);
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    let mut worker = tokio::task::spawn_blocking(move || {
+        crate::core::process::with_cancellation(worker_cancel, || {
+            resolved.values.read_op(&resolved.plan);
+            resolved
+                .plan
+                .check_variables(&resolved.values)
+                .map_err(io::Error::other)?;
+            Ok(resolved)
+        })
+    });
+    tokio::select! {
+        biased;
+        _ = signals.recv() => { cancel.store(true, Ordering::Release); let _ = worker.await; Err(io::ErrorKind::Interrupted.into()) },
+        result = &mut worker => result.map_err(|_| io::Error::other("configuration worker failed"))?,
+    }
 }
 
 struct Diagnostics {
