@@ -141,14 +141,14 @@ impl Inject {
 
     /// The parsed target and each header with its value from this process's
     /// environment. Errors name the header and the variable, never a value.
-    pub fn resolve(&self) -> Result<(Target, Vec<(String, String)>), String> {
+    pub fn resolve(&self, route: &str) -> Result<(Target, Vec<(String, String)>), String> {
         let target = self.check()?;
         let mut headers = Vec::with_capacity(self.headers.len());
         for (name, header) in &self.headers {
             let value = match std::env::var(&header.from) {
                 Ok(value) => value,
                 Err(std::env::VarError::NotPresent) => {
-                    return Err(format!("environment variable {} is not set", header.from));
+                    return Err(unset("route", route, &header.from));
                 }
                 Err(std::env::VarError::NotUnicode(_)) => {
                     return Err(invalid(format!(
@@ -346,7 +346,7 @@ impl Login {
     /// claude's or pi's dialed target and credential header, from this
     /// process's environment once at start. The target and the value rules
     /// are [`Inject::resolve`]'s.
-    pub fn resolve(&self) -> Result<(Target, Vec<(String, String)>), String> {
+    pub fn resolve(&self, route: &str) -> Result<(Target, Vec<(String, String)>), String> {
         let (header, prefix) = if self.is_pi() {
             match self.pi_provider()?.credential {
                 PiCredential::Key { header, prefix, .. } => (header, prefix),
@@ -357,9 +357,14 @@ impl Login {
         } else {
             ("Authorization", "Bearer ")
         };
+        // Every caller prefixes the agent and route, so these name neither.
         let from = self.from.clone().unwrap_or_default();
-        if std::env::var_os(&from).is_some_and(|value| value.is_empty()) {
-            return Err(format!("environment variable {from} is empty"));
+        match std::env::var_os(&from) {
+            None => return Err(format!("needs the host variable {from}, which is not set")),
+            Some(value) if value.is_empty() => {
+                return Err(format!("the host variable {from} is empty"));
+            }
+            Some(_) => {}
         }
         let inject = Inject {
             to: self.origin()?.to_string(),
@@ -371,7 +376,7 @@ impl Login {
                 },
             )]),
         };
-        inject.resolve()
+        inject.resolve(route)
     }
 }
 
@@ -543,28 +548,33 @@ impl Plan {
     /// reads (an env `from`, an injecting header, a login route) is missing.
     /// Only presence is checked; no value is read.
     pub(crate) fn check_variables(&self) -> Result<(), String> {
-        let env = self.env.values().filter_map(|value| match value {
-            Env::From { from } => Some(from.as_str()),
+        let env = self.env.iter().filter_map(|(name, value)| match value {
+            Env::From { from } => Some(("env", name.as_str(), from.as_str())),
             Env::Exact(_) => None,
         });
         let routes = self
             .egress
             .iter()
-            .flat_map(|egress| egress.routes.values())
-            .flat_map(|route| match route {
+            .flat_map(|egress| &egress.routes)
+            .flat_map(|(name, route)| match route {
                 Route::Inject(inject) => inject
                     .headers
                     .values()
-                    .map(|header| header.from.as_str())
+                    .map(|header| ("route", name.as_str(), header.from.as_str()))
                     .collect(),
-                Route::Login(login) => login.from.as_deref().into_iter().collect(),
+                Route::Login(login) => login
+                    .from
+                    .as_deref()
+                    .map(|from| ("route", name.as_str(), from))
+                    .into_iter()
+                    .collect(),
                 Route::Address(_) => Vec::new(),
             });
         match env
             .chain(routes)
-            .find(|name| std::env::var_os(name).is_none())
+            .find(|(_, _, variable)| std::env::var_os(variable).is_none())
         {
-            Some(name) => Err(format!("environment variable {name} is not set")),
+            Some((kind, name, variable)) => Err(unset(kind, name, variable)),
             None => Ok(()),
         }
     }
@@ -683,7 +693,7 @@ impl Plan {
                 && values
                 && std::env::var_os(from).is_none()
             {
-                return Err(format!("environment variable {from} is not set"));
+                return Err(unset("env", name, from));
             }
         }
         if let Some(egress) = &self.egress {
@@ -720,7 +730,7 @@ impl Plan {
                     }
                     Route::Inject(inject) => {
                         if values {
-                            inject.resolve()?;
+                            inject.resolve(name)?;
                         } else {
                             inject.check()?;
                         }
@@ -778,7 +788,7 @@ impl Plan {
                     None => login::token_from_helper(cancel).map(|codex| token = Some(codex)),
                 }
             } else {
-                login.resolve().map(|_| ())
+                login.resolve(route).map(|_| ())
             };
             resolved.map_err(|error| format!("{} login route {route:?}: {error}", login.login))?;
         }
@@ -997,4 +1007,9 @@ pub(crate) fn valid_name(name: &str) -> bool {
 
 fn invalid(message: impl fmt::Display) -> String {
     format!("invalid box spec: {message}")
+}
+
+/// `kind` is `env` or `route`, `name` its key; never a value.
+fn unset(kind: &str, name: &str, variable: &str) -> String {
+    format!("{kind} {name:?} needs the host variable {variable}, which is not set")
 }

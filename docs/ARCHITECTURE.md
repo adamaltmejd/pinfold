@@ -1085,7 +1085,9 @@ A project recipe typically `FROM`s the profile image.
   chain. Each image records the identity of the one built just beneath it,
   and Linux freezes that identity for its build.
   Each image's publication is a separate operation: a failed build may leave
-  successfully rebuilt images beneath it published, reported on stderr.
+  successfully rebuilt images beneath it published. Stderr names each
+  image as its build starts; those named before the failed one are the
+  ones left published.
 - After each completed Apple build, pinfold attempts to prune the shared
   builder's unused cache to 4 GB, then return unused builder blocks;
   failure only warns and preserves the build result.
@@ -2043,8 +2045,9 @@ the project box sets it, as it does the always-applied names, and
 
 A `from` value is read once, when a new box starts. A missing variable
 refuses the start before any owner starts, and so does a missing injecting
-or login route variable: the client prints `environment variable VAR is
-not set` on stderr and exits 125. The value travels as a `PINFOLD_ENV_`
+or login route variable: the client prints `env "NAME" needs the host
+variable VAR, which is not set` or `route "NAME" needs the host variable
+VAR, which is not set` on stderr and exits 125. The value travels as a `PINFOLD_ENV_`
 value does: in the environment of the detached owner and its runtime
 client, and, for the join comparison, in the admission snapshot, held in
 memory and sent over the private project socket. `config --json` names

@@ -130,15 +130,49 @@ Linux) and commented examples of the other keys. A project recipe is a
 configuration path.
 
 Box work runs as your host uid; the built-in images name uids 501 and
-1000 `pinfold`. The project home, `/home/pinfold`, is a disk that persists,
-so a guest `/login` persists too. A disk project also retains its project
-disk. `pinfold disk list` shows sizes and originating folders.
-`disk rm --all` removes unattached disks in the current state root. An API
-key or a Claude or Codex subscription can stay on the host behind a login
-route in `routes` (ARCHITECTURE.md, Egress proxy). An API key can also
-arrive through the environment. Using a Claude subscription through Pi is
-subject to Anthropic's terms: Pi presents the token as Claude Code and may
-bill it as extra usage.
+1000 `pinfold`. The project home, `/home/pinfold`, is a disk that persists.
+A disk project also retains its project disk. `pinfold disk list` shows
+sizes and originating folders. `disk rm --all` removes unattached disks in
+the current state root.
+
+**Where an agent's login lives.**
+
+| | `/login` in the box | Login route in `routes` |
+|---|---|---|
+| Credential | On the project's home disk | On the host; the box holds a placeholder |
+| Box code can read it | Yes | Not directly; it can use it, and an upstream that echoes it returns it |
+| Scope | That project; persists across `stop` | Every project selecting the profile |
+
+Either way the agent's traffic goes through the proxy. Put a login route
+in the selected profile's `pinfold.toml`. Pi on the host's Codex
+subscription (sign in with Codex on the host first):
+
+```toml
+[routes.openai]
+login = "pi"
+provider = "openai-codex"
+```
+
+Claude on a `claude setup-token` token in a host variable:
+
+```toml
+[routes.anthropic]
+login = "claude"
+from = "CLAUDE_SETUP_TOKEN"
+```
+
+Login routes generate native configuration for the whole box. Claude and Codex
+use system configuration; Pi autoloads a read-only extension under its writable
+home. Agent configuration precedence still applies. Launch agents through PATH.
+An explicit project `routes` table replaces the profile's routes. An API
+key can also arrive through the environment. Using a Claude subscription
+through Pi is subject to Anthropic's terms: Pi presents the token as Claude
+Code and may bill it as extra usage.
+
+Each login route grants every process in the box the host login's authority
+over every path at its origin. It does not inspect request bodies or prevent
+a reflecting upstream from returning credentials. See
+[Login routes](docs/ARCHITECTURE.md#egress-proxy) for the exact policy.
 
 One detached owner serves each project. Each `pinfold -- CMD` starts or
 joins a session; the box ends when no session, Git crossing or `start`
@@ -157,25 +191,6 @@ Arguments after `--` pass literally to the command, including `--help`. Command 
 pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
 pinfold diagnostics use stderr.
 
-For reusable Codex subscription login, sign in with Codex on the host and
-put this in the selected profile's `pinfold.toml`:
-
-```toml
-[routes.openai]
-login = "pi"
-provider = "openai-codex"
-```
-
-The token and refresh stay on the host across independent Pi homes.
-Login routes generate native configuration for the whole box. Claude and Codex
-use system configuration; Pi autoloads a read-only extension under its writable
-home. Agent configuration precedence still applies. Launch agents through PATH.
-
-Each login route grants every process in the box the host login's authority
-over every path at its origin. It does not inspect request bodies or prevent
-a reflecting upstream from returning credentials. See
-[Login routes](docs/ARCHITECTURE.md#egress-proxy) for the exact policy.
-An explicit project `routes` table replaces the profile's routes.
 Project reports use readable text, including when piped. Add `--json` to
 `config`, `doctor` and `disk` for structured output. Use
 `pinfold doctor --artifacts --json` for artifact pins.

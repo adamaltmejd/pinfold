@@ -93,6 +93,16 @@ impl ProjectMount {
 # Variables in the box: a value, or {{ from = \"VAR\" }} to pass the host's VAR:
 # env = {{ LANG = \"C.UTF-8\", API_KEY = {{ from = \"MY_API_KEY\" }} }}
 # A Containerfile beside this file builds the project's own image.
+
+# Agent logins kept on the host. These tables stay last, take the place of the
+# routes line above, and replace the profile's routes. Pi on the host's Codex login:
+# [routes.openai]
+# login = \"pi\"
+# provider = \"openai-codex\"
+# Claude on a `claude setup-token` token in the host variable CLAUDE_SETUP_TOKEN:
+# [routes.anthropic]
+# login = \"claude\"
+# from = \"CLAUDE_SETUP_TOKEN\"
 ",
             self.as_str()
         )
