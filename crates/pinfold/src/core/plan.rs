@@ -131,6 +131,11 @@ impl Inject {
                     "route header {name:?} needs a from variable"
                 )));
             }
+            if !valid_from(&header.from) {
+                return Err(invalid(format!(
+                    "route header {name:?}: its from variable holds = or NUL"
+                )));
+            }
             if header.prefix.contains(['\r', '\n', '\0']) {
                 return Err(invalid(format!(
                     "route header {name:?}: its prefix holds CR, LF or NUL"
@@ -333,6 +338,10 @@ impl Login {
             return Err(invalid(format!(
                 "login route {route:?} needs a from variable"
             )));
+        } else if !self.from.as_deref().is_some_and(valid_from) {
+            return Err(invalid(format!(
+                "login route {route:?}: its from variable holds = or NUL"
+            )));
         }
         Ok(())
     }
@@ -393,9 +402,14 @@ impl Login {
 pub struct Values(pub(crate) BTreeMap<String, OsString>);
 
 impl Values {
-    /// Each variable `plan` names, from this process's environment.
+    /// Each variable `plan` names, from this process's environment. A name
+    /// validation refuses is never read.
     pub fn read(plan: &Plan) -> Values {
-        let variables: BTreeSet<&str> = plan.sources().map(|(_, _, variable)| variable).collect();
+        let variables: BTreeSet<&str> = plan
+            .sources()
+            .map(|(_, _, variable)| variable)
+            .filter(|variable| valid_from(variable))
+            .collect();
         Values(
             variables
                 .into_iter()
@@ -724,6 +738,13 @@ impl Plan {
             {
                 return Err(invalid(format!("env {name} must not hold a NUL byte")));
             }
+            if let Env::From { from } = value
+                && !valid_from(from)
+            {
+                return Err(invalid(format!(
+                    "env {name}: its from variable is empty or holds = or NUL"
+                )));
+            }
             if let (Env::From { from }, Some(values)) = (value, values)
                 && values.get(from).is_none()
             {
@@ -959,6 +980,12 @@ pub fn check_reserved_labels(labels: &BTreeMap<String, String>) -> Result<(), St
 
 /// A POSIX environment name: `[A-Za-z_][A-Za-z0-9_]*`. Anything else
 /// would leak or fail unpredictably in a runtime CLI's `--env`.
+/// A host variable name: no environment holds one that is empty or holds
+/// `=` or NUL, and macOS `getenv` reads `A=B` as `A`.
+fn valid_from(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['=', '\0'])
+}
+
 fn valid_env_name(name: &str) -> bool {
     name.bytes()
         .next()

@@ -479,7 +479,10 @@ The box spec `up` reads from stdin:
   An env name must match
   `[A-Za-z_][A-Za-z0-9_]*`; any other name is refused as `spec`, naming it.
   A literal holding NUL is refused as `spec`, naming only the variable.
-  `{ "from": "NAME" }` reads the caller's value. Guest values reach the
+  `{ "from": "NAME" }` reads the caller's value. A `from` name, here, in
+  an injecting header or in a login route, that is empty or holds `=` or
+  NUL is never read and is refused as `spec`, naming only its key. Guest
+  values reach the
   guest after boot, over pinfold's own channel to init (Always applied);
   pinfold passes none to the runtime as environment, so they cannot
   configure the host runtime client. A `from` value never reaches argv,
@@ -2047,7 +2050,9 @@ the project box sets it, as it does the always-applied names, and
 
 A `from` value is read once per launch, from the environment of the
 client whose launch starts a new box; a joining or keeping client reads
-its current values only for the admission comparison. A missing variable
+its current values only for the admission comparison. A `from` name the
+box spec refuses (Process interface) refuses the start before any owner
+starts. A missing variable
 refuses the start before any owner starts, and so does a missing injecting
 or login route variable: the client prints `env "NAME" needs the host
 variable VAR, which is not set` or `route "NAME" needs the host variable

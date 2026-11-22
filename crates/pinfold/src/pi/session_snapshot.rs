@@ -263,7 +263,7 @@ impl Snapshot {
             .chain(env)
             .map(|(from, value)| {
                 let value = crate::init::decode_hex(value.ok_or_else(invalid)?.0.as_bytes())?;
-                if from.is_empty() || from.contains('\0') || value.contains(&0) {
+                if from.is_empty() || from.contains(['=', '\0']) || value.contains(&0) {
                     return Err(invalid());
                 }
                 Ok((from.clone(), OsString::from_vec(value)))
