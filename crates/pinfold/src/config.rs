@@ -90,7 +90,7 @@ impl ProjectMount {
 # CPUs and memory for the box:
 # cpus = {DEFAULT_CPUS}
 # memory = \"{DEFAULT_MEMORY}\"
-# Variables in the box: a value, or {{ from = \"VAR\" }} to pass the host's VAR:
+# Variables in the box: a value, {{ from = \"VAR\" }} for the host's VAR, or {{ op = \"op://VAULT/ITEM/FIELD\" }}:
 # env = {{ LANG = \"C.UTF-8\", API_KEY = {{ from = \"MY_API_KEY\" }} }}
 # A Containerfile beside this file builds the project's own image.
 
@@ -369,8 +369,8 @@ impl Config {
                 .into_iter()
                 .chain(env::vars_os().filter_map(|(name, _)| {
                     let name = name.to_str()?.strip_prefix("PINFOLD_ENV_")?.to_string();
-                    let from = format!("PINFOLD_ENV_{name}");
-                    Some((name, Env::From { from }))
+                    let from = Some(format!("PINFOLD_ENV_{name}"));
+                    Some((name, Env::Secret { from, op: None }))
                 }))
                 .collect(),
         })

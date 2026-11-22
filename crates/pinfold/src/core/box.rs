@@ -163,7 +163,20 @@ impl Box {
     /// before ready they remove what the start made and `up` returns
     /// [`UpError::Signal`]; after ready [`Box::hold`] watches them.
     pub async fn up(plan: &Plan, signals: &mut Signals) -> Result<Box, UpError> {
-        Self::up_disks(plan, &Values::read(plan), signals, false, None, None, None).await
+        let mut values = Values::read(plan);
+        if plan.reads_op() {
+            // `op` may wait on the user, so a spec refused without values
+            // never runs it.
+            plan.validate_structure()
+                .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
+            let reading = plan.clone();
+            values = startup_work(signals, &mut None, None, move || {
+                values.read_op(&reading);
+                Ok(values)
+            })
+            .await?;
+        }
+        Self::up_disks(plan, &values, signals, false, None, None, None).await
     }
 
     /// Export must never create a missing disk or inspect one another box holds.
@@ -243,14 +256,7 @@ impl Box {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         // The worker gets only the login routes' values.
-        let login_values = Values(
-            plan.logins()
-                .filter_map(|(_, login)| {
-                    let from = login.from.as_deref()?;
-                    Some((from.to_string(), values.get(from)?.to_os_string()))
-                })
-                .collect(),
-        );
+        let login_values = values.only(plan.logins().filter_map(|(_, login)| login.source()?.ok()));
         let login_plan = plan.clone();
         let mut resolving = tokio::task::spawn_blocking(move || {
             login_plan.resolve_login(&login_values, Some(&worker_cancel))

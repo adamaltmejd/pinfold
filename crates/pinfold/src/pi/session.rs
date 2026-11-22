@@ -27,7 +27,7 @@ use crate::core::runtime::{ExecContext, runtime, sockets};
 use crate::core::{artifacts, clean, ownership, runs};
 use crate::formatting::terminal_text;
 use crate::pi::context::Context;
-use crate::pi::session_snapshot::{Resolved, Roots, Snapshot};
+use crate::pi::session_snapshot::{OpValues, Resolved, Roots, Snapshot};
 use crate::pi::session_wire::{self as wire, Intent, Reply, Request};
 use crate::pi::{launch, rex, state};
 
@@ -778,6 +778,7 @@ async fn admit(
                 root: root.into(),
                 intent,
                 snapshot: resolved.snapshot,
+                op_values: OpValues::new(&resolved.values),
             },
         )
         .await;
@@ -863,12 +864,20 @@ async fn resolve_spec(
     let root = root.to_path_buf();
     let mut worker = tokio::task::spawn_blocking(move || {
         crate::core::process::with_cancellation(worker_cancel, || {
-            let resolved = Snapshot::resolve(&root, expected_mount, None)?;
+            let mut resolved = Snapshot::resolve(&root, expected_mount, None)?;
             let warnings = if startup {
-                launch::image_warnings(
+                let warnings = launch::image_warnings(
                     &resolved.config,
                     resolved.plan.image.as_deref().ok_or_else(unavailable)?,
-                )?
+                )?;
+                // Only a start reads `op`, after every other check, so a
+                // join or a refused start never waits on 1Password.
+                resolved.values.read_op(&resolved.plan);
+                resolved
+                    .plan
+                    .check_variables(&resolved.values)
+                    .map_err(io::Error::other)?;
+                warnings
             } else {
                 Vec::new()
             };
@@ -1531,7 +1540,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
     tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?.block_on(async move {
         let mut signals = Signals::with_hangup()?;
         let mut stream = UnixStream::from_std(socket)?;
-        let Request::Bootstrap { root, intent, snapshot } = wire::read_request(&mut stream, false).await? else { return Err(protocol()) };
+        let Request::Bootstrap { root, intent, snapshot, op_values } = wire::read_request(&mut stream, false).await? else { return Err(protocol()) };
         if state::canonical(&root)? != root { return Err(protocol()); }
         let own_executable = crate::update::working()?;
         let own_maintenance = ownership::project_lock(&state::project_id(&root))?;
@@ -1552,7 +1561,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let setup_flag = setup_cancel.clone();
         let setup_root = root.clone();
         let expected_mount = Some(snapshot.project_mount());
-        let values = snapshot.values().map_err(|_| protocol())?;
+        let values = snapshot.values(op_values).map_err(|_| protocol())?;
         let mut resolving = tokio::task::spawn_blocking(move || {
             crate::core::process::with_cancellation(setup_flag, || Snapshot::resolve(&setup_root, expected_mount, Some(values)))
         });
