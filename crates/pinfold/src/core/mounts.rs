@@ -124,7 +124,8 @@ pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -
     if !shares {
         return Ok(());
     }
-    let paths = protected_paths(profile, [])?;
+    // Resolved strictly: an unusable init refuses here, before maintenance.
+    let paths = protected_paths(profile, [dirs::resolve_host_path(&init)?])?;
     for mount in plan.mounts.iter_mut() {
         mount.guest = guest_path(&mount.guest);
         if mount.kind == MountKind::Share {

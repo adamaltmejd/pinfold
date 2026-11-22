@@ -45,23 +45,35 @@ fn a_projects_sessions_share_one_box() {
     // pass's stamp into the fresh state root.
     // The Git remote is refused `no-config` too, before automatic
     // maintenance: from a state root no command has used, nothing appears
-    // in it or the config root. Control: a working command from the same
-    // fresh root does write it. Held, since a pass prunes host-wide.
-    let added = project.git(&[
-        "remote",
-        "add",
-        "box",
-        &format!("pinfold::{}", project.root().display()),
-    ]);
-    assert_eq!(added.code, 0, "{added:?}");
+    // in it or the config root. Control: a configured disk project's fetch
+    // from that root passes admission and runs the pass, then fails for
+    // want of a project disk; a fetch that succeeds needs a disk, and any
+    // command that makes one spends the pass first. Held, since a pass
+    // prunes host-wide.
     let fresh = env.root().join("fresh-state");
     fs::create_dir(&fresh).unwrap();
+    let fetch_fresh = |project: &Project| {
+        let added = project.git(&[
+            "remote",
+            "add",
+            "box",
+            &format!("pinfold::{}", project.root().display()),
+        ]);
+        assert_eq!(added.code, 0, "{added:?}");
+        let mut fetch = project.git_command(&["fetch", "box"]);
+        fetch.env("XDG_STATE_HOME", &fresh);
+        run(&mut fetch, COMMAND)
+    };
+    let disk = Project::new(&env, "sessions-disk");
+    fs::write(
+        disk.config_dir().join("pinfold.toml"),
+        "mounts = [{ host = \".\", kind = \"disk\" }]\n",
+    )
+    .unwrap();
     {
         let _hold = hold_maintenance();
         let config = tree(env.config_home());
-        let mut fetch = project.git_command(&["fetch", "box"]);
-        fetch.env("XDG_STATE_HOME", &fresh);
-        let fetched = run(&mut fetch, COMMAND);
+        let fetched = fetch_fresh(&project);
         assert_eq!(fetched.code, 128, "{fetched:?}");
         assert!(
             tokens(&fetched.stderr).any(|token| token == "no-config"),
@@ -70,13 +82,14 @@ fn a_projects_sessions_share_one_box() {
         );
         assert_eq!(tree(&fresh), Vec::new(), "the refused fetch wrote state");
         assert_eq!(tree(env.config_home()), config);
-        let mut listed = env.command();
-        listed
-            .args(["disk", "list", "--json"])
-            .env("XDG_STATE_HOME", &fresh);
-        let listed = run(&mut listed, COMMAND);
-        assert_eq!(listed.code, 0, "{listed:?}");
-        assert_ne!(tree(&fresh), Vec::new(), "a working command wrote nothing");
+        let admitted = fetch_fresh(&disk);
+        assert_eq!(admitted.code, 128, "{admitted:?}");
+        assert!(
+            !tokens(&admitted.stderr).any(|token| token == "no-config"),
+            "{}",
+            admitted.stderr
+        );
+        assert_ne!(tree(&fresh), Vec::new(), "the admitted fetch ran no pass");
     }
 
     // Control: after `config edit` the same invocation runs, with its

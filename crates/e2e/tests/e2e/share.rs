@@ -14,8 +14,8 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
     // Sabotage (run): in `protected_paths`, drop the init's own directory
     // (keep `artifacts/init`). With `artifacts/init/<sha>` linked in, `--
     // true` is then refused `spec` after creating project state.
-    // The same project running, and `config edit` succeeding, with each
-    // symlink removed are the positive controls.
+    // `config edit` succeeding and the same project running, with each
+    // symlink removed, are the positive controls.
     default_image();
     // On macOS the init case moves the supplied init, so the cache root is
     // the test's own; it holds no image there.
@@ -35,17 +35,24 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
     // state or config roots or the moved directory; with the link replaced
     // by the directory, both succeed.
     // On macOS also the supplied init's own directory, below
-    // `artifacts/init`, which the first case's control installs.
+    // `artifacts/init`, which the first case's control installs, in a
+    // project with no configuration yet: refused, `config edit` saves none.
     let mut cases = vec!["config", "profile"];
     if cfg!(target_os = "macos") {
         cases.push("init");
     }
     let mut projects: Vec<Project> = Vec::new();
     for case in cases {
-        let project = Project::new(&env, &format!("protected-{case}"));
-        let file = project.config_dir().join("pinfold.toml");
-        let saved = fs::read_to_string(&file).unwrap();
-        fs::write(&file, format!("profile = \"e2e-base\"\n{saved}")).unwrap();
+        let name = format!("protected-{case}");
+        let project = if case == "init" {
+            Project::unconfigured(&env, &name)
+        } else {
+            let project = Project::new(&env, &name);
+            let file = project.config_dir().join("pinfold.toml");
+            let saved = fs::read_to_string(&file).unwrap();
+            fs::write(&file, format!("profile = \"e2e-base\"\n{saved}")).unwrap();
+            project
+        };
         let protected = match case {
             "config" => project.config_dir().to_path_buf(),
             "profile" => profile.clone(),
@@ -67,7 +74,8 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
         let inside = project.root().join("linked");
         fs::rename(protected, &inside).unwrap();
         symlink(&inside, protected).unwrap();
-        let commands = [&["--", "true"][..], &["config", "edit"]];
+        // `config edit` first: the control creates a configuration.
+        let commands = [&["config", "edit"][..], &["--", "true"]];
         for args in commands {
             // The config root's tree holds the link, not what it names.
             let trees = || {
