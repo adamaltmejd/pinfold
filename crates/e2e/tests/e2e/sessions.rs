@@ -118,8 +118,9 @@ fn a_projects_sessions_share_one_box() {
     );
 
     // The startup configuration: one allowed host, a `from` variable and
-    // an `op` reference. Only a start asks the stand-in `op` first on its
-    // PATH; joins have one that refuses every read.
+    // an `op` reference. The two first launches have a stand-in `op`
+    // first on PATH that gives the value; every later client has one
+    // that refuses every read.
     let file = project.config_dir().join("pinfold.toml");
     let saved = fs::read_to_string(&file).unwrap();
     let configure = |allow: &str, reference: &str| {

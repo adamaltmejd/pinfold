@@ -226,11 +226,13 @@ fn scan(path: &Path, needles: &[Needle], found: &mut BTreeSet<(PathBuf, String)>
     }
 }
 
-/// A box disk: Linux's `*.ext4` root, init and mount images, Apple's
-/// `rootfs.ext4` and a volume's `volume.img`.
-fn is_box_disk(path: &Path) -> bool {
+/// A box disk: an `*.ext4` or `*.img` file under one of the box's own
+/// disk roots (Linux's box state and disks, Apple's container directory
+/// and the box's volumes).
+fn is_box_disk(path: &Path, roots: &[PathBuf]) -> bool {
     path.extension()
         .is_some_and(|extension| extension == "ext4" || extension == "img")
+        && roots.iter().any(|root| path.starts_with(root))
 }
 
 /// Apple's volumes, by name, with their image file.
@@ -358,11 +360,28 @@ fn credentials_stay_on_the_host() {
     // Sabotage (run): in `op_read`, put what op printed into the error.
     // The decoy is then on stderr.
     // A login route whose reference the stand-in refuses refuses the
-    // start before any owner, naming the reference, with none of op's
-    // output. Control: the session below, which differs only in it.
+    // start before any box, naming the reference, with none of op's
+    // output. Control: the session below, whose configuration differs
+    // only in that route's reference.
     configure(missing_reference);
     let refused = run(&mut launch(&["--", "true"]), COMMAND);
     assert_eq!(refused.code, 125, "{refused:?}");
+    assert_eq!(refused.stdout, "", "the refused launch's stdout");
+    let project_label = format!(
+        "dev.pinfold.project={}",
+        project.config_dir().file_name().unwrap().to_str().unwrap()
+    );
+    let listed = run(
+        env.command()
+            .args(["box", "list", "--label", &project_label]),
+        COMMAND,
+    );
+    assert_eq!(listed.code, 0, "box list: {listed:?}");
+    assert!(
+        json_lines(&listed.stdout).is_empty(),
+        "boxes after the refusal: {}",
+        listed.stdout
+    );
     assert!(
         refused.stderr.contains(missing_reference),
         "{}",
@@ -622,11 +641,17 @@ fn credentials_stay_on_the_host() {
 
     // Nor in any file under the state, config or cache roots, the egress
     // log included, or on Apple in `inspect`, the container's directory or
-    // the box's volumes. A box disk may hold the `from` and `PINFOLD_ENV_`
-    // values, which the box has; it is searched for route credentials. The
-    // configuration's literal is found, in its file only.
+    // the box's volumes. One of the box's own disks may hold the `from`,
+    // `op` and `PINFOLD_ENV_` values, which the box has; it is searched
+    // for route credentials. The configuration's literal is found, in its
+    // file only.
     #[cfg(not(target_os = "macos"))]
     let apple: Vec<PathBuf> = Vec::new();
+    #[cfg(not(target_os = "macos"))]
+    let disks = vec![
+        env.state_home().join("pinfold/boxes"),
+        env.state_home().join("pinfold/disks"),
+    ];
     #[cfg(target_os = "macos")]
     let apple = {
         let id = project
@@ -674,6 +699,8 @@ fn credentials_stay_on_the_host() {
         roots.extend(own.into_iter().map(|(_, source)| source));
         roots
     };
+    #[cfg(target_os = "macos")]
+    let disks = apple.clone();
     let roots = [
         env.state_home().to_path_buf(),
         env.config_home().to_path_buf(),
@@ -701,7 +728,7 @@ fn credentials_stay_on_the_host() {
         sweep(&root, &needles, &mut found);
     }
     found.retain(|(path, label)| {
-        !(is_box_disk(path)
+        !(is_box_disk(path, &disks)
             && (label.starts_with("from")
                 || label.starts_with("PINFOLD_ENV_")
                 || label.starts_with("op")))
