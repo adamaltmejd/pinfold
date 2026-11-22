@@ -75,7 +75,7 @@ impl Claimed {
             .chain(self.marked.iter().map(String::as_str))
             .collect();
         crate::core::process::with_deadline(std::time::Duration::from_secs(300), |cancel| {
-            match startup_locks(&names, Some(cancel)) {
+            match startup_locks(&names, cancel) {
                 Ok(_locks) => self.undo_locked(runtime, name),
                 Err(error) => crate::core::process::diagnostic(format_args!(
                     "startup cleanup: disk locks: {error}"
@@ -127,34 +127,21 @@ impl Claimed {
     }
 }
 
-/// Each named disk's lock, taken in sorted order so two `up`s never wait
-/// on each other's locks in a cycle.
-fn locks(names: &BTreeSet<&str>) -> io::Result<Vec<Flock<File>>> {
-    names
-        .iter()
-        .map(|disk| ownership::disk_lock(disk))
-        .collect()
-}
-
-fn check_cancel(cancel: Option<&AtomicBool>) -> io::Result<()> {
-    if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
+    if cancel.load(Ordering::Acquire) {
         Err(io::ErrorKind::Interrupted.into())
     } else {
         Ok(())
     }
 }
 
-fn startup_locks(
-    names: &BTreeSet<&str>,
-    cancel: Option<&AtomicBool>,
-) -> io::Result<Vec<Flock<File>>> {
-    let Some(cancel) = cancel else {
-        return locks(names);
-    };
+/// Each named disk's lock, taken in sorted order so two `up`s never wait
+/// on each other's locks in a cycle.
+fn startup_locks(names: &BTreeSet<&str>, cancel: &AtomicBool) -> io::Result<Vec<Flock<File>>> {
     let mut held = Vec::new();
     for name in names {
         loop {
-            check_cancel(Some(cancel))?;
+            check_cancel(cancel)?;
             if let Some(lock) = ownership::try_disk_lock(name)? {
                 held.push(lock);
                 break;
@@ -177,7 +164,7 @@ pub fn claim(
     init: &Path,
     existing_only: bool,
     directories: &[Directory],
-    cancel: Option<&AtomicBool>,
+    cancel: &AtomicBool,
 ) -> Result<Claimed, Result<(RefusalReason, String), io::Error>> {
     let (name, disks) = (plan.name.as_str(), plan.disks.as_slice());
     if disks.is_empty() {
@@ -200,7 +187,7 @@ pub fn claim(
             ))
         })?
     } else {
-        attachments(runtime, Some(name)).map_err(Err)?
+        attachments(Some(name)).map_err(Err)?
     };
     let mut claimed = Claimed::default();
     for disk in disks {
@@ -364,10 +351,7 @@ pub fn detached(disks: &[Disk]) -> io::Result<()> {
 /// Readable claims pin their named disks in this state root until retirement.
 /// Unreadable claims are reported. Existing attachment and deletion need all records.
 /// `except` is the caller's own box.
-pub fn attachments(
-    _runtime: &dyn Runtime,
-    except: Option<&str>,
-) -> io::Result<BTreeMap<String, Vec<(String, bool)>>> {
+pub fn attachments(except: Option<&str>) -> io::Result<BTreeMap<String, Vec<(String, bool)>>> {
     let mut records = Vec::new();
     for result in ownership::record_results()? {
         match result {
@@ -475,7 +459,7 @@ pub fn filled(runtime: &dyn Runtime, created: &[Disk]) -> io::Result<()> {
 
 /// `from`'s tree without following symlinks, parents first, and the sum of
 /// its regular files' sizes. Other file types are skipped.
-fn walk(from: &Path, cancel: Option<&AtomicBool>) -> io::Result<(Vec<Entry>, u64)> {
+fn walk(from: &Path, cancel: &AtomicBool) -> io::Result<(Vec<Entry>, u64)> {
     let mut entries = Vec::new();
     let mut bytes = 0u64;
     let mut pending = vec![PathBuf::new()];

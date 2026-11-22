@@ -566,11 +566,8 @@ impl Write for PreparationInput<'_> {
 
 fn wait_preparation(
     child: &mut std::process::Child,
-    cancel: Option<&AtomicBool>,
+    cancel: &AtomicBool,
 ) -> io::Result<ExitStatus> {
-    let Some(cancel) = cancel else {
-        return child.wait();
-    };
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(status);
@@ -767,9 +764,9 @@ impl Runtime for Apple {
         generation: &str,
         directories: &[Directory],
         fills: &[Fill],
-        cancel: Option<&AtomicBool>,
+        cancel: &AtomicBool,
     ) -> io::Result<()> {
-        if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+        if cancel.load(Ordering::Acquire) {
             return Err(io::ErrorKind::Interrupted.into());
         }
         if names.is_empty() && directories.is_empty() {
@@ -865,17 +862,11 @@ impl Runtime for Apple {
                     child.stderr.take().expect("setup stderr is piped").into(),
                 )?;
                 let sent = (|| {
-                    let mut input = child.stdin.take().expect("setup stdin is piped");
-                    if let Some(cancel) = cancel {
-                        crate::core::pipe::nonblocking(&input, "disk preparation")?;
-                        let mut input = PreparationInput { input, cancel };
-                        for fill in fills {
-                            disk::send(fill, &mut input)?;
-                        }
-                    } else {
-                        for fill in fills {
-                            disk::send(fill, &mut input)?;
-                        }
+                    let input = child.stdin.take().expect("setup stdin is piped");
+                    crate::core::pipe::nonblocking(&input, "disk preparation")?;
+                    let mut input = PreparationInput { input, cancel };
+                    for fill in fills {
+                        disk::send(fill, &mut input)?;
                     }
                     Ok::<_, io::Error>(())
                 })();

@@ -698,7 +698,7 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
     let runtime = runtime();
     match args {
         [verb] if verb == "list" => {
-            let attached = disk::attachments(runtime, None)?;
+            let attached = disk::attachments(None)?;
             let origins = if json {
                 BTreeMap::new()
             } else {

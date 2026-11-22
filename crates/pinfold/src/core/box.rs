@@ -404,7 +404,7 @@ impl Box {
                     &disk_init,
                     existing_only,
                     &disk_directories,
-                    Some(&worker_cancel),
+                    &worker_cancel,
                 )
             });
             (claim, result)

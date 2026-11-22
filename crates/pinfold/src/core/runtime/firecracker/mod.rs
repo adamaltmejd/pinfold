@@ -265,7 +265,7 @@ impl Runtime for Firecracker {
         _generation: &str,
         _directories: &[Directory],
         _fills: &[Fill],
-        _cancel: Option<&std::sync::atomic::AtomicBool>,
+        _cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<()> {
         Ok(())
     }

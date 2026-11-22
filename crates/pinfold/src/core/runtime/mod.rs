@@ -277,7 +277,7 @@ pub trait Runtime: Sync {
         generation: &str,
         directories: &[Directory],
         fills: &[Fill],
-        cancel: Option<&AtomicBool>,
+        cancel: &AtomicBool,
     ) -> io::Result<()>;
 
     /// Remove a disk no box attaches.
