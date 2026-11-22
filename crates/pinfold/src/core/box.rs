@@ -242,7 +242,16 @@ impl Box {
         // nothing. codex's token goes to the proxy.
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = cancel.clone();
-        let (login_plan, login_values) = (plan.clone(), values.clone());
+        // The worker gets only the login routes' values.
+        let login_values = Values(
+            plan.logins()
+                .filter_map(|(_, login)| {
+                    let from = login.from.as_deref()?;
+                    Some((from.to_string(), values.get(from)?.to_os_string()))
+                })
+                .collect(),
+        );
+        let login_plan = plan.clone();
         let mut resolving = tokio::task::spawn_blocking(move || {
             login_plan.resolve_login(&login_values, Some(&worker_cancel))
         });
