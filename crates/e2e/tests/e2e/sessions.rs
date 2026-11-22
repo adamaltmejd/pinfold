@@ -217,9 +217,9 @@ fn a_projects_sessions_share_one_box() {
         other.stderr
     );
 
-    // Sabotage (run): in pi/session_snapshot.rs's `resolve`, record an
-    // `op` env entry as `EnvSource::Exact {}`. The client naming another
-    // reference then joins and exits 0, not 125.
+    // Sabotage (run): in pi/session_snapshot.rs's `differences`, compare
+    // `env.names` with each `op` source's reference blanked. The client
+    // naming another reference then joins and exits 0, not 125.
     // An `op` source compares by its reference.
     configure("api.github.com", "op://e2e/sessions/two");
     let changed = run(&mut session("one", &both, &refusing), COMMAND);
