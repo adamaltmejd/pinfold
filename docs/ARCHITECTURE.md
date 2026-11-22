@@ -507,7 +507,7 @@ The box spec `up` reads from stdin:
   `op` together, or neither, are refused as `spec`, naming only the key;
   so is a malformed reference. Only the process that starts the box
   reads a reference, and only after every check that needs no value:
-  `box up` after the spec, `from` presence, profile, mount preparation,
+  `box up` after the spec (an env or header `from` included), profile, mount preparation,
   runtime, image and home-seed checks, just before it resolves login
   routes and claims the name; a starting project client after every
   launch check, just before it spawns the owner. It runs the first `op`

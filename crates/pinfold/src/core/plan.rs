@@ -194,6 +194,9 @@ impl Inject {
         let mut headers = Vec::with_capacity(self.headers.len());
         for (name, header) in &self.headers {
             let source = header.source().map_err(invalid)?;
+            if values.pending(&source) {
+                continue;
+            }
             let value = match values.get(&source).map(OsStr::to_str) {
                 Some(Some(value)) => value,
                 None => return Err(unset("route", route, values, &source)),
@@ -448,6 +451,9 @@ pub struct Values {
     /// Each reference whose read failed, with the cause, which names no
     /// value and none of op's output.
     failed: BTreeMap<String, String>,
+    /// Whether the `op` references were read. Until then validation checks
+    /// `from` sources alone, as without `op`.
+    op_read: bool,
 }
 
 impl Values {
@@ -456,6 +462,7 @@ impl Values {
         Values {
             values,
             failed: BTreeMap::new(),
+            op_read: true,
         }
     }
 
@@ -514,6 +521,7 @@ impl Values {
                 _ => None,
             })
             .collect();
+        self.op_read = true;
         for reference in references {
             match login::op_read(&reference) {
                 Ok(value) => {
@@ -524,6 +532,11 @@ impl Values {
                 }
             }
         }
+    }
+
+    /// Whether `source` is an `op` reference not read yet.
+    fn pending(&self, source: &Source) -> bool {
+        matches!(source, Source::Op(_)) && !self.op_read
     }
 
     pub fn get(&self, source: &Source) -> Option<&OsStr> {
@@ -912,6 +925,7 @@ impl Plan {
             let source = source.map_err(|error| invalid(format!("env {name}: {error}")))?;
             if let Some(values) = values
                 && values.get(&source).is_none()
+                && !values.pending(&source)
             {
                 return Err(unset("env", name, values, &source));
             }

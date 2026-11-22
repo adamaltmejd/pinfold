@@ -210,15 +210,11 @@ impl Box {
         // The spec rules are the first refusal, before anything is created
         // or resolved. Only `box up` reads `op` itself: the project client
         // sends its values. `op` may wait on the user, so it runs once every
-        // check before the claim that needs no value has passed.
+        // check before the claim that needs no value has passed; until
+        // then validation checks `from` sources alone.
+        plan.validate(values)
+            .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
         let reads_op = expected_image.is_none() && plan.reads_op();
-        if reads_op {
-            plan.validate_structure()
-                .and_then(|()| plan.check_variables(values))
-        } else {
-            plan.validate(values)
-        }
-        .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
         let (requested, mut values) = (plan, values.clone());
         let init_path = crate::core::artifacts::init_path()?;
         let init = init_path.as_path();
