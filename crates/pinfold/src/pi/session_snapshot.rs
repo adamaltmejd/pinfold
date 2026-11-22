@@ -242,26 +242,29 @@ impl Snapshot {
         fixed.chain(sources).collect()
     }
 
-    /// The `from` values this snapshot carries, decoded: the table the owner
-    /// starts the box with. A name or value no environment could hold fails.
+    /// The `from` values a starting client's snapshot carries, decoded: the
+    /// table the owner starts the box with. That client refused any unset
+    /// variable, so a missing value, an empty or NUL name, or a NUL value
+    /// fails.
     pub(crate) fn values(&self) -> io::Result<Values> {
         let env = self
             .env_names
             .iter()
             .filter_map(|(name, source)| match source {
                 EnvSource::From { name: from } => {
-                    Some((from, self.env_values.get(name)?.as_ref()?))
+                    Some((from, self.env_values.get(name).and_then(Option::as_ref)))
                 }
                 EnvSource::Exact {} => None,
             });
+        let invalid = || io::Error::other("invalid encoded environment");
         self.route_values
             .iter()
-            .filter_map(|(from, value)| Some((from, value.as_ref()?)))
+            .map(|(from, value)| (from, value.as_ref()))
             .chain(env)
             .map(|(from, value)| {
-                let value = crate::init::decode_hex(value.0.as_bytes())?;
-                if from.is_empty() || from.contains(['=', '\0']) || value.contains(&0) {
-                    return Err(io::Error::other("invalid encoded environment"));
+                let value = crate::init::decode_hex(value.ok_or_else(invalid)?.0.as_bytes())?;
+                if from.is_empty() || from.contains('\0') || value.contains(&0) {
+                    return Err(invalid());
                 }
                 Ok((from.clone(), OsString::from_vec(value)))
             })
