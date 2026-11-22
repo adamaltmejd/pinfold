@@ -231,6 +231,10 @@ const MAX_OP_VALUE: usize = 64 * 1024;
 /// on this thread's cancellation, the group is killed and `op` reaped. An
 /// error is the cause alone: never the value or any of op's output.
 pub fn op_read(reference: &str) -> Result<String, String> {
+    // A cancelled launch starts no further `op`.
+    if crate::core::process::is_cancelled() {
+        return Err("op read was cancelled".to_string());
+    }
     let deadline = Instant::now() + OP_TIMEOUT;
     let mut child = GroupChild::spawn(
         Command::new("op")
