@@ -1,15 +1,14 @@
 //! Guarantee 8: if the owner dies the box loses its way out, and the
 //! leftover can be removed.
 
-use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
+#[cfg(target_os = "macos")]
+use std::process::Command;
+use std::time::Duration;
 
+#[cfg(target_os = "macos")]
+use e2e::Exec;
 use e2e::{
-    Exec, Leftover, TestEnv, box_name, default_image, exit_code, hold_maintenance, json_lines, run,
-    spawn, wait_until,
+    Client, Leftover, Project, TestEnv, box_name, default_image, hold_maintenance, json_lines, run,
 };
 use serde_json::{Value, json};
 
@@ -20,7 +19,8 @@ fn losing_the_owner_fails_closed() {
     // Sabotage (run): skip `clean::prune_boxes` in cli.rs's `prune`, or
     // drop `prune` from main.rs's list of commands that skip the daily
     // pass (#377). The prune then prints no `pruned` line for the
-    // leftover. The same request before the kill is the positive control.
+    // leftover. The other root seeing the owner alive before the kill, and
+    // on Apple the same request before it, are the positive controls.
     let image = default_image();
     let env = TestEnv::new("owner");
     // A second state root, created before the hold below.
@@ -33,19 +33,17 @@ fn losing_the_owner_fails_closed() {
     });
     let up = env.up(&spec);
 
-    // A marker, then a CONNECT to an allowlisted host: curl prints the
-    // proxy's CONNECT status and exits with its own code.
-    let marker = format!("pf-marker-{}", std::process::id());
-    let script = format!(
-        "echo {marker}; curl -sS --max-time 20 -o /dev/null -w '%{{http_connect}}' https://api.github.com/"
-    );
-    let request = || -> Exec { env.exec(&name, &["sh", "-c", &script]) };
-    let control = request();
-    assert_eq!(
-        (control.code, control.stdout.as_str()),
-        (0, format!("{marker}\n200").as_str()),
-        "before the kill: {control:?}"
-    );
+    // Control, on Apple: the request the orphan makes after the kill
+    // succeeds before it.
+    #[cfg(target_os = "macos")]
+    {
+        let control = request(&env, &name);
+        assert_eq!(
+            (control.code, control.stdout.as_str()),
+            (0, format!("{}\n200", marker()).as_str()),
+            "before the kill: {control:?}"
+        );
+    }
 
     // Control: before the kill the other root sees the owner alive.
     let run_id = up.ready()["run_id"].as_str().expect("run_id").to_string();
@@ -68,10 +66,10 @@ fn losing_the_owner_fails_closed() {
     // not a pass. On Linux the VM ended with its owner (`kill_owner`).
     #[cfg(target_os = "macos")]
     {
-        let orphan = request();
+        let orphan = request(&env, &name);
         assert_eq!(
             orphan.stdout,
-            format!("{marker}\n000"),
+            format!("{}\n000", marker()),
             "after the kill: {orphan:?}"
         );
         assert!(
@@ -121,12 +119,25 @@ fn losing_the_owner_fails_closed() {
     drop(leftover);
 
     // The name is reusable.
-    let again = env.up(&spec);
-    let again_id = again.ready()["run_id"].as_str().expect("run_id");
-    assert_ne!(again_id, run_id);
-    drop(again);
+    drop(env.up(&spec));
 
     project_client_exits_125(&env);
+}
+
+#[cfg(target_os = "macos")]
+fn marker() -> String {
+    format!("pf-marker-{}", std::process::id())
+}
+
+/// In box `name`, a marker, then a CONNECT to an allowlisted host: curl
+/// prints the proxy's CONNECT status and exits with its own code.
+#[cfg(target_os = "macos")]
+fn request(env: &TestEnv, name: &str) -> Exec {
+    let script = format!(
+        "echo {}; curl -sS --max-time 20 -o /dev/null -w '%{{http_connect}}' https://api.github.com/",
+        marker()
+    );
+    env.exec(name, &["sh", "-c", &script])
 }
 
 /// Whether Apple's runtime lists a container with id `name`.
@@ -148,46 +159,15 @@ fn apple_lists(name: &str) -> bool {
 /// SIGKILL of a detached project owner while a session runs: the client
 /// exits 125.
 fn project_client_exits_125(env: &TestEnv) {
-    let project = env.root().join("project");
-    std::fs::create_dir(&project).unwrap();
-    // Linux takes only Git projects; a Mac share takes one as well.
-    let git = run(
-        Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&project),
-        COMMAND,
-    );
-    assert_eq!(git.code, 0, "git init: {git:?}");
-    let in_project = |args: &[&str]| {
-        let mut command = env.command();
-        command
-            .current_dir(&project)
-            .env("VISUAL", "true")
-            .args(args);
-        command
-    };
-    let edit = run(&mut in_project(&["config", "edit"]), COMMAND);
-    assert_eq!(edit.code, 0, "config edit: {edit:?}");
-    let config = run(&mut in_project(&["config", "--json"]), COMMAND);
+    let project = Project::new(env, "project");
+    let config = project.pinfold(&["config", "--json"]);
     assert_eq!(config.code, 0, "config --json: {config:?}");
     let config: Value = serde_json::from_str(&config.stdout).expect("config JSON");
     let id = config["project"]["id"].as_str().expect("project id");
 
-    let mut client = Client(spawn(
-        in_project(&["--", "sh", "-c", "echo started; exec sleep 600"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit()),
-    ));
-    let stdout = client.0.stdout.take().unwrap();
-    let (send, lines) = mpsc::channel();
-    thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let _ = send.send(line);
-        }
-    });
-    let started = lines.recv_timeout(COMMAND);
-    assert_eq!(started.as_deref(), Ok("started"), "the session");
+    let client =
+        Client::spawn(project.command(&["--", "sh", "-c", "echo started; exec sleep 600"]));
+    assert_eq!(client.line(), "started", "the session");
 
     // The one box labeled with this project's id; its owner is detached.
     let label = format!("dev.pinfold.project={id}");
@@ -198,30 +178,10 @@ fn project_client_exits_125(env: &TestEnv) {
     let listed = json_lines(&listed.stdout);
     assert_eq!(listed.len(), 1, "boxes of project {id}: {listed:?}");
     let leftover = Leftover::listed(env, &listed[0]);
-    #[cfg(target_os = "linux")]
-    let below = e2e::Below::of(leftover.owner());
     let kill = leftover.kill();
     assert_eq!(kill.code, 0, "kill the project owner: {kill:?}");
 
-    let status = wait_until(&mut client.0, Instant::now() + COMMAND)
-        .expect("the client exits after its owner's SIGKILL");
-    assert_eq!(
-        exit_code(status),
-        125,
-        "the client after its owner's SIGKILL"
-    );
-    #[cfg(target_os = "linux")]
-    below.wait_gone();
+    // `finish` closes stdin, which `sleep` never reads.
+    assert_eq!(client.finish(), 125, "the client after its owner's SIGKILL");
     drop(leftover);
-}
-
-/// A project client, killed on drop: its departure ends its session, and
-/// with no other session the owner tears the box down.
-struct Client(std::process::Child);
-
-impl Drop for Client {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
 }
