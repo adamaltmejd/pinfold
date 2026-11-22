@@ -516,7 +516,10 @@ impl Values {
 
     /// The entries of `sources` alone, failed reads included.
     pub(crate) fn only(&self, sources: impl Iterator<Item = Source>) -> Values {
-        let mut only = Values::default();
+        let mut only = Values {
+            op_read: self.op_read,
+            ..Values::default()
+        };
         for source in sources {
             if let Source::Op(reference) = &source
                 && let Some(cause) = self.failed.get(reference)
