@@ -1,7 +1,7 @@
 //! Guarantee 26: credentials stay on the host. A route's credential is
-//! added at the proxy and never enters the box; a `from` or `PINFOLD_ENV_`
-//! value reaches the box's environment and no host argv, runtime record or
-//! file pinfold writes.
+//! added at the proxy and never enters the box; a `from`, `op` or
+//! `PINFOLD_ENV_` value reaches the box's environment and no host argv,
+//! runtime record or file pinfold writes.
 
 use std::collections::BTreeSet;
 use std::collections::hash_map::RandomState;
@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use e2e::{
-    COMMAND, Client, Fixture, Project, READER, Request, TestEnv, default_image, json_lines, run,
+    COMMAND, Client, Fixture, Project, READER, Request, TestEnv, default_image, first_on_path,
+    json_lines, op_calls, run, stand_in_op,
 };
 
 /// A throwaway random word.
@@ -225,11 +226,13 @@ fn scan(path: &Path, needles: &[Needle], found: &mut BTreeSet<(PathBuf, String)>
     }
 }
 
-/// A box disk: Linux's `*.ext4` root, init and mount images, Apple's
-/// `rootfs.ext4` and a volume's `volume.img`.
-fn is_box_disk(path: &Path) -> bool {
+/// A box disk: an `*.ext4` or `*.img` file under one of the box's own
+/// disk roots (Linux's box state and disks, Apple's container directory
+/// and the box's volumes).
+fn is_box_disk(path: &Path, roots: &[PathBuf]) -> bool {
     path.extension()
         .is_some_and(|extension| extension == "ext4" || extension == "img")
+        && roots.iter().any(|root| path.starts_with(root))
 }
 
 /// Apple's volumes, by name, with their image file.
@@ -292,56 +295,130 @@ fn credentials_stay_on_the_host() {
     let pi_login = format!("pfsecretroutepi{}", random());
     let from = format!("pfsecretfrom{}", random());
     let penv = format!("pfsecretpenv{}", random());
+    let op_env = format!("pfsecretop{}", random());
     let secrets = [
         (injected.as_str(), "injected"),
         (claude_login.as_str(), "claude login"),
         (pi_login.as_str(), "pi login"),
         (from.as_str(), "from"),
         (penv.as_str(), "PINFOLD_ENV_"),
+        (op_env.as_str(), "op"),
     ];
     let routes = &secrets[..3];
+    // The Claude login route and a second injected header read one
+    // 1Password reference, an env entry another, from a stand-in `op`
+    // first on PATH. It refuses any other reference, printing a decoy.
+    let (claude_reference, env_reference) = ("op://e2e/claude/token", "op://e2e/env/value");
+    let missing_reference = "op://e2e/claude/missing";
+    let decoy = format!("pfdecoy{}", random());
+    let op = stand_in_op(
+        &env,
+        "op",
+        &[
+            (claude_reference, claude_login.as_str()),
+            (env_reference, op_env.as_str()),
+        ],
+        &decoy,
+    );
     // A literal is configuration: it is the file sweep's canary.
     let literal = format!("pfsecretliteral{}", random());
     let file = project.config_dir().join("pinfold.toml");
     let saved = fs::read_to_string(&file).unwrap();
-    fs::write(
-        &file,
-        format!(
-            "{saved}allow = []\n\
-             [env]\n\
-             E2E_FROM = {{ from = \"E2E_FROM_SOURCE\" }}\n\
-             E2E_LITERAL = \"{literal}\"\n\
-             [routes]\n\
-             \"inject.internal\" = {{ to = \"http://{}\", headers = {{ \"X-E2E-Key\" = {{ from = \"E2E_INJECTED\", prefix = \"Key \" }} }} }}\n\
-             \"claude.login\" = {{ login = \"claude\", from = \"E2E_CLAUDE_LOGIN\", to = \"http://{}\" }}\n\
-             \"openrouter.login\" = {{ login = \"pi\", provider = \"openrouter\", from = \"E2E_PI_LOGIN\", to = \"http://{}\" }}\n",
-            inject.route(),
-            claude.route(),
-            pi.route(),
-        ),
-    )
-    .unwrap();
+    let configure = |claude_op: &str| {
+        fs::write(
+            &file,
+            format!(
+                "{saved}allow = []\n\
+                 [env]\n\
+                 E2E_FROM = {{ from = \"E2E_FROM_SOURCE\" }}\n\
+                 E2E_OP = {{ op = \"{env_reference}\" }}\n\
+                 E2E_LITERAL = \"{literal}\"\n\
+                 [routes]\n\
+                 \"inject.internal\" = {{ to = \"http://{}\", headers = {{ \"X-E2E-Key\" = {{ from = \"E2E_INJECTED\", prefix = \"Key \" }}, \"X-E2E-Op\" = {{ op = \"{claude_reference}\" }} }} }}\n\
+                 \"claude.login\" = {{ login = \"claude\", op = \"{claude_op}\", to = \"http://{}\" }}\n\
+                 \"openrouter.login\" = {{ login = \"pi\", provider = \"openrouter\", from = \"E2E_PI_LOGIN\", to = \"http://{}\" }}\n",
+                inject.route(),
+                claude.route(),
+                pi.route(),
+            ),
+        )
+        .unwrap();
+    };
+    let launch = |args: &[&str]| {
+        let mut command = project.command(args);
+        command
+            .env("E2E_FROM_SOURCE", &from)
+            .env("E2E_INJECTED", &injected)
+            .env("E2E_PI_LOGIN", &pi_login)
+            .env("PINFOLD_ENV_E2E_PENV", &penv);
+        first_on_path(&mut command, &op);
+        command
+    };
+
+    // Sabotage (run): in core/login.rs's `op_read`, ignore op's exit
+    // status. The decoy is then the Claude token and `true` exits 0.
+    // Sabotage (run): in `op_read`, put what op printed into the error.
+    // The decoy is then on stderr.
+    // A login route whose reference the stand-in refuses refuses the
+    // start before any box, naming the reference, with none of op's
+    // output. Control: the session below, whose configuration differs
+    // only in that route's reference.
+    configure(missing_reference);
+    let refused = run(&mut launch(&["--", "true"]), COMMAND);
+    assert_eq!(refused.code, 125, "{refused:?}");
+    assert_eq!(refused.stdout, "", "the refused launch's stdout");
+    let project_label = format!(
+        "dev.pinfold.project={}",
+        project.config_dir().file_name().unwrap().to_str().unwrap()
+    );
+    let listed = run(
+        env.command()
+            .args(["box", "list", "--label", &project_label]),
+        COMMAND,
+    );
+    assert_eq!(listed.code, 0, "box list: {listed:?}");
+    assert!(
+        json_lines(&listed.stdout).is_empty(),
+        "boxes after the refusal: {}",
+        listed.stdout
+    );
+    assert!(
+        refused.stderr.contains(missing_reference),
+        "{}",
+        refused.stderr
+    );
+    assert_eq!(
+        exposed(&refused.stderr, &[(&decoy, "decoy")]),
+        Vec::<String>::new(),
+        "the refusal"
+    );
+    assert!(op_calls(&op).iter().any(|call| call == missing_reference));
+    fs::remove_file(op.join("calls")).unwrap();
+    configure(claude_reference);
 
     // One session holds the box. Its argv carries the process sweep's
     // canary.
     #[cfg(target_os = "macos")]
     let volumes_before = volumes();
     let canary = format!("pfargv{}", random());
-    let mut command = project.command(&["--", "sh", "-c", READER, &canary]);
-    command
-        .env("E2E_FROM_SOURCE", &from)
-        .env("E2E_INJECTED", &injected)
-        .env("E2E_CLAUDE_LOGIN", &claude_login)
-        .env("E2E_PI_LOGIN", &pi_login)
-        .env("PINFOLD_ENV_E2E_PENV", &penv);
-    let mut session = Client::spawn(command);
+    let mut session = Client::spawn(launch(&["--", "sh", "-c", READER, &canary]));
     assert_eq!(session.line(), "started");
+    // Sabotage (run): in core/plan.rs's `Values::read_op`, read each
+    // source rather than each distinct reference. The Claude reference is
+    // then asked twice.
+    let mut calls = op_calls(&op);
+    calls.sort();
+    assert_eq!(calls, [claude_reference, env_reference], "op calls");
     let mut ask = |line: &str| session.ask(line);
 
-    // Control: the `from` and `PINFOLD_ENV_` values arrive in the box's
-    // environment, which holds no route credential.
+    // Control: the `from`, `op` and `PINFOLD_ENV_` values arrive in the
+    // box's environment, which holds no route credential.
     let environment = ask("env").join("\n");
-    for (name, value) in [("E2E_FROM", &from), ("E2E_PENV", &penv)] {
+    for (name, value) in [
+        ("E2E_FROM", &from),
+        ("E2E_PENV", &penv),
+        ("E2E_OP", &op_env),
+    ] {
         assert!(
             environment
                 .lines()
@@ -370,6 +447,10 @@ fn credentials_stay_on_the_host() {
     assert!(
         requests[0].header("x-e2e-key") == [format!("Key {injected}")],
         "x-e2e-key is not the host's value alone"
+    );
+    assert!(
+        requests[0].header("x-e2e-op") == [claude_login.as_str()],
+        "x-e2e-op is not the 1Password value"
     );
 
     // Through the Pi login route the guest's mixed-case duplicates of
@@ -560,11 +641,17 @@ fn credentials_stay_on_the_host() {
 
     // Nor in any file under the state, config or cache roots, the egress
     // log included, or on Apple in `inspect`, the container's directory or
-    // the box's volumes. A box disk may hold the `from` and `PINFOLD_ENV_`
-    // values, which the box has; it is searched for route credentials. The
-    // configuration's literal is found, in its file only.
+    // the box's volumes. One of the box's own disks may hold the `from`,
+    // `op` and `PINFOLD_ENV_` values, which the box has; it is searched
+    // for route credentials. The configuration's literal is found, in its
+    // file only.
     #[cfg(not(target_os = "macos"))]
     let apple: Vec<PathBuf> = Vec::new();
+    #[cfg(not(target_os = "macos"))]
+    let disks = vec![
+        env.state_home().join("pinfold/boxes"),
+        env.state_home().join("pinfold/disks"),
+    ];
     #[cfg(target_os = "macos")]
     let apple = {
         let id = project
@@ -612,6 +699,8 @@ fn credentials_stay_on_the_host() {
         roots.extend(own.into_iter().map(|(_, source)| source));
         roots
     };
+    #[cfg(target_os = "macos")]
+    let disks = apple.clone();
     let roots = [
         env.state_home().to_path_buf(),
         env.config_home().to_path_buf(),
@@ -639,7 +728,10 @@ fn credentials_stay_on_the_host() {
         sweep(&root, &needles, &mut found);
     }
     found.retain(|(path, label)| {
-        !(is_box_disk(path) && (label.starts_with("from") || label.starts_with("PINFOLD_ENV_")))
+        !(is_box_disk(path, &disks)
+            && (label.starts_with("from")
+                || label.starts_with("PINFOLD_ENV_")
+                || label.starts_with("op")))
     });
     assert_eq!(
         found,

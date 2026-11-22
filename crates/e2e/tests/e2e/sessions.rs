@@ -4,16 +4,21 @@
 
 use std::fs;
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use e2e::{
-    COMMAND, Client, Project, READER, TestEnv, default_image, hold_maintenance, json_lines, run,
-    spawn, tree,
+    COMMAND, Client, Project, READER, TestEnv, default_image, first_on_path, hold_maintenance,
+    json_lines, op_calls, run, spawn, stand_in_op, tree,
 };
 use serde_json::Value;
 
 /// The caller variable the project's `env` reads with `from`.
 const SOURCE: &str = "E2E_SESSION_SOURCE";
+/// The 1Password reference the project's `env` reads with `op`, and the
+/// value the stand-in `op` gives it.
+const REFERENCE: &str = "op://e2e/sessions/one";
+const OP_VALUE: &str = "e2esessionop";
 /// The box's PATH: a home directory the box writes first, then the image's.
 const BOX_PATH: &str =
     "/home/pinfold/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
@@ -112,22 +117,29 @@ fn a_projects_sessions_share_one_box() {
         "{ran:?}"
     );
 
-    // The startup configuration: one allowed host and a `from` variable.
+    // The startup configuration: one allowed host, a `from` variable and
+    // an `op` reference. The two first launches have a stand-in `op`
+    // first on PATH that gives the value; every later client has one
+    // that refuses every read.
     let file = project.config_dir().join("pinfold.toml");
     let saved = fs::read_to_string(&file).unwrap();
-    let configure = |allow: &str| {
+    let configure = |allow: &str, reference: &str| {
         fs::write(
             &file,
             format!(
-                "{saved}allow = [\"{allow}\"]\nenv = {{ E2E_SESSION = {{ from = \"{SOURCE}\" }} }}\n"
+                "{saved}allow = [\"{allow}\"]\nenv = {{ E2E_SESSION = {{ from = \"{SOURCE}\" }}, \
+                 E2E_SESSION_OP = {{ op = \"{reference}\" }} }}\n"
             ),
         )
         .unwrap();
     };
-    configure("api.github.com");
-    let session = |value: &str, args: &[&str]| -> Command {
+    configure("api.github.com", REFERENCE);
+    let op = stand_in_op(&env, "op", &[(REFERENCE, OP_VALUE)], "e2edecoy");
+    let refusing = stand_in_op(&env, "op-refusing", &[], "e2edecoy");
+    let session = |value: &str, args: &[&str], op: &Path| -> Command {
         let mut command = project.command(args);
         command.env(SOURCE, value);
+        first_on_path(&mut command, op);
         command
     };
 
@@ -141,13 +153,22 @@ fn a_projects_sessions_share_one_box() {
             "-c",
             "sleep 600 & echo $! > /tmp/e2e-a-child; echo $$ > /tmp/e2e-a; echo started; wait",
         ],
+        &op,
     ));
     let mut b = Client::spawn(session(
         "one",
         &["--", "sh", "-c", &format!("echo $$ > /tmp/e2e-b; {READER}")],
+        &op,
     ));
     assert_eq!(a.line(), "started");
     assert_eq!(b.line(), "started");
+    // Sabotage (run): in pi/session.rs, read `op` in `resolve_spec`,
+    // which a join runs too. The first launch that joins then asks `op` as well,
+    // and the stand-in logs more than one call.
+    // The one that started the box asked `op` once; the other joined
+    // without it. The value is the box's.
+    assert_eq!(op_calls(&op), [REFERENCE], "op calls");
+    assert_eq!(b.ask("printenv E2E_SESSION_OP"), [OP_VALUE]);
 
     // One box serves the project: one owner, one generation.
     let id = project
@@ -181,13 +202,13 @@ fn a_projects_sessions_share_one_box() {
     // Control: a client whose `from` variable holds the same value joins,
     // and sees both sessions' files in that box's own /tmp.
     let both = ["--", "cat", "/tmp/e2e-a", "/tmp/e2e-b"];
-    let joined = run(&mut session("one", &both), COMMAND);
+    let joined = run(&mut session("one", &both, &refusing), COMMAND);
     assert_eq!(joined.code, 0, "{joined:?}");
     assert_eq!(joined.stdout.lines().count(), 2, "{joined:?}");
 
     // The same command with another value is refused, naming the differing
     // field.
-    let other = run(&mut session("two", &both), COMMAND);
+    let other = run(&mut session("two", &both, &refusing), COMMAND);
     assert_eq!(other.code, 125, "{other:?}");
     let named: Vec<&str> = tokens(&other.stderr).collect();
     assert!(
@@ -196,17 +217,45 @@ fn a_projects_sessions_share_one_box() {
         other.stderr
     );
 
+    // Sabotage (run): in pi/session_snapshot.rs's `differences`, compare
+    // `env.names` with each `op` source's reference blanked. The client
+    // naming another reference then joins and exits 0, not 125.
+    // An `op` source compares by its reference.
+    configure("api.github.com", "op://e2e/sessions/two");
+    let changed = run(&mut session("one", &both, &refusing), COMMAND);
+    configure("api.github.com", REFERENCE);
+    assert_eq!(changed.code, 125, "{changed:?}");
+    let named: Vec<&str> = tokens(&changed.stderr).collect();
+    assert!(
+        named.contains(&"config-changed") && named.contains(&"env.names"),
+        "{}",
+        changed.stderr
+    );
+
     // Exit codes pass through; one pinfold uses for itself (125, a setup
     // failure: here the executable lookup) is distinct from the command's.
     for code in [23, 126, 127] {
         let out = run(
-            &mut session("one", &["--", "sh", "-c", &format!("exit {code}")]),
+            &mut session(
+                "one",
+                &["--", "sh", "-c", &format!("exit {code}")],
+                &refusing,
+            ),
             COMMAND,
         );
         assert_eq!(out.code, code, "{out:?}");
     }
-    let missing = run(&mut session("one", &["--", "e2e-no-such-command"]), COMMAND);
+    let missing = run(
+        &mut session("one", &["--", "e2e-no-such-command"], &refusing),
+        COMMAND,
+    );
     assert_eq!(missing.code, 125, "{missing:?}");
+    // No join asked `op`.
+    assert_eq!(
+        op_calls(&refusing),
+        Vec::<String>::new(),
+        "op calls on joins"
+    );
 
     // Killing A's client ends A's command group, background child
     // included, while B keeps working in the same box. Both are alive
@@ -237,7 +286,7 @@ fn a_projects_sessions_share_one_box() {
 
     // After the file's allowlist changes, the started one still decides:
     // the newly listed host is refused and the started one goes through.
-    configure("example.com");
+    configure("example.com", REFERENCE);
     let log = env
         .state_home()
         .join("pinfold/runs")

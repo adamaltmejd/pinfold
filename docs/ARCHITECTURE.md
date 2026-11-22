@@ -152,6 +152,12 @@ Not protected:
   change with a Rex build or a setting changed after the host is added.
 - Image recipes are caller-trusted software. Apple builds have unrestricted
   egress. Linux builds use the separate image-preparation role below.
+- pinfold trusts the first `op` on the launching user's `PATH`, run with
+  that user's environment, as it trusts that environment for `from`. A
+  profile or project file can name any 1Password item the user's `op`
+  session can read, and pinfold puts its value where the file says: in
+  the box's environment or in a route's header to the route's origin. A
+  box spec a caller hands `box up` can equally name any such reference.
 
 ## Runtimes
 
@@ -479,9 +485,11 @@ The box spec `up` reads from stdin:
   An env name must match
   `[A-Za-z_][A-Za-z0-9_]*`; any other name is refused as `spec`, naming it.
   A literal holding NUL is refused as `spec`, naming only the variable.
-  `{ "from": "NAME" }` reads the caller's value. A `from` name, here, in
-  an injecting header or in a login route, that is empty or holds `=` or
-  NUL is never read and is refused as `spec`, naming only its key. Guest
+  `{ "from": "NAME" }` reads the caller's value, and `{ "op":
+  "op://VAULT/ITEM/FIELD" }` reads it from 1Password (below). A `from`
+  name, here, in an injecting header or in a login route, that is empty
+  or holds `=` or NUL is never read and is refused as `spec`, naming only
+  its key. Guest
   values reach the
   guest after boot, over pinfold's own channel to init (Always applied);
   pinfold passes none to the runtime as environment, so they cannot
@@ -492,6 +500,33 @@ The box spec `up` reads from stdin:
   record, and a refusal of such a mount may name it;
   multiline values remain intact. The runtime executable is found on the
   host's `PATH`, never the spec's.
+- `op` takes the place of `from` wherever `from` names a secret: an env
+  entry, an injecting header, a claude or pi login route. A reference
+  starts with `op://`, holds no control character (below 0x20, or
+  0x7f) and is at most 1024 bytes. `from` and
+  `op` together, or neither, are refused as `spec`, naming only the key,
+  and a configuration file holding such an env entry or injecting header
+  fails to load; so is a
+  malformed reference, and an explicit null for either key. Only the process that starts the box
+  reads a reference, and only after every check that needs no value:
+  `box up` after the spec (an env or header `from` included), profile, mount preparation,
+  runtime, image and home-seed checks, just before it resolves login
+  routes and claims the name; a starting project client after every
+  launch check, just before it spawns the owner. It runs the first `op`
+  on the host's `PATH`, with its own environment, as `op read
+  --no-newline REFERENCE`, once per distinct reference, stdin null,
+  stderr discarded, in its own process group; a cancelled launch starts
+  no further `op`. The read has a 30-second deadline and stdout is
+  bounded to 64 KiB; on the deadline, on cancellation or on a signal
+  pinfold handles, the group is killed and `op` reaped. A SIGKILL of the
+  launching process leaves `op` to end on its own. A failed read refuses the start as an unset `from` variable
+  does (`spec` for an env entry or injecting header, `login` for a login
+  route), naming the key, the reference and the cause: `op` not on PATH,
+  its exit status or signal, the deadline, an empty value, more than 64
+  KiB, or a value that is not UTF-8 or holds NUL. No message holds any of
+  `op`'s output. A reference is not secret: it appears where a `from`
+  name does. Its value follows the `from` value rules, but never enters
+  an environment on the host.
 - A label key starting with `dev.pinfold.` is refused as `spec`, naming
   it: the namespace is pinfold's.
 - `profile` applies the profile's `home/` and `share/` (see Profiles), and
@@ -917,7 +952,8 @@ network listener, no token: the socket identifies the box.
   sent under that name. `$VAR` is read once per start, from the
   environment of the process that starts the box: `box up`'s own, or a
   project box's starting client (Configuration); a missing variable
-  refuses the start. An `https` target is
+  refuses the start. A header may name `"op": REFERENCE` instead of
+  `from`, read by that process (Process interface). An `https` target is
   resolved and checked like an allowlisted host; an `http` target is a host
   service. The value never reaches argv, the box, the spec or the log. The
   box can use the credential but not read it, unless `to` echoes request
@@ -967,7 +1003,8 @@ network listener, no token: the socket identifies the box.
   - `claude`: `{ "login": "claude", "from": VAR }`, where `$VAR` is a
     `claude setup-token` token read once at start like an injecting route's.
     The route goes to `https://api.anthropic.com` with `Authorization:
-    Bearer`. Claude's managed settings set `ANTHROPIC_BASE_URL=http://<route>`,
+    Bearer`. `"op": REFERENCE` may replace `from`, here and for pi.
+    Claude's managed settings set `ANTHROPIC_BASE_URL=http://<route>`,
     a placeholder `CLAUDE_CODE_OAUTH_TOKEN`, and blank `ANTHROPIC_API_KEY`.
   - `codex`: `{ "login": "codex" }` uses the host's own Codex login, in
     whatever store Codex keeps it. The proxy gets the access token from
@@ -998,7 +1035,7 @@ network listener, no token: the socket identifies the box.
     `login-busy`, `login lapsed`, deadline and reaping. With a `codex`
     route in the same box, both share one token and one refresh: the
     helper is asked once at start. A missing or other
-    P, `from` with `openai-codex`, or two routes for one pi provider
+    P, `from` or `op` with `openai-codex`, or two routes for one pi provider
     (`anthropic` and `anthropic-subscription` are both pi's `anthropic`)
     is refused as `spec`, and so is `provider` on a claude or codex login
     route.
@@ -1025,7 +1062,8 @@ network listener, no token: the socket identifies the box.
     the route replaces its token, and Pi's refresh bypasses the route.
     Generated file contents never enter the home disk.
   - `up` refuses a login it cannot use (no token, an empty or unset
-    `from` variable, or not a usable JWT) as `login`, naming the agent.
+    `from` variable, a failed `op` read, or not a usable JWT) as `login`,
+    naming the agent.
 - **Limits:** a connection cap and a header timeout. A tunnel is idle, and
   closed, only when neither direction has carried bytes for 5 minutes;
   its log line names `idle timeout`.
@@ -1798,7 +1836,9 @@ its project.
   complete route declarations and sources, static referenced values, and
   environment names, literals and the values their `from` variables hold,
   so a client whose `from` variable holds another value refuses as
-  `config-changed` (`env.values`). Absent and empty differ. Command
+  `config-changed` (`env.values`). An `op` source compares by its
+  reference (`env.names`, `routes.declarations`), never its value. Absent
+  and empty differ. Command
   metadata, refreshed Codex tokens, recipe freshness, and seed/shared-file
   contents are excluded. HOME is canonicalized like the other host roots.
   Mount kind and canonical source and destination paths are startup
@@ -2064,11 +2104,21 @@ VAR, which is not set` on stderr and exits 125. The value travels as a
 its runtime client, and in the admission snapshot, held in memory and
 sent over the private project socket. The owner starts the box with the
 snapshot's values, and a running owner compares a joining client's
-snapshot with its own. `config --json` names
-the variable, never its value; elsewhere it follows the box spec's `env`
-rules (Process interface). A literal is configuration, not a secret:
+snapshot with its own. An `op` value is read only by the client whose
+launch starts a new box, after every other launch check, just before it
+spawns the owner, so a refusal before then runs no `op`; a failed
+read refuses before any owner starts with `env "NAME" needs the
+1Password reference REFERENCE: CAUSE` or the `route` form, and exit 125.
+A joining or keeping client never runs `op`, and the owner never does.
+The value travels to the owner beside the startup snapshot, never in a
+host environment or in any snapshot a joining client sends; the owner refuses
+as `session-protocol`, before recording anything, values that are not
+exactly the declared references, each once, within the read's bounds; admission
+compares an `op` source by its reference alone. `config --json` names
+the variable or the reference, never a value; elsewhere it follows the
+box spec's `env` rules (Process interface). A literal is configuration, not a secret:
 `config --json` shows it; the launch record names it, like every box
-variable, without its value. Secrets belong in `from`.
+variable, without its value. Secrets belong in `from` or `op`.
 
 | Key | Env | Default | Meaning |
 |---|---|---|---|
@@ -2080,7 +2130,7 @@ variable, without its value. Secrets belong in `from`.
 | `mounts` | — | — | The project's mounts (above); project file only |
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
-| `env` | — | `{}` | The box's variables: `NAME = "literal"`, or `NAME = { from = "VAR" }` read from the caller's environment at start; the box spec's `env` (Process interface) |
+| `env` | — | `{}` | The box's variables: `NAME = "literal"`, `NAME = { from = "VAR" }` read from the caller's environment at start, or `NAME = { op = "op://…" }` read from 1Password at start; the box spec's `env` (Process interface) |
 | — | `PINFOLD_ENV_<NAME>` | — | `<NAME>` in the box from the caller's value, over `env`'s `NAME` |
 | — | `PINFOLD_NO_UPDATE_CHECK` | — | `1` disables interactive update checks and notices (Updates) |
 
@@ -2205,12 +2255,12 @@ cut rows.
 | 10 | **Disk-project branches and tags cross only through the Git remote.** A fetch writes box branches only under `refs/remotes/box/*` and adds only new tags; it never moves or deletes the host's own branches or tags, except as the threat model lists. A push lands only in the box's `refs/remotes/host/*` and its tags. Crossing carries no hook or configuration. | (a) A box that writes its own listing names a branch at a host-only commit. `git fetch box` fails naming that branch, no ref under `refs/remotes/box/` changes, and `.git/objects` is unchanged. So does a bundle whose pack also carries an unreachable tag of a tag of a missing commit, failing naming that commit; and, with the host a partial clone of a local promisor, a listing that names the branch at a commit only the promisor holds and a bundle naming it as a prerequisite. (b) Separately, a valid listing carries a tag named like a host tag at another object. After `git fetch --force --tags --prune --prune-tags box`, every host tag is where it was. The box then commits hooks under every client-side name, `core.hooksPath`, `.husky/` and `.githooks/`; the host fetches, merges and checks out twice, and nothing planted runs. With `push.followTags`, `git push box main` lands main only in the box's `refs/remotes/host/main` and its annotated tags as box tags, and changes no box working-tree file; after it and after a repeat, the host's `refs/remotes/box/main` is the box's own main. A fresh start leaves the project disk empty and the host's `.git/config` byte-identical; the first push creates the box repository. Control: a host hook runs, and a legitimate branch and new tag land under `refs/remotes/box/*` and `refs/tags/*`. |
 | 11 | **Disks persist and attach exclusively.** A disk outlives its box. One box at a time writes it, and a disk left unclean is not read until a writable run recovers it. | Two writable `up`s race for one new disk: exactly one runs, and the other is refused `disk-in-use`. After the writer's owner is SIGKILLed, a read-only attachment is refused `disk-in-use` while the dead box's claim stands; once `box prune` retires it, the same attachment is refused `disk-unclean` until a writable run ends. `disk rm` of an attached disk is refused `disk-in-use`. Control: a file one box writes is read by the next box that attaches the disk. |
 | 15 | **Cleanup removes only pinfold's garbage.** `clean` never removes a live project's state or disks, or host files. | A kept project with a live box and no clients, beside an idle project. `clean --unused 0s` removes the idle project's state and disk and keeps the live one's: a write still reads back through its box. The idle project's checkout tree and configuration file are unchanged. Control: the idle project's disk is gone. |
-| 26 | **Credentials stay on the host.** pinfold adds a route's credential at the proxy and never puts it in the box; an upstream that returns it can still hand it back (threat model). A `from` or `PINFOLD_ENV_` value reaches the box's environment, never host argv, the runtime's records or a file pinfold writes. | One box with an injecting route, a Claude login route and a Pi `openrouter` login route, each pointed at a host fixture that echoes no credential, plus a `from` variable and a `PINFOLD_ENV_` value. Through the injecting route the guest sends its own value for the injected header, in another letter case; the fixture receives only the host's. Through the Pi login route the guest sends mixed-case duplicate `Authorization` and `X-Api-Key` fields; the fixture receives only the host credential, and an off-list field no `Connection` field names arrives unchanged. A later request whose `Connection` field nominates that field and `Authorization` delivers the host credential without the nominated field. A `?api_key=` query on that login route gets 403 `login credential query` and no upstream request. No route credential is in the box's environment, any file it can read, its home disk or the egress log. On the host no secret, plain or hex, is in any file under the state, config or cache roots or in any process argv; on Apple, neither in `container inspect`, the container's directory nor the box's new volumes. A configuration literal is in its own file and no other file under those roots. Control: the same login request without the query succeeds in the same box; the box search finds a canary on the home disk, and `ps` finds the session's argv canary; the `from` and `PINFOLD_ENV_` values arrive in the box's environment; Claude and Pi each complete one fixture exchange through their generated configuration. |
+| 26 | **Credentials stay on the host.** pinfold adds a route's credential at the proxy and never puts it in the box; an upstream that returns it can still hand it back (threat model). A `from`, `op` or `PINFOLD_ENV_` value reaches the box's environment, never host argv, the runtime's records or a file pinfold writes. | One box with an injecting route, a Claude login route and a Pi `openrouter` login route, each pointed at a host fixture that echoes no credential, plus a `from` variable, an `op` env entry and a `PINFOLD_ENV_` value. A stand-in `op` first on the client's PATH gives the Claude route's token, which a second injected header names too, and the env entry's value; it is asked once for each reference. Before the session, a launch whose configuration differs from the session's only in the Claude route's reference, one the stand-in refuses (printing a decoy on stdout and stderr), exits 125 with empty stdout, its stderr naming the reference and not holding the decoy, the stand-in logged that reference, and `box list` shows no box for the project. Through the injecting route the guest sends its own value for the injected header, in another letter case; the fixture receives only the host's, and the second header the `op` value. Through the Pi login route the guest sends mixed-case duplicate `Authorization` and `X-Api-Key` fields; the fixture receives only the host credential, and an off-list field no `Connection` field names arrives unchanged. A later request whose `Connection` field nominates that field and `Authorization` delivers the host credential without the nominated field. A `?api_key=` query on that login route gets 403 `login credential query` and no upstream request. No route credential is in the box's environment, any file it can read, its home disk or the egress log. On the host no secret, plain or hex, is in any file under the state, config or cache roots or in any process argv; on Apple, neither in `container inspect`, the container's directory nor the box's new volumes. A configuration literal is in its own file and no other file under those roots. Control: the same login request without the query succeeds in the same box; the box search finds a canary on the home disk, and `ps` finds the session's argv canary; the `from`, `op` and `PINFOLD_ENV_` values arrive in the box's environment; the session that differs only in the refused reference starts; Claude and Pi each complete one fixture exchange through their generated configuration. |
 | 38 | **Every egress decision is recorded, or the box stops.** Each run has its own egress log and launch record. The launch record is the policy applied at start. | The live egress log is padded to one byte below its 128 MiB cap. The next route request stops the owner with `audit-log` and exit 1, and the log's length is unchanged. Control: in a second run of the same name under another allowlist and memory, an allowed and a refused request each appear once in that run's log, and the first run's log still holds only its own; `inspect` answers with no runtime on PATH. Each run's launch record names the allowlist, routes, cpus and memory it applied, and env names without values. |
 | 43 | **The VMM reaches only its own box.** Linux only. Each VMM runs as the user in its own jail and sees only its own box's files. | Two boxes up, one with a detached owner. Each VMM process is the user's, with `CapBnd` 0 and `NoNewPrivs` 1, in user, mount, PID, network, IPC and UTS namespaces of its own. Through `/proc/PID/root` it sees its own disk and not the other box's; no directory from the home is mounted in it; its jail holds no socket but those in its own vsock socket directory, so no project session or shutdown control socket; every descriptor it holds is in its jail, `/dev/null` or an anonymous kernel object. Control: its own disk is visible, and SIGKILL of the owner ends the VM. |
 | 44 | **Linux image work stays in its own VM.** Linux only. A build's RUN steps have no network but the production proxy, which lets out only allowed hosts and audits each decision. | In one build, a RUN step's direct connection to a public address, bypassing the proxy, fails; through the proxy `api.github.com` answers while `example.com` gets a 403, with the denial in the build's egress log. Control: the same build with `--allow example.com` reaches it. |
 | 45 | **Disk export writes only a new destination.** Export copies a stopped disk's files into a new directory, never over an existing one, and follows no box-planted link. | A stopped disk holding a symlink to a host path and an executable file is exported. The link is copied as a link and its target is untouched; the file stays executable. Export to an existing destination, a dangling symlink, is refused `destination-exists` and leaves the link unchanged. Control: export into a new destination succeeds. |
-| 47 | **A project's sessions share one box.** All of a project's sessions use one box under its startup configuration. One session ending does not end another, and a client with different configuration is refused. | Two simultaneous first launches share one owner and generation. Killing one client ends its command group while the other keeps working, and SIGKILL of a fetch's Git and helper ends the box command it hung, even one that ignores TERM. A client whose `from` variable holds another value is refused `config-changed` naming `env.values`. After the configuration file's allowlist changes mid-run, the started allowlist still decides. Commands get literal argv, empty arguments and `--help` included; exits 0, 23, 126 and 127 pass through, and a setup failure exits 125. With no configuration and no terminal, `-- CMD` is refused `no-config` and creates no project state, and `git fetch box` from an unused state root is refused `no-config` and leaves that root empty. Control: the same `from` value joins, after `config edit` the refused invocation runs, and a configured disk project's `git fetch box` from that root passes admission and runs the daily pass. |
+| 47 | **A project's sessions share one box.** All of a project's sessions use one box under its startup configuration. One session ending does not end another, and a client with different configuration is refused. Only the launch that starts the box runs `op`. | Two simultaneous first launches, each with a stand-in `op` first on PATH that gives the reference's value, share one owner and generation, and that stand-in is asked once; the box has its value. Killing one client ends its command group while the other keeps working, and SIGKILL of a fetch's Git and helper ends the box command it hung, even one that ignores TERM. A client whose `from` variable holds another value is refused `config-changed` naming `env.values`, and one whose `op` reference differs naming `env.names`. Every later client of the project (the same-value join, the two refused ones, and the exit-code and executable-lookup runs) has instead a stand-in `op` that refuses every read first on PATH, and none asks it. After the configuration file's allowlist changes mid-run, the started allowlist still decides. Commands get literal argv, empty arguments and `--help` included; exits 0, 23, 126 and 127 pass through, and a setup failure exits 125. With no configuration and no terminal, `-- CMD` is refused `no-config` and creates no project state, and `git fetch box` from an unused state root is refused `no-config` and leaves that root empty. Control: the same `from` value joins, after `config edit` the refused invocation runs, and a configured disk project's `git fetch box` from that root passes admission and runs the daily pass. |
 | 48 | **A share reaches only its folder by path, and a project holding a protected path is refused.** Through a share the box reaches no host path outside its declared directory; a hard link inside the share to an outside file is not covered (threat model). A project holding a protected path is refused. On Linux, which has no shares, the refusal runs for a disk project. | With the project's configuration directory symlinked into the checkout, `-- CMD` and `config edit` are refused `host-path-in-project` and create no state. Separately, with only the selected profile's directory symlinked in, and on Apple with only the supplied init's own directory under `artifacts/init` symlinked into a project with no configuration, the same two commands are refused the same way. In a running share, the box follows an outward symlink and cannot read an unmounted host fixture. Control: with each symlink removed the same project runs, and on Apple shared edits and a box `git commit` land on the host's branch. |
 | 50 | **A profile with a base applies the base beneath it and is outdated when the base changes.** | A three-link user chain of tiny recipes, none with `base = "default"`: the root is on a public base on Linux and on the already-built default image on macOS. After a change to the root's recipe, a launch names `image-outdated` for the root and every image above it; after rebuilding only the root, for the two above it; after the chain's rebuild, none, and a second unchanged rebuild keeps every image identity in the chain. Control: a box from the top link has every link's file and seed and a top-level replacement seed. With the chain built, a cycle is refused as `profile`, and correcting it runs. |
 

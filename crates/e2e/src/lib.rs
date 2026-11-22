@@ -733,6 +733,57 @@ fn host_git_env(env: &TestEnv, command: &mut Command) {
         .env("PATH", std::env::join_paths(path).expect("a PATH"));
 }
 
+/// A stand-in for the 1Password CLI: `op` in a new directory `name` in the
+/// test's directory, outside its XDG roots and projects. For `op read
+/// --no-newline REFERENCE` it prints the value `values` gives REFERENCE,
+/// with no newline. For anything else it prints `decoy` on stdout and
+/// stderr and exits 1. It appends each call's reference to `calls` there
+/// ([`op_calls`]). Values, references and the decoy are shell-safe words.
+/// Returns the directory, to put first on PATH ([`first_on_path`]).
+pub fn stand_in_op(env: &TestEnv, name: &str, values: &[(&str, &str)], decoy: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = env.root().join(name);
+    fs::create_dir(&dir).unwrap_or_else(|error| panic!("create {}: {error}", dir.display()));
+    let cases: String = values
+        .iter()
+        .map(|(reference, value)| format!("    '{reference}') printf %s '{value}'; exit 0 ;;\n"))
+        .collect();
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$3\" >> '{}'\n\
+         if [ \"$#\" = 3 ] && [ \"$1\" = read ] && [ \"$2\" = --no-newline ]; then\n  \
+         case \"$3\" in\n{cases}  esac\nfi\n\
+         printf %s '{decoy}'\nprintf %s '{decoy}' >&2\nexit 1\n",
+        dir.join("calls").display()
+    );
+    let op = dir.join("op");
+    fs::write(&op, script).unwrap();
+    fs::set_permissions(&op, fs::Permissions::from_mode(0o755)).unwrap();
+    dir
+}
+
+/// The references the stand-in `op` in `dir` was asked for, in order.
+pub fn op_calls(dir: &Path) -> Vec<String> {
+    match fs::read_to_string(dir.join("calls")) {
+        Ok(text) => text.lines().map(str::to_string).collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("read {}: {error}", dir.display()),
+    }
+}
+
+/// Put `dir` first on `command`'s PATH: the one it sets, else this
+/// process's.
+pub fn first_on_path(command: &mut Command, dir: &Path) {
+    let current = command
+        .get_envs()
+        .find(|(name, _)| *name == "PATH")
+        .and_then(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    let mut path = vec![dir.to_path_buf()];
+    path.extend(std::env::split_paths(&current));
+    command.env("PATH", std::env::join_paths(path).expect("a PATH"));
+}
+
 /// Every path under `dir`, sorted, with its length and mtime, read without
 /// following symlinks; none when `dir` is missing. Two equal trees hold the
 /// same entries, unchanged as far as their metadata shows.

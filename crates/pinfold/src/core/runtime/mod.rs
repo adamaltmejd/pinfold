@@ -304,7 +304,7 @@ pub trait Runtime: Sync {
 }
 
 /// The box's environment in order, a later entry winning: the spec's, a
-/// `from` entry's value from `values` under the entry's key, then the
+/// `from` or `op` entry's value from `values` under the entry's key, then the
 /// always-applied variables.
 fn guest_vars(plan: &Plan, values: &Values) -> Vec<(String, OsString)> {
     let mut vars: Vec<(String, OsString)> = plan
@@ -313,7 +313,7 @@ fn guest_vars(plan: &Plan, values: &Values) -> Vec<(String, OsString)> {
         .filter_map(|(name, value)| {
             let value = match value {
                 Env::Exact(value) => Some(OsString::from(value)),
-                Env::From { from } => values.get(from).map(OsString::from),
+                Env::Secret { .. } => values.get(&value.source()?.ok()?).map(OsString::from),
             };
             Some((name.clone(), value?))
         })

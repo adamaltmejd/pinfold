@@ -161,6 +161,17 @@ login = "claude"
 from = "CLAUDE_SETUP_TOKEN"
 ```
 
+Or read it from 1Password with `op` in place of `from`:
+
+```toml
+[routes.anthropic]
+login = "claude"
+op = "op://Private/Claude setup token/credential"
+```
+
+The 1Password CLI (`op`) must be installed and signed in. Only the launch
+that starts the box asks 1Password; a session joining it does not.
+
 Login routes generate native configuration for the whole box. Claude and Codex
 use system configuration; Pi autoloads a read-only extension under its writable
 home. Agent configuration precedence still applies. Launch agents through PATH.

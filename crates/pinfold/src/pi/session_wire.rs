@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::pi::session_snapshot::{Roots, Snapshot};
+use crate::pi::session_snapshot::{OpValues, Roots, Snapshot};
 
 const MAX_FRAME: usize = 16 * 1024 * 1024;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(1);
@@ -29,6 +29,7 @@ pub(crate) enum Request {
         root: PathBuf,
         intent: Intent,
         snapshot: Snapshot,
+        op_values: OpValues,
     },
     Probe {
         root: PathBuf,

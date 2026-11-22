@@ -10,7 +10,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::config::{Config, ProjectMount};
 use crate::core::image::service;
-use crate::core::plan::{Env, MountKind, Plan, Values, memory_mib};
+use crate::core::login::MAX_OP_VALUE;
+use crate::core::plan::{self, Env, MountKind, Plan, Source, Values, memory_mib, valid_op};
 use crate::core::profile::Share;
 use crate::dirs;
 use crate::pi::{context::Context, launch, state};
@@ -35,8 +36,8 @@ impl Bytes {
         std::env::var_os(name).map(|value| Self::new(value.as_bytes()))
     }
 
-    fn value(values: &Values, name: &str) -> Option<Self> {
-        values.get(name).map(|value| Self::new(value.as_bytes()))
+    fn value(values: &Values, source: &Source) -> Option<Self> {
+        values.get(source).map(|value| Self::new(value.as_bytes()))
     }
 }
 
@@ -161,7 +162,8 @@ struct Inject {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Header {
-    from: String,
+    from: Option<String>,
+    op: Option<String>,
     prefix: Option<String>,
 }
 
@@ -171,6 +173,7 @@ struct Login {
     login: String,
     provider: Option<String>,
     from: Option<String>,
+    op: Option<String>,
     to: Option<String>,
 }
 
@@ -178,7 +181,13 @@ struct Login {
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum EnvSource {
     Exact {},
-    From { name: String },
+    From {
+        name: String,
+    },
+    /// Compared by its reference: a joining client reads no `op` value.
+    Op {
+        reference: String,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -197,6 +206,25 @@ pub(crate) struct Snapshot {
     route_values: BTreeMap<String, Option<Bytes>>,
     env_names: BTreeMap<String, EnvSource>,
     env_values: BTreeMap<String, Option<Bytes>>,
+}
+
+/// The `op` values a starting client read, by reference. They travel beside
+/// its snapshot in the bootstrap request only, so no admission compares
+/// them and no joining client needs them. A list, not a map, so the owner
+/// sees a repeated reference rather than a decoder's choice of one.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct OpValues(Vec<(String, Bytes)>);
+
+impl OpValues {
+    pub(crate) fn new(values: &Values) -> OpValues {
+        OpValues(
+            values
+                .op_values()
+                .map(|(reference, value)| (reference.to_string(), Bytes::new(value.as_bytes())))
+                .collect(),
+        )
+    }
 }
 
 pub(crate) struct Resolved {
@@ -236,61 +264,121 @@ impl Snapshot {
         let fixed = names
             .into_iter()
             .filter_map(|name| Some((name.clone().into(), std::env::var_os(&name)?)));
-        let sources = sources
-            .into_iter()
-            .filter_map(|name| Some((name.clone().into(), values.get(&name)?.to_os_string())));
+        let sources = sources.into_iter().filter_map(|name| {
+            let value = values.get(&Source::From(name.clone()))?;
+            Some((name.into(), value.to_os_string()))
+        });
         fixed.chain(sources).collect()
     }
 
-    /// The `from` values a starting client's snapshot carries, decoded: the
-    /// table the owner starts the box with. That client refused any unset
-    /// variable and any name holding `=` or NUL, so a declared source without
-    /// a value, such a name, or a NUL value fails.
-    pub(crate) fn values(&self) -> io::Result<Values> {
+    /// The values a starting client sent, decoded: its snapshot's `from`
+    /// values and the `op` values beside it, the table the owner starts the
+    /// box with. That client refused any unset variable, failed read and
+    /// malformed name or reference, so a declared source without a value,
+    /// such a name or reference, a NUL value, or an empty or non-UTF-8 `op`
+    /// value fails.
+    pub(crate) fn values(&self, op: OpValues) -> io::Result<Values> {
         let invalid = || io::Error::other("invalid encoded environment");
-        let decode = |from: &String, value: Option<&Bytes>| {
+        let decode = |source: Source, value: Option<&Bytes>| {
             let value = crate::init::decode_hex(value.ok_or_else(invalid)?.0.as_bytes())?;
-            if from.is_empty() || from.contains(['=', '\0']) || value.contains(&0) {
+            let valid = match &source {
+                Source::From(name) => !name.is_empty() && !name.contains(['=', '\0']),
+                Source::Op(reference) => {
+                    valid_op(reference)
+                        && !value.is_empty()
+                        && value.len() <= MAX_OP_VALUE
+                        && std::str::from_utf8(&value).is_ok()
+                }
+            };
+            if !valid || value.contains(&0) {
                 return Err(invalid());
             }
-            Ok((from.clone(), OsString::from_vec(value)))
+            Ok((source, OsString::from_vec(value)))
         };
         // Each entry is decoded once; an env entry is one per box variable.
         let routes = self
             .route_values
             .iter()
-            .map(|(from, value)| decode(from, value.as_ref()));
+            .map(|(from, value)| decode(Source::From(from.clone()), value.as_ref()));
         let env = self
             .env_names
             .iter()
             .filter_map(|(name, source)| match source {
                 EnvSource::From { name: from } => Some(decode(
-                    from,
+                    Source::From(from.clone()),
                     self.env_values.get(name).and_then(Option::as_ref),
                 )),
-                EnvSource::Exact {} => None,
+                EnvSource::Exact {} | EnvSource::Op { .. } => None,
             });
-        let values: BTreeMap<_, _> = routes.chain(env).collect::<io::Result<_>>()?;
+        // Exactly the declared references, each once.
+        let references: std::collections::BTreeSet<&String> =
+            op.0.iter().map(|(reference, _)| reference).collect();
+        let declared_op: std::collections::BTreeSet<&String> = self
+            .routes
+            .values()
+            .flat_map(|declaration| match declaration {
+                Declaration::Inject(inject) => inject
+                    .headers
+                    .iter()
+                    .flatten()
+                    .filter_map(|(_, header)| header.op.as_ref())
+                    .collect(),
+                Declaration::Login(login) => login.op.iter().collect(),
+                Declaration::Address(_) => Vec::new(),
+            })
+            .chain(self.env_names.values().filter_map(|source| match source {
+                EnvSource::Op { reference } => Some(reference),
+                EnvSource::Exact {} | EnvSource::From { .. } => None,
+            }))
+            .collect();
+        if references.len() != op.0.len() || references != declared_op {
+            return Err(invalid());
+        }
+        let op =
+            op.0.iter()
+                .map(|(reference, value)| decode(Source::Op(reference.clone()), Some(value)));
+        let values: BTreeMap<_, _> = routes.chain(env).chain(op).collect::<io::Result<_>>()?;
+        let has = |from: &Option<String>, op: &Option<String>| match (from, op) {
+            (Some(from), None) => values.contains_key(&Source::From(from.clone())),
+            (None, Some(reference)) => values.contains_key(&Source::Op(reference.clone())),
+            _ => false,
+        };
         let declared = self.routes.values().all(|declaration| match declaration {
             Declaration::Inject(inject) => inject
                 .headers
                 .iter()
                 .flatten()
-                .all(|(_, header)| self.route_values.contains_key(&header.from)),
-            Declaration::Login(login) => login
-                .from
-                .as_ref()
-                .is_none_or(|from| self.route_values.contains_key(from)),
+                .all(|(_, header)| has(&header.from, &header.op)),
+            Declaration::Login(login) => {
+                let neither = login.from.is_none() && login.op.is_none();
+                let host_codex = plan::Login {
+                    login: login.login.clone(),
+                    provider: login.provider.clone(),
+                    from: None,
+                    op: None,
+                    to: None,
+                }
+                .uses_host_codex();
+                neither || (!host_codex && has(&login.from, &login.op))
+            }
             Declaration::Address(_) => true,
+        }) && self.env_names.iter().all(|(name, source)| match source {
+            // An `op` value travels only in `op`, never in an env slot.
+            EnvSource::Op { reference } => {
+                values.contains_key(&Source::Op(reference.clone()))
+                    && self.env_values.get(name).is_none_or(Option::is_none)
+            }
+            EnvSource::Exact {} | EnvSource::From { .. } => true,
         });
         if !declared {
             return Err(invalid());
         }
-        Ok(Values(values))
+        Ok(Values::received(values))
     }
 
     /// Resolve the project's configuration. A client reads each `from`
-    /// value here, once; the owner passes the table its client sent.
+    /// value here, once, and a starting client its `op` values afterwards;
+    /// the owner passes the table its client sent.
     pub(crate) fn resolve(
         root: &Path,
         expected_mount: Option<ProjectMount>,
@@ -383,20 +471,31 @@ impl Snapshot {
                 .map_err(|_| io::Error::other("spec-invalid: invalid route declaration"))?;
             routes.insert(name.clone(), declaration);
         }
+        // An `op` source's value is never compared, so it is in neither
+        // table: a joining client reads none.
         let route_values = plan
             .sources()
-            .filter(|(kind, _, _)| *kind == "route")
-            .map(|(_, _, from)| (from.to_string(), Bytes::value(&values, from)))
+            .filter_map(|(kind, _, source)| match source {
+                Ok(Source::From(from)) if kind == "route" => {
+                    let value = Bytes::value(&values, &Source::From(from.clone()));
+                    Some((from, value))
+                }
+                _ => None,
+            })
             .collect();
         let mut env_names = BTreeMap::new();
         let mut env_values = BTreeMap::new();
         for (name, value) in &plan.env {
-            let (source, value) = match value {
-                Env::Exact(value) => (EnvSource::Exact {}, Some(Bytes::new(value.as_bytes()))),
-                Env::From { from } => (
-                    EnvSource::From { name: from.clone() },
-                    Bytes::value(&values, from),
+            let (source, value) = match (value, value.source()) {
+                (Env::Exact(value), _) => (EnvSource::Exact {}, Some(Bytes::new(value.as_bytes()))),
+                (_, Some(Ok(Source::Op(reference)))) => (EnvSource::Op { reference }, None),
+                (_, Some(Ok(source))) => (
+                    EnvSource::From {
+                        name: source.name().to_string(),
+                    },
+                    Bytes::value(&values, &source),
                 ),
+                (_, _) => return Err(io::Error::other("spec-invalid: invalid env source")),
             };
             env_names.insert(name.clone(), source);
             env_values.insert(name.clone(), value);

@@ -28,7 +28,7 @@ pub struct Plan {
     #[serde(default)]
     pub disks: Vec<Disk>,
     /// Exact environment. `{ "from": "NAME" }` takes the caller's value.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "env_entries")]
     pub env: BTreeMap<String, Env>,
     /// Present means the box gets a proxy; absent means no way out at all.
     pub egress: Option<Egress>,
@@ -74,10 +74,21 @@ pub struct Login {
     /// pi's provider, one of [`PI_PROVIDERS`]; only pi names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// The variable the token is read from, by name only. claude and pi
-    /// need one; codex takes none: its token comes from the host helper.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The variable the token is read from, by name only, or the 1Password
+    /// reference in `op`. claude and pi need one; codex takes neither: its
+    /// token comes from the host helper.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub from: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub op: Option<String>,
     /// The origin to dial instead of the harness's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
@@ -93,14 +104,130 @@ pub struct Inject {
     pub headers: BTreeMap<String, Header>,
 }
 
-/// One injected header: `prefix` then the value of `$from`. Only the
-/// variable's name is ever written down.
+/// One injected header: `prefix` then the value of its source, `from` or
+/// `op`. Only the variable's name or the reference is ever written down.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Header {
-    pub from: String,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub from: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub op: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prefix: String,
+}
+
+/// Where a secret's value comes from: a host variable (`from`) or a
+/// 1Password reference (`op`). A [`Values`] table is keyed by it, so a
+/// variable named like a reference is still a variable.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Source {
+    From(String),
+    Op(String),
+}
+
+const BOTH: &str = "takes a from variable or an op reference, not both";
+const NEITHER: &str = "needs a from variable or an op reference";
+
+/// A `from` or `op` key that is present holds a string: an explicit null
+/// is refused, never read as absent.
+fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
+/// The box spec's env map, each entry's decoding error naming its key.
+fn env_entries<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, Env>, D::Error> {
+    struct Visitor;
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = BTreeMap<String, Env>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a map of environment variables")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut env = BTreeMap::new();
+            while let Some(name) = map.next_key::<String>()? {
+                let value = map
+                    .next_value::<Env>()
+                    .map_err(|error| serde::de::Error::custom(format!("env {name}: {error}")))?;
+                env.insert(name, value);
+            }
+            Ok(env)
+        }
+    }
+    deserializer.deserialize_map(Visitor)
+}
+
+/// Refuse, naming the entry, an env entry or injecting header in
+/// configuration that names both `from` and `op` or neither: main refused
+/// such a header at load too. Configuration load calls this, so a
+/// `PINFOLD_ENV_` variable replacing the entry cannot hide it. Login
+/// routes are checked at launch, as before `op`.
+pub(crate) fn check_declared(
+    env: &BTreeMap<String, Env>,
+    routes: &BTreeMap<String, Route>,
+) -> Result<(), String> {
+    let env = env
+        .iter()
+        .filter_map(|(name, value)| Some((format!("env {name:?}"), value.source()?)));
+    let headers = routes
+        .values()
+        .filter_map(|route| match route {
+            Route::Inject(inject) => Some(&inject.headers),
+            _ => None,
+        })
+        .flatten()
+        .map(|(name, header)| (format!("route header {name:?}"), header.source()));
+    for (entry, source) in env.chain(headers) {
+        if let Err(error @ (BOTH | NEITHER)) = source {
+            return Err(format!("{entry}: {error}"));
+        }
+    }
+    Ok(())
+}
+
+impl Source {
+    /// The declared source, or why it cannot be read: exactly one of
+    /// `from` and `op`, each well formed.
+    fn declared(from: Option<&str>, op: Option<&str>) -> Result<Source, &'static str> {
+        match (from, op) {
+            (Some(_), Some(_)) => Err(BOTH),
+            (None, None) => Err(NEITHER),
+            (Some(from), None) if valid_from(from) => Ok(Source::From(from.to_string())),
+            (Some(_), None) => Err("its from variable is empty or holds = or NUL"),
+            (None, Some(op)) if valid_op(op) => Ok(Source::Op(op.to_string())),
+            (None, Some(_)) => Err(
+                "its op reference must start with op://, hold no control character and be at most 1024 bytes",
+            ),
+        }
+    }
+
+    /// The variable's name or the reference: never a value.
+    pub fn name(&self) -> &str {
+        match self {
+            Source::From(name) | Source::Op(name) => name,
+        }
+    }
+}
+
+impl Header {
+    pub fn source(&self) -> Result<Source, &'static str> {
+        Source::declared(self.from.as_deref(), self.op.as_deref())
+    }
 }
 
 /// An absolute URL's origin, parsed: an injecting route's `to`, or a plain
@@ -126,16 +253,9 @@ impl Inject {
             if !valid_header_name(name) {
                 return Err(invalid(format!("route header {name:?} cannot be injected")));
             }
-            if header.from.is_empty() {
-                return Err(invalid(format!(
-                    "route header {name:?} needs a from variable"
-                )));
-            }
-            if !valid_from(&header.from) {
-                return Err(invalid(format!(
-                    "route header {name:?}: its from variable holds = or NUL"
-                )));
-            }
+            header
+                .source()
+                .map_err(|error| invalid(format!("route header {name:?}: {error}")))?;
             if header.prefix.contains(['\r', '\n', '\0']) {
                 return Err(invalid(format!(
                     "route header {name:?}: its prefix holds CR, LF or NUL"
@@ -146,7 +266,7 @@ impl Inject {
     }
 
     /// The parsed target and each header with its value from `values`.
-    /// Errors name the header and the variable, never a value.
+    /// Errors name the header and the source, never a value.
     pub fn resolve(
         &self,
         route: &str,
@@ -155,13 +275,17 @@ impl Inject {
         let target = self.check()?;
         let mut headers = Vec::with_capacity(self.headers.len());
         for (name, header) in &self.headers {
-            let value = match values.get(&header.from).map(OsStr::to_str) {
+            let source = header.source().map_err(invalid)?;
+            if values.pending(&source) {
+                continue;
+            }
+            let value = match values.get(&source).map(OsStr::to_str) {
                 Some(Some(value)) => value,
-                None => return Err(unset("route", route, &header.from)),
+                None => return Err(unset("route", route, values, &source)),
                 Some(None) => {
                     return Err(invalid(format!(
                         "route header {name:?}: {} is not UTF-8",
-                        header.from
+                        source.name()
                     )));
                 }
             };
@@ -170,7 +294,7 @@ impl Inject {
             if value.contains(['\r', '\n', '\0']) {
                 return Err(invalid(format!(
                     "route header {name:?}: {} holds CR, LF or NUL",
-                    header.from
+                    source.name()
                 )));
             }
             headers.push((name.clone(), value));
@@ -317,10 +441,16 @@ impl Login {
             })
     }
 
+    /// The token's source; `None` for a login on the host's Codex login.
+    pub fn source(&self) -> Option<Result<Source, &'static str>> {
+        (!self.uses_host_codex())
+            .then(|| Source::declared(self.from.as_deref(), self.op.as_deref()))
+    }
+
     /// Check a login route without reading the environment: this build
-    /// serves the login, only pi names a provider, `from` is absent for a
-    /// login on the host's Codex login and present otherwise, and `to`
-    /// parses like an injecting route's.
+    /// serves the login, only pi names a provider, `from` and `op` are
+    /// absent for a login on the host's Codex login and one is present
+    /// otherwise, and `to` parses like an injecting route's.
     fn check(&self, route: &str) -> Result<(), String> {
         self.target()?;
         if !self.is_pi() && self.provider.is_some() {
@@ -328,22 +458,15 @@ impl Login {
                 "login route {route:?} takes no provider: only pi's does"
             )));
         }
-        if self.uses_host_codex() {
-            if self.from.is_some() {
-                return Err(invalid(format!(
-                    "login route {route:?} takes no from variable: its token comes from the host's Codex login"
-                )));
-            }
-        } else if self.from.as_deref().is_none_or(str::is_empty) {
-            return Err(invalid(format!(
-                "login route {route:?} needs a from variable"
-            )));
-        } else if !self.from.as_deref().is_some_and(valid_from) {
-            return Err(invalid(format!(
-                "login route {route:?}: its from variable holds = or NUL"
-            )));
+        match self.source() {
+            None if self.from.is_some() || self.op.is_some() => Err(invalid(format!(
+                "login route {route:?} takes no from variable or op reference: its token comes from the host's Codex login"
+            ))),
+            None => Ok(()),
+            Some(source) => source
+                .map(|_| ())
+                .map_err(|error| invalid(format!("login route {route:?}: {error}"))),
         }
-        Ok(())
     }
 
     /// The dialed target.
@@ -373,11 +496,15 @@ impl Login {
             ("Authorization", "Bearer ")
         };
         // Every caller prefixes the agent and route, so these name neither.
-        let from = self.from.clone().unwrap_or_default();
-        match values.get(&from) {
-            None => return Err(format!("needs the host variable {from}, which is not set")),
+        let source = match self.source() {
+            Some(source) => source.map_err(invalid)?,
+            None => return Err("its token comes from the host's Codex login".to_string()),
+        };
+        match values.get(&source) {
+            None => return Err(values.missing(&source)),
+            // An `op` value is never empty: its read refuses one.
             Some(value) if value.is_empty() => {
-                return Err(format!("the host variable {from} is empty"));
+                return Err(format!("the host variable {} is empty", source.name()));
             }
             Some(_) => {}
         }
@@ -386,7 +513,8 @@ impl Login {
             headers: BTreeMap::from([(
                 header.to_string(),
                 Header {
-                    from,
+                    from: self.from.clone(),
+                    op: self.op.clone(),
                     prefix: prefix.to_string(),
                 },
             )]),
@@ -395,31 +523,133 @@ impl Login {
     }
 }
 
-/// The host values a plan's `from` entries name, keyed by variable. The
-/// process that starts a launch reads them once; every later reader takes
-/// this table. An unset variable has no entry. No `Debug`: it holds secrets.
+/// The host values a plan's sources name, keyed by source. The process
+/// that starts a launch reads them once; every later reader takes this
+/// table. An unset variable, and a reference not yet read, has no entry; a
+/// failed read keeps its cause. No `Debug`: it holds secrets.
 #[derive(Clone, Default)]
-pub struct Values(pub(crate) BTreeMap<String, OsString>);
+pub struct Values {
+    values: BTreeMap<Source, OsString>,
+    /// Each reference whose read failed, with the cause, which names no
+    /// value and none of op's output.
+    failed: BTreeMap<String, String>,
+    /// Whether the `op` references were read. Until then validation checks
+    /// `from` sources alone, as without `op`.
+    op_read: bool,
+}
 
 impl Values {
-    /// Each variable `plan` names, from this process's environment. A name
-    /// validation refuses is never read.
-    pub fn read(plan: &Plan) -> Values {
-        let variables: BTreeSet<&str> = plan
-            .sources()
-            .map(|(_, _, variable)| variable)
-            .filter(|variable| valid_from(variable))
-            .collect();
-        Values(
-            variables
-                .into_iter()
-                .filter_map(|variable| Some((variable.to_string(), std::env::var_os(variable)?)))
-                .collect(),
-        )
+    /// A table of values another process read and sent.
+    pub(crate) fn received(values: BTreeMap<Source, OsString>) -> Values {
+        Values {
+            values,
+            failed: BTreeMap::new(),
+            op_read: true,
+        }
     }
 
-    pub fn get(&self, variable: &str) -> Option<&OsStr> {
-        self.0.get(variable).map(OsString::as_os_str)
+    /// The entries of `sources` alone, failed reads included.
+    pub(crate) fn only(&self, sources: impl Iterator<Item = Source>) -> Values {
+        let mut only = Values {
+            op_read: self.op_read,
+            ..Values::default()
+        };
+        for source in sources {
+            if let Source::Op(reference) = &source
+                && let Some(cause) = self.failed.get(reference)
+            {
+                only.failed.insert(reference.clone(), cause.clone());
+            }
+            if let Some(value) = self.values.get(&source) {
+                only.values.insert(source, value.clone());
+            }
+        }
+        only
+    }
+
+    /// The `op` values, by reference.
+    pub(crate) fn op_values(&self) -> impl Iterator<Item = (&str, &OsStr)> {
+        self.values
+            .iter()
+            .filter_map(|(source, value)| match source {
+                Source::Op(reference) => Some((reference.as_str(), value.as_os_str())),
+                Source::From(_) => None,
+            })
+    }
+
+    /// Each variable `plan` names, from this process's environment. A name
+    /// validation refuses is never read; nor is any `op` reference.
+    pub fn read(plan: &Plan) -> Values {
+        let variables: BTreeSet<String> = plan
+            .sources()
+            .filter_map(|(_, _, source)| match source {
+                Ok(Source::From(variable)) => Some(variable),
+                _ => None,
+            })
+            .collect();
+        let mut values = Values::default();
+        for variable in variables {
+            if let Some(value) = std::env::var_os(&variable) {
+                values.values.insert(Source::From(variable), value);
+            }
+        }
+        values
+    }
+
+    /// Read each distinct `op` reference `plan` names, once, with the `op`
+    /// on PATH. Only the process that starts a box calls this.
+    pub fn read_op(&mut self, plan: &Plan) {
+        let references: BTreeSet<String> = plan
+            .sources()
+            .filter_map(|(_, _, source)| match source {
+                Ok(Source::Op(reference)) => Some(reference),
+                _ => None,
+            })
+            .collect();
+        self.op_read = true;
+        for reference in references {
+            match login::op_read(&reference) {
+                Ok(value) => {
+                    self.values.insert(Source::Op(reference), value.into());
+                }
+                Err(cause) => {
+                    self.failed.insert(reference, cause);
+                }
+            }
+        }
+    }
+
+    /// Whether `source` is an `op` reference not read yet.
+    fn pending(&self, source: &Source) -> bool {
+        matches!(source, Source::Op(_)) && !self.op_read
+    }
+
+    pub fn get(&self, source: &Source) -> Option<&OsStr> {
+        self.values.get(source).map(OsString::as_os_str)
+    }
+
+    /// Why `source` has no value, after the key that names it.
+    pub fn missing(&self, source: &Source) -> String {
+        match source {
+            Source::From(variable) => {
+                format!("needs the host variable {variable}, which is not set")
+            }
+            Source::Op(reference) => format!(
+                "needs the 1Password reference {reference}: {}",
+                self.failed
+                    .get(reference)
+                    .map_or("op read did not run", String::as_str)
+            ),
+        }
+    }
+
+    /// Whether `source` was read and has no value: an unset variable, or a
+    /// failed `op` read. A reference never read is not missing here.
+    fn lacks(&self, source: &Source) -> bool {
+        match source {
+            Source::From(_) => self.get(source).is_none(),
+            Source::Op(reference) => self.failed.contains_key(reference),
+        }
     }
 }
 
@@ -514,8 +744,24 @@ fn digits(number: &str) -> Option<u64> {
 pub enum Env {
     /// A literal value from the spec.
     Exact(String),
-    /// `{ "from": "NAME" }`: the caller's value, passed by name only.
-    From { from: String },
+    /// `{ "from": "NAME" }` or `{ "op": "op://…" }`: the caller's value,
+    /// passed by its source only. Validation refuses both or neither.
+    Secret {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        op: Option<String>,
+    },
+}
+
+impl Env {
+    /// The source of a [`Env::Secret`] entry.
+    pub fn source(&self) -> Option<Result<Source, &'static str>> {
+        match self {
+            Env::Exact(_) => None,
+            Env::Secret { from, op } => Some(Source::declared(from.as_deref(), op.as_deref())),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for Env {
@@ -525,7 +771,7 @@ impl<'de> Deserialize<'de> for Env {
             type Value = Env;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a string or an object with only a from key")
+                formatter.write_str("a string or an object with only a from or op key")
             }
 
             fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Env, E> {
@@ -539,12 +785,15 @@ impl<'de> Deserialize<'de> for Env {
             fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Env, A::Error> {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
-                struct From {
-                    from: String,
+                struct Secret {
+                    #[serde(default, deserialize_with = "present")]
+                    from: Option<String>,
+                    #[serde(default, deserialize_with = "present")]
+                    op: Option<String>,
                 }
-                let From { from } =
-                    From::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(Env::From { from })
+                let Secret { from, op } =
+                    Secret::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(Env::Secret { from, op })
             }
         }
         deserializer.deserialize_any(Visitor)
@@ -587,26 +836,30 @@ impl Plan {
         self.validate_inputs(None)
     }
 
-    /// Refuse, naming the first unset one, when a caller variable the spec
-    /// reads is missing from `values`. Only presence is checked.
+    /// Refuse, naming the first one, when a source the spec reads is an
+    /// unset variable or a failed `op` read. Only presence is checked, and
+    /// a reference not read is not checked. Declarations are checked first.
     pub(crate) fn check_variables(&self, values: &Values) -> Result<(), String> {
-        match self
-            .sources()
-            .find(|(_, _, variable)| values.get(variable).is_none())
-        {
-            Some((kind, name, variable)) => Err(unset(kind, name, variable)),
-            None => Ok(()),
+        for (kind, name, source) in self.sources() {
+            if let Ok(source) = source
+                && values.lacks(&source)
+            {
+                return Err(unset(kind, name, values, &source));
+            }
         }
+        Ok(())
     }
 
-    /// Each caller variable the spec reads, as (`env` or `route`, the entry's
-    /// name, the variable): env `from`s, then injecting headers and login
-    /// routes.
-    pub(crate) fn sources(&self) -> impl Iterator<Item = (&'static str, &str, &str)> {
-        let env = self.env.iter().filter_map(|(name, value)| match value {
-            Env::From { from } => Some(("env", name.as_str(), from.as_str())),
-            Env::Exact(_) => None,
-        });
+    /// Each secret source the spec declares, as (`env` or `route`, the
+    /// entry's name, the source or why it is malformed): env entries, then
+    /// injecting headers and login routes.
+    pub(crate) fn sources(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, &str, Result<Source, &'static str>)> {
+        let env = self
+            .env
+            .iter()
+            .filter_map(|(name, value)| Some(("env", name.as_str(), value.source()?)));
         let routes = self
             .egress
             .iter()
@@ -615,17 +868,23 @@ impl Plan {
                 Route::Inject(inject) => inject
                     .headers
                     .values()
-                    .map(|header| ("route", name.as_str(), header.from.as_str()))
+                    .map(|header| ("route", name.as_str(), header.source()))
                     .collect(),
                 Route::Login(login) => login
-                    .from
-                    .as_deref()
-                    .map(|from| ("route", name.as_str(), from))
+                    .source()
+                    .map(|source| ("route", name.as_str(), source))
                     .into_iter()
                     .collect(),
                 Route::Address(_) => Vec::new(),
             });
         env.chain(routes)
+    }
+
+    /// Whether a source is a well-formed `op` reference, which only the
+    /// process that starts a box reads.
+    pub fn reads_op(&self) -> bool {
+        self.sources()
+            .any(|(_, _, source)| matches!(source, Ok(Source::Op(_))))
     }
 
     fn validate_inputs(&self, values: Option<&Values>) -> Result<(), String> {
@@ -738,17 +997,15 @@ impl Plan {
             {
                 return Err(invalid(format!("env {name} must not hold a NUL byte")));
             }
-            if let Env::From { from } = value
-                && !valid_from(from)
+            let Some(source) = value.source() else {
+                continue;
+            };
+            let source = source.map_err(|error| invalid(format!("env {name}: {error}")))?;
+            if let Some(values) = values
+                && values.get(&source).is_none()
+                && !values.pending(&source)
             {
-                return Err(invalid(format!(
-                    "env {name}: its from variable is empty or holds = or NUL"
-                )));
-            }
-            if let (Env::From { from }, Some(values)) = (value, values)
-                && values.get(from).is_none()
-            {
-                return Err(unset("env", name, from));
+                return Err(unset("env", name, values, &source));
             }
         }
         if let Some(egress) = &self.egress {
@@ -986,6 +1243,13 @@ fn valid_from(name: &str) -> bool {
     !name.is_empty() && !name.contains(['=', '\0'])
 }
 
+/// A 1Password secret reference `op read` takes as one argument.
+pub(crate) fn valid_op(reference: &str) -> bool {
+    reference.starts_with("op://")
+        && !reference.chars().any(|c| c.is_ascii_control())
+        && reference.len() <= 1024
+}
+
 fn valid_env_name(name: &str) -> bool {
     name.bytes()
         .next()
@@ -1069,6 +1333,6 @@ fn invalid(message: impl fmt::Display) -> String {
 }
 
 /// `kind` is `env` or `route`, `name` its key; never a value.
-fn unset(kind: &str, name: &str, variable: &str) -> String {
-    format!("{kind} {name:?} needs the host variable {variable}, which is not set")
+fn unset(kind: &str, name: &str, values: &Values, source: &Source) -> String {
+    format!("{kind} {name:?} {}", values.missing(source))
 }

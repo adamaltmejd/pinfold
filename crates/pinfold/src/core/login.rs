@@ -1,8 +1,9 @@
 //! A codex login route's token: asked of the pinned host helper, checked,
-//! and held in the proxy's memory only. Also the files a login route's
-//! agents read in the box. Renderers never receive resolved credentials.
+//! and held in the proxy's memory only. Also the `op` reads behind `op`
+//! sources, and the files a login route's agents read in the box.
+//! Renderers never receive resolved credentials.
 
-use crate::core::process::CommandGuard;
+use crate::core::process::{CommandGuard, GroupChild};
 
 use std::fs::{File, TryLockError};
 use std::io::{self, Write};
@@ -219,6 +220,71 @@ fn ask(
             return Ok(message["result"].take());
         }
     }
+}
+
+const OP_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const MAX_OP_VALUE: usize = 64 * 1024;
+
+/// Read one 1Password secret with the first `op` on PATH, as `op read
+/// --no-newline REFERENCE` with this process's environment, stdin null and
+/// stderr discarded, in a process group of its own. Past the deadline, or
+/// on this thread's cancellation, the group is killed and `op` reaped. An
+/// error is the cause alone: never the value or any of op's output.
+pub fn op_read(reference: &str) -> Result<String, String> {
+    // A cancelled launch starts no further `op`.
+    if crate::core::process::is_cancelled() {
+        return Err("op read was cancelled".to_string());
+    }
+    let deadline = Instant::now() + OP_TIMEOUT;
+    let mut child = GroupChild::spawn(
+        Command::new("op")
+            .args(["read", "--no-newline", reference])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null()),
+    )
+    .map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => "op is not on PATH".to_string(),
+        _ => "op did not start".to_string(),
+    })?;
+    let failed = |error: io::Error| match error.kind() {
+        io::ErrorKind::TimedOut => "op read timed out after 30 s".to_string(),
+        io::ErrorKind::Interrupted => "op read was cancelled".to_string(),
+        _ => "op read failed".to_string(),
+    };
+    let mut stdout = child.take_stdout().expect("piped stdout");
+    nonblocking(&stdout, "op").map_err(failed)?;
+    let mut value = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = pipe::read(&mut stdout, &mut buffer, deadline, None, "op").map_err(failed)?;
+        if n == 0 {
+            break;
+        }
+        if value.len() + n > MAX_OP_VALUE {
+            return Err("op read gave more than 64 KiB".to_string());
+        }
+        value.extend_from_slice(&buffer[..n]);
+    }
+    while !child.exited().map_err(failed)? {
+        wait_ready(None, PollFlags::empty(), deadline, None, "op").map_err(failed)?;
+    }
+    let status = child.finish().map_err(failed)?;
+    if !status.success() {
+        use std::os::unix::process::ExitStatusExt;
+        return Err(match (status.code(), status.signal()) {
+            (Some(code), _) => format!("op read exited with status {code}"),
+            (None, Some(signal)) => format!("op read was killed by signal {signal}"),
+            (None, None) => "op read failed".to_string(),
+        });
+    }
+    if value.is_empty() {
+        return Err("op read gave an empty value".to_string());
+    }
+    if value.contains(&0) {
+        return Err("op read gave a value holding NUL".to_string());
+    }
+    String::from_utf8(value).map_err(|_| "op read gave a value that is not UTF-8".to_string())
 }
 
 /// Check that `value` is a JWT with a future `exp` and an account id. The
