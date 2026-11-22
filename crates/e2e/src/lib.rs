@@ -629,6 +629,11 @@ impl Client {
             .unwrap_or_else(|error| panic!("client {}: no line: {error}", self.child.id()))
     }
 
+    /// The client's pid.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
     /// Write `line` and a newline to the command's stdin.
     fn send(&mut self, line: &str) {
         let stdin = self.stdin.as_mut().expect("client stdin");
