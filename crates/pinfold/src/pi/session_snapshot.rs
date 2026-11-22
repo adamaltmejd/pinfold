@@ -224,12 +224,9 @@ impl Snapshot {
             ]
             .map(String::from),
         );
-        // A `PINFOLD_ENV_` name is configuration the owner loads again. Every
-        // `from` value reaches the owner only in its snapshot ([`Self::values`]).
+        names.extend(self.route_values.keys().cloned());
         for source in self.env_names.values() {
-            if let EnvSource::From { name } = source
-                && name.starts_with("PINFOLD_ENV_")
-            {
+            if let EnvSource::From { name } = source {
                 names.insert(name.clone());
             }
         }

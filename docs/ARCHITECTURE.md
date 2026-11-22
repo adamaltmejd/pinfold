@@ -2048,12 +2048,12 @@ A `from` value is read once, when a new box starts. A missing variable
 refuses the start before any owner starts, and so does a missing injecting
 or login route variable: the client prints `env "NAME" needs the host
 variable VAR, which is not set` or `route "NAME" needs the host variable
-VAR, which is not set` on stderr and exits 125. The value travels only
-in the admission snapshot, held in memory and sent over the private
-project socket: to the detached owner, which starts the box with it,
-and, for the join comparison, to a running owner. A `PINFOLD_ENV_`
-variable also reaches the owner's environment, since its name is
-configuration. `config --json` names
+VAR, which is not set` on stderr and exits 125. The value travels as a
+`PINFOLD_ENV_` value does: in the environment of the detached owner and
+its runtime client, and in the admission snapshot, held in memory and
+sent over the private project socket. The owner starts the box with the
+snapshot's values, and a running owner compares a joining client's
+snapshot with its own. `config --json` names
 the variable, never its value; elsewhere it follows the box spec's `env`
 rules (Process interface). A literal is configuration, not a secret:
 `config --json` shows it; the launch record names it, like every box
