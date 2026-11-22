@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::core::process::Listener as UnixListener;
 
-use super::super::exec_transport::put;
+use super::super::exec_transport::{cancelled, put};
 use super::jail;
 use super::vsock;
 use crate::core::artifacts;
@@ -66,16 +66,6 @@ pub fn prepare(
     cancel: &AtomicBool,
     generated: &[PathBuf],
 ) -> io::Result<Prepared> {
-    let cancelled = || {
-        if cancel.load(Ordering::Acquire) {
-            Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "startup cancelled",
-            ))
-        } else {
-            Ok(())
-        }
-    };
     sockets.validate()?;
     let vmm = artifacts::vmm(Some(cancel))?;
     let reference = plan
@@ -90,14 +80,14 @@ pub fn prepare(
             "image-changed: box started a different image",
         ));
     }
-    cancelled()?;
+    cancelled(Some(cancel))?;
     let (root_disk, image_env) = linux::catalog::root(image_id)?;
-    cancelled()?;
+    cancelled(Some(cancel))?;
     let init_disk = state_dir.join("init.ext4");
     write_init_disk(&init_disk)?;
     let mut mounts = Vec::new();
     for (index, mount) in plan.mounts.iter().enumerate() {
-        cancelled()?;
+        cancelled(Some(cancel))?;
         let disk = state_dir.join(format!("mount{index}.ext4"));
         mount_image(&mount.host, &disk)?;
         mounts.push((disk, mount.guest.clone()));

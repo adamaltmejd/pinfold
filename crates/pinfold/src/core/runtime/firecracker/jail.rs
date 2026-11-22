@@ -121,20 +121,25 @@ impl Vmm {
 
     /// SIGKILL the VMM through its pidfd. One that has ended is left alone.
     pub fn kill(&self) -> io::Result<()> {
-        // SAFETY: pidfd_send_signal on an owned pidfd, no siginfo.
-        let sent = unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_send_signal,
-                self.pidfd.as_raw_fd(),
-                libc::SIGKILL,
-                std::ptr::null::<libc::siginfo_t>(),
-                0u32,
-            )
-        };
-        match Errno::result(sent) {
-            Ok(_) | Err(Errno::ESRCH) => Ok(()),
-            Err(error) => Err(io::Error::other(format!("kill the VMM: {error}"))),
-        }
+        kill(&self.pidfd)
+    }
+}
+
+/// SIGKILL the process `pidfd` names. One that has ended is left alone.
+fn kill(pidfd: &OwnedFd) -> io::Result<()> {
+    // SAFETY: pidfd_send_signal on an owned pidfd, no siginfo.
+    let sent = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            libc::SIGKILL,
+            std::ptr::null::<libc::siginfo_t>(),
+            0u32,
+        )
+    };
+    match Errno::result(sent) {
+        Ok(_) | Err(Errno::ESRCH) => Ok(()),
+        Err(error) => Err(io::Error::other(format!("kill the VMM: {error}"))),
     }
 }
 
@@ -219,15 +224,7 @@ pub fn probe() -> io::Result<()> {
             Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
             Err(error) => {
                 // The unreaped child and retained pidfd still identify this probe.
-                unsafe {
-                    libc::syscall(
-                        libc::SYS_pidfd_send_signal,
-                        pidfd.as_raw_fd(),
-                        libc::SIGKILL,
-                        std::ptr::null::<libc::siginfo_t>(),
-                        0u32,
-                    );
-                }
+                let _ = kill(&pidfd);
                 let _ = wait(pid);
                 return Err(error);
             }
