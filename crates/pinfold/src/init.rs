@@ -66,6 +66,8 @@ pub struct ExecMetadata {
     pub window: Option<(u16, u16)>,
     pub term: Option<Vec<u8>>,
     pub colorterm: Option<Vec<u8>>,
+    /// Deliver all of the command's output, with no deadline after it exits.
+    pub whole_output: bool,
 }
 
 impl ExecMetadata {
@@ -82,7 +84,7 @@ impl ExecMetadata {
             .window
             .map_or_else(|| "-".to_string(), |(rows, cols)| format!("{rows},{cols}"));
         format!(
-            "{window}:{}:{}:{}:{}:{}",
+            "{window}:{}:{}:{}:{}:{}:{}",
             optional(self.agent.as_deref().map(str::as_bytes)),
             optional(self.term.as_deref()),
             optional(self.colorterm.as_deref()),
@@ -95,13 +97,14 @@ impl ExecMetadata {
                 self.project_directory
                     .as_ref()
                     .map(|(_, relative)| relative.as_os_str().as_bytes())
-            )
+            ),
+            if self.whole_output { "1" } else { "-" }
         )
     }
 
     fn decode(value: &str) -> io::Result<Self> {
         let invalid = || io::Error::other("invalid execution metadata");
-        let fields: [&str; 6] = value
+        let fields: [&str; 7] = value
             .split(':')
             .collect::<Vec<_>>()
             .try_into()
@@ -133,6 +136,11 @@ impl ExecMetadata {
         if window.is_some_and(|(rows, cols)| rows == 0 || cols == 0) {
             return Err(invalid());
         }
+        let whole_output = match fields[6] {
+            "1" => true,
+            "-" => false,
+            _ => return Err(invalid()),
+        };
         Ok(Self {
             project_directory,
             agent: optional(fields[1])?
@@ -142,6 +150,7 @@ impl ExecMetadata {
             window,
             term: optional(fields[2])?,
             colorterm: optional(fields[3])?,
+            whole_output,
         })
     }
 }
@@ -455,8 +464,13 @@ fn session_exec() -> io::Result<()> {
         return Err(io::Error::other("expected command frame"));
     }
     let result = firecracker::exec(connection, &payload, None, Some((departure.as_fd(), false)));
-    let _ = drain.recv_timeout(Duration::from_secs(1));
-    result
+    // Whole output waits for every relayed byte to reach the native pipe.
+    if result.as_ref().is_ok_and(|whole_output| *whole_output) {
+        let _ = drain.recv();
+    } else {
+        let _ = drain.recv_timeout(Duration::from_secs(1));
+    }
+    result.map(drop)
 }
 
 /// `init rex-dial`: copy stdio to and from the guest Rex server. The

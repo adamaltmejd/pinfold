@@ -901,7 +901,7 @@ fn request(mut connection: UnixStream, env: &Env) -> io::Result<()> {
                 .expect("env lock")
                 .clone()
                 .unwrap_or_default();
-            exec(connection, &payload, Some(vars), None)
+            exec(connection, &payload, Some(vars), None).map(drop)
         }
         _ => write_frame(
             &mut connection,
@@ -926,12 +926,13 @@ pub(super) fn decode_env(payload: &[u8]) -> io::Result<Vec<(OsString, OsString)>
 /// ends. Project commands stop their process group when their client departs.
 /// `vars` is the box's environment for the child; without it (Apple) the
 /// child keeps this process's environment and reads the box's from PID 1.
+/// Returns whether the client asked for the command's whole output.
 pub(super) fn exec(
     connection: UnixStream,
     payload: &[u8],
     vars: Option<Vec<(OsString, OsString)>>,
     departure: Option<(BorrowedFd<'_>, bool)>,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let mut fields = Fields(payload);
     let argv: Vec<OsString> = (0..fields.u32()?)
         .map(|_| fields.os())
@@ -948,6 +949,7 @@ pub(super) fn exec(
     // apply it a second time after the command's terminal exists.
     let window = metadata.window.take();
     let project = metadata.project_directory.is_some();
+    let whole_output = metadata.whole_output;
     fields.end()?;
     let Some(program) = argv.first() else {
         return Err(io::Error::other("an exec without argv"));
@@ -1023,7 +1025,7 @@ pub(super) fn exec(
                 super::formatting::terminal_text(&program.to_string_lossy())
             );
             if project {
-                return write_frame(&mut output, FAILED, message.as_bytes());
+                return write_frame(&mut output, FAILED, message.as_bytes()).map(|()| false);
             }
             write_frame(&mut output, STDERR, message.as_bytes())?;
             // The public process interface keeps the shell's spawn codes.
@@ -1032,12 +1034,14 @@ pub(super) fn exec(
             } else {
                 126
             };
-            return write_frame(&mut output, super::exec_wire::EXIT, &code.to_be_bytes());
+            return write_frame(&mut output, super::exec_wire::EXIT, &code.to_be_bytes())
+                .map(|()| false);
         }
     };
     drop(command);
 
-    super::session_io::relay(connection, child, pty, project, departure)
+    super::session_io::relay(connection, child, pty, project, whole_output, departure)?;
+    Ok(whole_output)
 }
 
 fn open_pty(window: Option<(u16, u16)>) -> io::Result<(File, File)> {

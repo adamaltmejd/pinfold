@@ -48,6 +48,7 @@ pub fn exec(
         project_directory: context
             .project_directory
             .map(|(root, relative)| (root.to_path_buf(), relative.to_path_buf())),
+        whole_output: context.whole_output,
         ..Default::default()
     };
     if tty {
@@ -163,7 +164,9 @@ fn relay(
                             return Err(io::Error::other("duplicate exit"));
                         }
                         completed = Some(i32::from_be_bytes(payload.try_into().unwrap()));
-                        deadline = Some(Instant::now() + Duration::from_secs(1));
+                        if !context.whole_output {
+                            deadline = Some(Instant::now() + Duration::from_secs(1));
+                        }
                         input_open = false;
                         input.clear();
                         stdin.close();
