@@ -9,12 +9,13 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 use nix::fcntl::Flock;
 
 use crate::core::r#box::RefusalReason;
 use crate::core::ownership::{self, Attachment, Claim};
+use crate::core::pipe::check_cancel;
 use crate::core::plan::{Disk, Plan};
 use crate::core::profile::Seed;
 use crate::core::runtime::Runtime;
@@ -124,14 +125,6 @@ impl Claimed {
                 ));
             }
         }
-    }
-}
-
-fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
-    if cancel.load(Ordering::Acquire) {
-        Err(io::ErrorKind::Interrupted.into())
-    } else {
-        Ok(())
     }
 }
 

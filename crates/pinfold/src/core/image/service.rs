@@ -1,20 +1,11 @@
 //! Image operations, selected independently of box execution.
 
-use crate::core::process::CommandGuard;
-
-use std::collections::{BTreeMap, VecDeque};
-use std::io::{self, Read};
+use std::collections::BTreeMap;
+use std::io;
 use std::path::Path;
-use std::process::Stdio;
-
-use serde::de::DeserializeOwned;
 
 #[cfg(not(target_os = "linux"))]
 use crate::core::runtime::apple;
-use crate::core::runtime::{captured, parse_json, spawn_error};
-
-const BUILD_LOG_BYTES: usize = 64 * 1024;
-
 /// The image service for this OS.
 pub fn service() -> &'static dyn ImageService {
     #[cfg(target_os = "linux")]
@@ -22,13 +13,6 @@ pub fn service() -> &'static dyn ImageService {
     #[cfg(not(target_os = "linux"))]
     return &apple::Apple;
 }
-
-/// The runtime's native Linux image architecture.
-pub const TARGET_ARCH: &str = if cfg!(target_arch = "aarch64") {
-    "arm64"
-} else {
-    "amd64"
-};
 
 /// One image the runtime knows about.
 #[derive(Debug, Clone)]
@@ -56,6 +40,8 @@ pub struct BuildRequest<'a> {
     /// reruns.
     pub cache: bool,
     /// Additional explicit build-egress hosts; independent of agent egress.
+    /// Only Linux builds read it: `check_build_allow` refuses it on macOS.
+    #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
     pub allow: &'a [String],
     /// One managed-build argument; absent for caller builds.
     pub build_arg: Option<(&'a str, &'a str)>,
@@ -82,10 +68,7 @@ pub trait ImageService: Sync {
     fn build_cache(&self) -> &'static str;
 
     /// Allocated build-cache storage, including its backing filesystem.
-    /// None when the runtime cannot measure it separately.
-    fn build_cache_bytes(&self) -> io::Result<Option<u64>> {
-        Ok(None)
-    }
+    fn build_cache_bytes(&self) -> io::Result<u64>;
 
     /// Build an image from [`BuildRequest`]. The inner `Err` is the build's
     /// output, stdout and stderr in order, when the build ran and failed.
@@ -93,96 +76,4 @@ pub trait ImageService: Sync {
 
     /// The build implementation's name for diagnostics.
     fn program(&self) -> &'static str;
-}
-
-/// Run `<program> image inspect <reference>` and return its first entry. The
-/// inner `Err` is the runtime's stderr when it cannot resolve the reference.
-pub(crate) fn inspect<T: DeserializeOwned>(
-    program: &str,
-    reference: &str,
-) -> io::Result<Result<T, String>> {
-    let json = match captured(&[program, "image", "inspect", reference])? {
-        Ok(json) => json,
-        Err(stderr) => return Ok(Err(stderr)),
-    };
-    let what = format!("{program} image inspect");
-    let images: Vec<T> = parse_json(&what, &json)?;
-    images
-        .into_iter()
-        .next()
-        .map(Ok)
-        .ok_or_else(|| io::Error::other(format!("{what} returned no image")))
-}
-
-/// Build `request` with `program`; `cache_flags` is how that runtime spells
-/// the request's cache choice. stdout and stderr are captured through one
-/// pipe, so the output keeps its order. The inner `Err` is that output when
-/// the build fails.
-pub(crate) fn build(
-    program: &str,
-    cache_flags: &[&str],
-    request: &BuildRequest,
-) -> io::Result<Result<(), String>> {
-    let (reader, writer) = crate::core::process::pipe()?;
-    let mut command = std::process::Command::new(program);
-    if cfg!(target_os = "macos") {
-        // Apple includes color settings in the shared builder's identity
-        // (GitHub #77). Every pinfold caller must use the same settings.
-        command.env_remove("NO_COLOR").env_remove("BUILDKIT_COLORS");
-    }
-    command
-        .arg("build")
-        .args(["--build-arg", &format!("TARGETARCH={TARGET_ARCH}")])
-        .args(cache_flags)
-        .arg("--file")
-        .arg(request.containerfile);
-    if let Some((name, value)) = request.build_arg {
-        command.arg("--build-arg").arg(format!("{name}={value}"));
-    }
-    for tag in request.tags {
-        command.arg("--tag").arg(tag);
-    }
-    for (key, value) in request.labels {
-        command.arg("--label").arg(format!("{key}={value}"));
-    }
-    command
-        // A bare relative context such as `--json` would parse as an option.
-        .arg(std::path::absolute(request.context)?)
-        .stdin(Stdio::null())
-        .stdout(writer.try_clone()?)
-        .stderr(writer);
-    let child = command.spawn_guarded();
-    // The command holds the pipe's write ends, and the read below ends only
-    // once every write end is closed.
-    drop(command);
-    let mut child = child.map_err(|error| spawn_error(program, error))?;
-    let mut tail = VecDeque::new();
-    let mut newlines = 0;
-    for byte in io::BufReader::new(reader).bytes() {
-        let byte = match byte {
-            Ok(byte) => byte,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        };
-        tail.push_back(byte);
-        newlines += usize::from(byte == b'\n');
-        while tail.len() > BUILD_LOG_BYTES
-            || newlines + usize::from(tail.back() != Some(&b'\n')) > 40
-        {
-            newlines -= usize::from(tail.pop_front() == Some(b'\n'));
-        }
-    }
-    if child.wait()?.success() {
-        Ok(Ok(()))
-    } else {
-        let bytes: Vec<u8> = tail.into_iter().collect();
-        let mut output = String::from_utf8_lossy(&bytes).into_owned();
-        // Replacement characters can expand malformed runtime output.
-        let start = output.ceil_char_boundary(output.len().saturating_sub(BUILD_LOG_BYTES));
-        output.drain(..start);
-        Ok(Err(output))
-    }
 }

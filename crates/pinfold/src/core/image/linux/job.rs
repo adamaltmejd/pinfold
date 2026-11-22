@@ -17,7 +17,6 @@ use std::time::{Duration, Instant};
 
 use crate::core::process::Listener as UnixListener;
 use nix::fcntl::{Flock, OFlag};
-use nix::poll::PollFlags;
 use nix::sys::stat::Mode;
 use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{SignalKind, signal};
@@ -26,6 +25,7 @@ use super::catalog::{self, Publication, Verified};
 use super::{LOCAL_BASE_BYTES, OCI_BYTES};
 use crate::core::image::BuildRequest;
 use crate::core::ownership::{self, Claim};
+use crate::core::pipe::check_cancel;
 use crate::core::plan::{Egress, Plan};
 use crate::core::runtime::firecracker::{jail, vm};
 use crate::core::{artifacts, clean, pipe, proxy, runs, sha256_hex};
@@ -461,7 +461,7 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
     let vmm = artifacts::vmm(Some(cancel))?;
     let init = state.join("init.ext4");
     let init_tree = state.join("init.tree");
-    private_dir(&init_tree)?;
+    catalog::directory(&init_tree)?;
     fs::create_dir(init_tree.join("dev"))?;
     fs::create_dir(init_tree.join("mnt"))?;
     copy_file(
@@ -486,14 +486,14 @@ fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<P
     let bases = catalog::base_metadata(cancel)?;
     let input = state.join("input");
     let mut budget = InputBudget::default();
-    private_dir(&input.join("context"))?;
+    catalog::directory(&input.join("context"))?;
     copy_tree(
         &fs::canonicalize(&request.context)?,
         &input.join("context"),
         cancel,
         &mut budget,
     )?;
-    private_dir(&input.join("recipe"))?;
+    catalog::directory(&input.join("recipe"))?;
     copy_file(
         &fs::canonicalize(&request.containerfile)?,
         &input.join("recipe/Dockerfile"),
@@ -671,14 +671,14 @@ fn select_bases(
     }
     let ids: BTreeSet<_> = selected.values().map(|base| base.digest.clone()).collect();
     let bases = catalog::lease_bases(&ids, cancel)?;
-    private_dir(&input.join("bases"))?;
+    catalog::directory(&input.join("bases"))?;
     let mut base_budget = InputBudget::new(LOCAL_BASE_BYTES);
     let mut layouts = BTreeMap::new();
     for (index, (id, path, _lease)) in bases.iter().enumerate() {
         check_cancel(cancel)?;
         let relative = format!("bases/{index}");
         let target = input.join(&relative);
-        private_dir(&target)?;
+        catalog::directory(&target)?;
         copy_tree(path, &target, cancel, &mut base_budget)?;
         layouts.insert(id.clone(), format!("/selected/{relative}"));
     }
@@ -715,7 +715,7 @@ fn prepare_conversion(verified: &Verified, state: &Path, cancel: &AtomicBool) ->
     let input = state.join("conversion-input");
     let mut base_budget = InputBudget::new(OCI_BYTES);
     for path in ["context", "recipe", "bases/0"] {
-        private_dir(&input.join(path))?;
+        catalog::directory(&input.join(path))?;
     }
     copy_tree(
         &verified.directory,
@@ -806,14 +806,7 @@ fn conversion_base(
     manifest["config"]["digest"] = config_id.into();
     manifest["config"]["size"] = config_size.into();
     let (manifest_id, manifest_size) = blob(serde_json::to_vec(&manifest)?)?;
-    let index = serde_json::to_vec(&serde_json::json!({
-        "schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
-        "manifests": [{
-            "mediaType": "application/vnd.oci.image.manifest.v1+json",
-            "digest": manifest_id, "size": manifest_size,
-            "platform": {"os": "linux", "architecture": "amd64"}
-        }]
-    }))?;
+    let index = catalog::canonical_index(&manifest_id, manifest_size as u64)?;
     check_cancel(cancel)?;
     budget.charge(index.len() as u64)?;
     fs::write(layout.join("index.json"), index)?;
@@ -840,7 +833,7 @@ async fn run_job(
     audit: &mut proxy::Server,
 ) -> io::Result<Received> {
     check_cancel(cancel)?;
-    private_dir(state)?;
+    catalog::directory(state)?;
     let vsock = socket_dir(claim.generation(), phase.egress())?;
     let disk = state.join("input.ext4");
     let selected_disk = state.join("selected.ext4");
@@ -892,7 +885,7 @@ async fn run_job(
     let config_path = state.join("config.json");
     fs::write(&config_path, config.to_string())?;
     let jail_root = state.join("jail");
-    private_dir(&jail_root)?;
+    catalog::directory(&jail_root)?;
     let mut child = jail::spawn(
         &jail::Jail {
             root: &jail_root,
@@ -1083,14 +1076,6 @@ fn put(output: &mut Vec<u8>, bytes: &[u8]) {
     output.extend(bytes);
 }
 
-fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
-    if cancel.load(Ordering::Acquire) {
-        Err(io::ErrorKind::Interrupted.into())
-    } else {
-        Ok(())
-    }
-}
-
 async fn cancelled(cancel: &AtomicBool) {
     while !cancel.load(Ordering::Acquire) {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1188,13 +1173,6 @@ impl Write for JobReader {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
-}
-
-fn private_dir(path: &Path) -> io::Result<()> {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(path)
 }
 
 fn socket_prefix() -> io::Result<String> {
@@ -1396,35 +1374,19 @@ fn populate(
 
 fn run_process(mut command: Command, cancel: &AtomicBool) -> io::Result<()> {
     check_cancel(cancel)?;
-    let mut child = command
+    let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn_guarded()?;
     let deadline = Instant::now() + JOB_TIME;
-    let result = (|| loop {
-        if let Some(status) = child.try_wait()? {
-            return if status.success() {
-                check_cancel(cancel)
-            } else {
-                Err(io::Error::other(format!(
-                    "image-prepare: mkfs.ext4 exited {status}"
-                )))
-            };
-        }
-        pipe::wait_ready(
-            None,
-            PollFlags::empty(),
-            deadline,
-            Some(cancel),
-            "image-prepare",
-        )?;
-    })();
-    if result.is_err() {
-        let _ = child.kill();
+    let status = crate::core::process::wait_child(child, deadline, Some(cancel), "image-prepare")?;
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "image-prepare: mkfs.ext4 exited {status}"
+        )));
     }
-    let reaped = child.wait();
-    result.and(reaped.map(|_| ()))
+    check_cancel(cancel)
 }
 
 fn tree_size(path: &Path, cancel: &AtomicBool) -> io::Result<(u64, u64)> {
@@ -1537,7 +1499,7 @@ fn copy_directory(
                 OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
                 Mode::empty(),
             )?);
-            private_dir(&target)?;
+            catalog::directory(&target)?;
             copy_directory(&child, &target, cancel, budget)?;
         } else if kind.is_file() {
             let source = File::from(nix::fcntl::openat(

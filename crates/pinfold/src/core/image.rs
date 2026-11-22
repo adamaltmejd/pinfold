@@ -15,11 +15,7 @@ use crate::core::profile;
 pub(crate) mod linux;
 pub(crate) mod service;
 
-#[cfg(not(target_os = "linux"))]
-use crate::core::runtime::output;
 use crate::dirs;
-#[cfg(not(target_os = "linux"))]
-use service::TARGET_ARCH;
 pub use service::{BuildRequest, ImageInfo, ImageService, service};
 
 /// The Containerfile bytes a managed image was built from.
@@ -72,8 +68,6 @@ pub struct Built {
 /// then run retention for the source's images. The inner `Err` is the
 /// build's output when the build ran and failed.
 pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built, String>> {
-    check_build_allow(&build.allow)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     // A new build's id, the `<build>` of its unique tag. It starts with the
     // build's nanoseconds since the epoch in hex, which retention orders
     // builds by. It is never a label, so a cached build of unchanged inputs
@@ -201,7 +195,7 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
             request.context.display()
         )));
     }
-    let containerfile = fs::read(&request.containerfile).map_err(|error| {
+    fs::read(&request.containerfile).map_err(|error| {
         spec(format!(
             "containerfile {}: {error}",
             request.containerfile.display()
@@ -218,7 +212,6 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
         }
     };
     let labels = request.labels;
-    refresh_base(images, &containerfile).map_err(failed)?;
     build(
         images,
         Build {
@@ -250,69 +243,4 @@ pub(crate) fn check_build_allow(hosts: &[String]) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-pub fn refresh_base(_images: &dyn ImageService, _containerfile: &[u8]) -> io::Result<()> {
-    // BuildKit resolves sources inside the isolated builder.
-    Ok(())
-}
-
-/// Refresh Apple's external base on the requested platform before building.
-/// Local pinfold bases and unresolved arguments never trigger a pull.
-#[cfg(not(target_os = "linux"))]
-pub fn refresh_base(images: &dyn ImageService, containerfile: &[u8]) -> io::Result<()> {
-    let Ok(text) = std::str::from_utf8(containerfile) else {
-        return Ok(());
-    };
-    let mut platform = None;
-    let base = text
-        .lines()
-        .map(str::split_whitespace)
-        .find_map(|mut words| {
-            if !words.next()?.eq_ignore_ascii_case("FROM") {
-                return None;
-            }
-            for word in words {
-                if let Some(value) = word.strip_prefix("--platform=") {
-                    platform = Some(value);
-                } else if !word.starts_with("--") {
-                    return Some(word);
-                }
-            }
-            None
-        });
-    // Build arguments are resolved by the builder. Guessing an unresolved
-    // platform here can refresh every architecture (GitHub #78).
-    if platform.is_some_and(|platform| platform.contains('$')) {
-        return Ok(());
-    }
-    match base {
-        Some("scratch") => Ok(()),
-        Some(base) if !base.contains('$') => {
-            // A pinfold-built base can never be pulled, so read its digest
-            // locally before spending the retries on a doomed pull. Every
-            // pinfold build records [`clean::BASE_LABEL`], empty when its
-            // own base did not resolve, so its presence marks the image; a
-            // caller image's family labels are all empty.
-            if let Ok(image) = images.resolve_image(base)?
-                && image.labels.contains_key(clean::BASE_LABEL)
-            {
-                return Ok(());
-            }
-            // A floating tag must be pulled for its digest to be current and
-            // present to inspect. An unresolvable base has no digest.
-            let native = format!("linux/{TARGET_ARCH}");
-            let platform =
-                platform.or_else(|| cfg!(target_os = "macos").then_some(native.as_str()));
-            let mut arguments = vec![images.program(), "image", "pull"];
-            if let Some(platform) = platform {
-                arguments.extend(["--platform", platform]);
-            }
-            arguments.push(base);
-            let _ = output(&arguments);
-            Ok(())
-        }
-        _ => Ok(()),
-    }
 }

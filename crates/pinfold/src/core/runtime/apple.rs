@@ -19,12 +19,11 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, Command};
 
 use crate::core::disk::{self, Directory, Fill, Seeding};
-use crate::core::image::service::inspect;
 use crate::core::image::{BuildRequest, ImageInfo, ImageService};
 use crate::core::plan::{MountKind, Plan};
 use crate::core::runtime::{
-    BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, output, parse_json,
-    spawn_error,
+    BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, captured, output,
+    parse_json, spawn_error,
 };
 use crate::core::{clean, ownership};
 use crate::dirs;
@@ -1512,6 +1511,7 @@ fn image_info(image: ListedImage) -> io::Result<ImageInfo> {
 /// Builder cache kept after each build, 4 GB in decimal MB: a measured
 /// four-image chain needs 2.5 GB, and Apple's own GC keeps 32 GiB (#392).
 const BUILDER_KEEP_MB: &str = "4096";
+const BUILD_LOG_BYTES: usize = 64 * 1024;
 
 /// Prune unused BuildKit records in the shared builder. BuildKit keeps
 /// records in active use; deleting the shared builder instead interrupts
@@ -1544,7 +1544,7 @@ impl ImageService for Apple {
 
     fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>> {
         // `image inspect` prints the same entries as `image list`.
-        match inspect::<ListedImage>("container", reference)? {
+        match inspect_image(reference)? {
             Ok(image) => image_info(image).map(Ok),
             Err(stderr) => Ok(Err(stderr)),
         }
@@ -1572,9 +1572,9 @@ impl ImageService for Apple {
         "the shared builder's backing storage (pruned to 4 GB after each build, emptied by clean)"
     }
 
-    fn build_cache_bytes(&self) -> io::Result<Option<u64>> {
+    fn build_cache_bytes(&self) -> io::Result<u64> {
         let Some(builder) = container("buildkit")? else {
-            return Ok(Some(0));
+            return Ok(0);
         };
         // The exports mount records the runtime's actual app root, including
         // a custom root. Count allocated blocks: rootfs.ext4 is sparse and
@@ -1589,14 +1589,12 @@ impl ImageService for Apple {
         let root = exports
             .parent()
             .ok_or_else(|| io::Error::other("builder exports mount has no parent"))?;
-        allocated_bytes(&root.join("containers/buildkit")).map(Some)
+        allocated_bytes(&root.join("containers/buildkit"))
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
-        crate::core::image::check_build_allow(request.allow)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        let cache_flags: &[&str] = if request.cache { &[] } else { &["--no-cache"] };
-        let result = crate::core::image::service::build("container", cache_flags, request)?;
+        refresh_base(&std::fs::read(request.containerfile)?)?;
+        let result = run_build(request)?;
         // Neither step fails the build.
         if prune_builder(&["--keep-storage", BUILDER_KEEP_MB]).is_err() {
             eprintln!("pinfold: could not prune the builder cache");
@@ -1609,5 +1607,142 @@ impl ImageService for Apple {
 
     fn program(&self) -> &'static str {
         "container"
+    }
+}
+
+/// Refresh Apple's external base on the requested platform before building.
+/// Local pinfold bases and unresolved arguments never trigger a pull.
+fn refresh_base(containerfile: &[u8]) -> io::Result<()> {
+    let Ok(text) = std::str::from_utf8(containerfile) else {
+        return Ok(());
+    };
+    let mut platform = None;
+    let base = text
+        .lines()
+        .map(str::split_whitespace)
+        .find_map(|mut words| {
+            if !words.next()?.eq_ignore_ascii_case("FROM") {
+                return None;
+            }
+            for word in words {
+                if let Some(value) = word.strip_prefix("--platform=") {
+                    platform = Some(value);
+                } else if !word.starts_with("--") {
+                    return Some(word);
+                }
+            }
+            None
+        });
+    // Build arguments are resolved by the builder. Guessing an unresolved
+    // platform here can refresh every architecture (GitHub #78).
+    if platform.is_some_and(|platform| platform.contains('$')) {
+        return Ok(());
+    }
+    match base {
+        Some("scratch") => Ok(()),
+        Some(base) if !base.contains('$') => {
+            // A pinfold-built base can never be pulled, so read its digest
+            // locally before spending the retries on a doomed pull. Every
+            // pinfold build records [`clean::BASE_LABEL`], empty when its
+            // own base did not resolve, so its presence marks the image; a
+            // caller image's family labels are all empty.
+            if let Ok(image) = Apple.resolve_image(base)?
+                && image.labels.contains_key(clean::BASE_LABEL)
+            {
+                return Ok(());
+            }
+            // A floating tag must be pulled for its digest to be current and
+            // present to inspect. An unresolvable base has no digest.
+            let platform = platform.unwrap_or("linux/arm64");
+            let _ = output(&["container", "image", "pull", "--platform", platform, base]);
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Run `container image inspect <reference>` and return its first entry. The
+/// inner `Err` is the runtime's stderr when it cannot resolve the reference.
+fn inspect_image(reference: &str) -> io::Result<Result<ListedImage, String>> {
+    let json = match captured(&["container", "image", "inspect", reference])? {
+        Ok(json) => json,
+        Err(stderr) => return Ok(Err(stderr)),
+    };
+    let images: Vec<ListedImage> = parse_json("container image inspect", &json)?;
+    images
+        .into_iter()
+        .next()
+        .map(Ok)
+        .ok_or_else(|| io::Error::other("container image inspect returned no image"))
+}
+
+/// Run `container build` for `request`. stdout and stderr are captured
+/// through one pipe, so the output keeps its order. The inner `Err` is that
+/// output when the build fails.
+fn run_build(request: &BuildRequest) -> io::Result<Result<(), String>> {
+    let (reader, writer) = crate::core::process::pipe()?;
+    let mut command = std::process::Command::new("container");
+    // Apple includes color settings in the shared builder's identity
+    // (GitHub #77). Every pinfold caller must use the same settings.
+    command.env_remove("NO_COLOR").env_remove("BUILDKIT_COLORS");
+    command
+        .arg("build")
+        // The macOS CLI is arm64 only.
+        .args(["--build-arg", "TARGETARCH=arm64"])
+        .args(if request.cache {
+            None
+        } else {
+            Some("--no-cache")
+        })
+        .arg("--file")
+        .arg(request.containerfile);
+    if let Some((name, value)) = request.build_arg {
+        command.arg("--build-arg").arg(format!("{name}={value}"));
+    }
+    for tag in request.tags {
+        command.arg("--tag").arg(tag);
+    }
+    for (key, value) in request.labels {
+        command.arg("--label").arg(format!("{key}={value}"));
+    }
+    command
+        // A bare relative context such as `--json` would parse as an option.
+        .arg(std::path::absolute(request.context)?)
+        .stdin(Stdio::null())
+        .stdout(writer.try_clone()?)
+        .stderr(writer);
+    let child = command.spawn_guarded();
+    // The command holds the pipe's write ends, and the read below ends only
+    // once every write end is closed.
+    drop(command);
+    let mut child = child.map_err(|error| spawn_error("container", error))?;
+    let mut tail = VecDeque::new();
+    let mut newlines = 0;
+    for byte in io::Read::bytes(io::BufReader::new(reader)) {
+        let byte = match byte {
+            Ok(byte) => byte,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
+        tail.push_back(byte);
+        newlines += usize::from(byte == b'\n');
+        while tail.len() > BUILD_LOG_BYTES
+            || newlines + usize::from(tail.back() != Some(&b'\n')) > 40
+        {
+            newlines -= usize::from(tail.pop_front() == Some(b'\n'));
+        }
+    }
+    if child.wait()?.success() {
+        Ok(Ok(()))
+    } else {
+        let bytes: Vec<u8> = tail.into_iter().collect();
+        let mut output = String::from_utf8_lossy(&bytes).into_owned();
+        // Replacement characters can expand malformed runtime output.
+        let start = output.ceil_char_boundary(output.len().saturating_sub(BUILD_LOG_BYTES));
+        output.drain(..start);
+        Ok(Err(output))
     }
 }

@@ -62,11 +62,23 @@ fn new_file(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-fn directory(path: &Path) -> io::Result<()> {
+pub(super) fn directory(path: &Path) -> io::Result<()> {
     fs::DirBuilder::new()
         .mode(0o700)
         .recursive(true)
         .create(path)
+}
+
+/// The single-manifest OCI index both build output and the store use.
+pub(super) fn canonical_index(digest: &str, size: u64) -> io::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": INDEX,
+        "manifests": [{
+            "mediaType": MANIFEST, "digest": digest, "size": size,
+            "platform": { "os": "linux", "architecture": "amd64" }
+        }]
+    }))?)
 }
 
 #[derive(Deserialize)]
@@ -513,14 +525,7 @@ fn validate(
         .collect::<io::Result<Vec<_>>>()?;
     if normalize {
         // Exporter index annotations vary independently of runnable identity.
-        let canonical = serde_json::to_vec(&serde_json::json!({
-            "schemaVersion": 2,
-            "mediaType": INDEX,
-            "manifests": [{
-                "mediaType": MANIFEST, "digest": runnable.digest, "size": runnable.size,
-                "platform": { "os": "linux", "architecture": "amd64" }
-            }]
-        }))?;
+        let canonical = canonical_index(&runnable.digest, runnable.size)?;
         check_cancel(cancel)?;
         let mut index_file = File::options()
             .write(true)

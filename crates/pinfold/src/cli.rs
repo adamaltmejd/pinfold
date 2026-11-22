@@ -907,7 +907,7 @@ struct CleanPlan {
     moved: Vec<PathBuf>,
     automatic_bytes: u64,
     project_state: u64,
-    build_cache_bytes: Option<u64>,
+    build_cache_bytes: u64,
     unused: Option<Duration>,
 }
 
@@ -980,7 +980,7 @@ impl CleanPlan {
             + self.run_bytes
             + self.project_state
             + self.disk_bytes
-            + self.build_cache_bytes.unwrap_or(0)
+            + self.build_cache_bytes
     }
 
     fn print(&self) {
@@ -989,10 +989,11 @@ impl CleanPlan {
             human_size(self.automatic_bytes)
         );
         println!("  run records: {}", human_size(self.run_bytes));
-        let size = self
-            .build_cache_bytes
-            .map_or_else(|| "unmeasured".into(), human_size);
-        println!("  build cache: {size}; {}", image::service().build_cache());
+        println!(
+            "  build cache: {}; {}",
+            human_size(self.build_cache_bytes),
+            image::service().build_cache()
+        );
         println!("  project state: {}", human_size(self.project_state));
         println!("  disks: {}", human_size(self.disk_bytes));
         for root in &self.moved {
@@ -1612,7 +1613,6 @@ pub fn build(args: &[String]) -> io::Result<i32> {
     }
     let images = image::service();
     let build = |label, source: &str, bytes: &[u8], base: Option<String>| {
-        image::refresh_base(images, bytes)?;
         image::build(
             images,
             Build {

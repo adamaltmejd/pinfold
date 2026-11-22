@@ -662,6 +662,28 @@ pub(crate) fn drain<R: Read>(
     Ok(())
 }
 
+/// Wait for `child` until `deadline` or cancellation; on either, kill and
+/// reap it.
+#[cfg(target_os = "linux")]
+pub(crate) fn wait_child(
+    mut child: Child,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+    operation: &str,
+) -> io::Result<ExitStatus> {
+    let result = (|| loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        super::pipe::wait_ready(None, PollFlags::empty(), deadline, cancel, operation)?;
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
+}
+
 /// Retain the leader until group cleanup, so its process-group id stays pinned.
 pub(crate) struct GroupChild {
     child: Option<Child>,
