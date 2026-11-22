@@ -247,42 +247,46 @@ impl Snapshot {
     /// variable and any name holding `=` or NUL, so a declared source without
     /// a value, such a name, or a NUL value fails.
     pub(crate) fn values(&self) -> io::Result<Values> {
+        let invalid = || io::Error::other("invalid encoded environment");
+        let decode = |from: &String, value: Option<&Bytes>| {
+            let value = crate::init::decode_hex(value.ok_or_else(invalid)?.0.as_bytes())?;
+            if from.is_empty() || from.contains(['=', '\0']) || value.contains(&0) {
+                return Err(invalid());
+            }
+            Ok((from.clone(), OsString::from_vec(value)))
+        };
+        // Each entry is decoded once; an env entry is one per box variable.
+        let routes = self
+            .route_values
+            .iter()
+            .map(|(from, value)| decode(from, value.as_ref()));
         let env = self
             .env_names
             .iter()
             .filter_map(|(name, source)| match source {
-                EnvSource::From { name: from } => {
-                    Some((from, self.env_values.get(name).and_then(Option::as_ref)))
-                }
+                EnvSource::From { name: from } => Some(decode(
+                    from,
+                    self.env_values.get(name).and_then(Option::as_ref),
+                )),
                 EnvSource::Exact {} => None,
             });
-        // Every declared route source needs its value, not only the ones listed.
-        let routes = self
-            .routes
-            .values()
-            .flat_map(|declaration| match declaration {
-                Declaration::Inject(inject) => inject
-                    .headers
-                    .iter()
-                    .flatten()
-                    .map(|(_, header)| &header.from)
-                    .collect(),
-                Declaration::Login(login) => login.from.iter().collect(),
-                Declaration::Address(_) => Vec::new(),
-            })
-            .map(|from| (from, self.route_values.get(from).and_then(Option::as_ref)));
-        let invalid = || io::Error::other("invalid encoded environment");
-        routes
-            .chain(env)
-            .map(|(from, value)| {
-                let value = crate::init::decode_hex(value.ok_or_else(invalid)?.0.as_bytes())?;
-                if from.is_empty() || from.contains(['=', '\0']) || value.contains(&0) {
-                    return Err(invalid());
-                }
-                Ok((from.clone(), OsString::from_vec(value)))
-            })
-            .collect::<io::Result<_>>()
-            .map(Values)
+        let values: BTreeMap<_, _> = routes.chain(env).collect::<io::Result<_>>()?;
+        let declared = self.routes.values().all(|declaration| match declaration {
+            Declaration::Inject(inject) => inject
+                .headers
+                .iter()
+                .flatten()
+                .all(|(_, header)| self.route_values.contains_key(&header.from)),
+            Declaration::Login(login) => login
+                .from
+                .as_ref()
+                .is_none_or(|from| self.route_values.contains_key(from)),
+            Declaration::Address(_) => true,
+        });
+        if !declared {
+            return Err(invalid());
+        }
+        Ok(Values(values))
     }
 
     /// Resolve the project's configuration. A client reads each `from`
