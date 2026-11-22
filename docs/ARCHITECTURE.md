@@ -2147,9 +2147,9 @@ In a configured project its `Logins` line names each effective login route
 with its agent, and Pi's provider, or says there is none. It reads
 configuration only: no value, and not whether a variable is set.
 `doctor --json` prints the diagnostic report as structured data. Its
-`config` is the `config --json` report, or null outside a configured
-project. Its `egress.routes` holds each route as configured, a login
-route with its `login` and Pi's `provider`.
+`config` has the `config --json` report's shape, or is null when doctor
+has no project report. Its `egress.routes` holds each route as
+configured, a login route with its `login`.
 
 `pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without
 touching the runtime or the state directory. Bare `pinfold` reports the
