@@ -156,7 +156,8 @@ Not protected:
   that user's environment, as it trusts that environment for `from`. A
   profile or project file can name any 1Password item the user's `op`
   session can read, and pinfold puts its value where the file says: in
-  the box's environment or in a route's header to the route's origin.
+  the box's environment or in a route's header to the route's origin. A
+  box spec a caller hands `box up` can equally name any such reference.
 
 ## Runtimes
 
@@ -501,15 +502,22 @@ The box spec `up` reads from stdin:
   host's `PATH`, never the spec's.
 - `op` takes the place of `from` wherever `from` names a secret: an env
   entry, an injecting header, a claude or pi login route. A reference
-  starts with `op://`, holds no NUL and is at most 1024 bytes. `from` and
+  starts with `op://`, holds no control character (below 0x20, or
+  0x7f) and is at most 1024 bytes. `from` and
   `op` together, or neither, are refused as `spec`, naming only the key;
-  so is a malformed reference. Once the spec passes the checks that need
-  no value, the process that starts the box runs the first `op` on the host's
-  `PATH`, with its own environment, as `op read --no-newline REFERENCE`,
-  once per distinct reference, stdin null, stderr discarded, in its own
-  process group. The read has a 30-second deadline and stdout is bounded
-  to 64 KiB; on the deadline or cancellation the group is killed and `op`
-  reaped. A failed read refuses the start as an unset `from` variable
+  so is a malformed reference. Only the process that starts the box
+  reads a reference, and only after every check that needs no value:
+  `box up` after the spec, `from` presence, profile, mount preparation,
+  runtime, image and home-seed checks, just before it resolves login
+  routes and claims the name; a starting project client after every
+  launch check, just before it spawns the owner. It runs the first `op`
+  on the host's `PATH`, with its own environment, as `op read
+  --no-newline REFERENCE`, once per distinct reference, stdin null,
+  stderr discarded, in its own process group; a cancelled launch starts
+  no further `op`. The read has a 30-second deadline and stdout is
+  bounded to 64 KiB; on the deadline, on cancellation or on a signal
+  pinfold handles, the group is killed and `op` reaped. A SIGKILL of the
+  launching process leaves `op` to end on its own. A failed read refuses the start as an unset `from` variable
   does (`spec` for an env entry or injecting header, `login` for a login
   route), naming the key, the reference and the cause: `op` not on PATH,
   its exit status or signal, the deadline, an empty value, more than 64
@@ -2092,13 +2100,13 @@ its runtime client, and in the admission snapshot, held in memory and
 sent over the private project socket. The owner starts the box with the
 snapshot's values, and a running owner compares a joining client's
 snapshot with its own. An `op` value is read only by the client whose
-launch starts a new box, after its configuration, image and every
-`from` variable pass, so a refusal before then runs no `op`; a failed
+launch starts a new box, after every other launch check, just before it
+spawns the owner, so a refusal before then runs no `op`; a failed
 read refuses before any owner starts with `env "NAME" needs the
 1Password reference REFERENCE: CAUSE` or the `route` form, and exit 125.
 A joining or keeping client never runs `op`, and the owner never does.
-The value travels to the owner beside the startup snapshot, never in an
-environment or in any snapshot a joining client sends; the owner refuses
+The value travels to the owner beside the startup snapshot, never in a
+host environment or in any snapshot a joining client sends; the owner refuses
 as `session-protocol`, before recording anything, values that are not
 exactly the declared references, each once, within the read's bounds; admission
 compares an `op` source by its reference alone. `config --json` names
