@@ -1085,7 +1085,8 @@ A project recipe typically `FROM`s the profile image.
   chain. Each image records the identity of the one built just beneath it,
   and Linux freezes that identity for its build.
   Each image's publication is a separate operation: a failed build may leave
-  successfully rebuilt images beneath it published, reported on stderr.
+  successfully rebuilt images beneath it published. Stderr numbers each
+  link as its build starts, so the links before the failed one are those.
 - After each completed Apple build, pinfold attempts to prune the shared
   builder's unused cache to 4 GB, then return unused builder blocks;
   failure only warns and preserves the build result.
