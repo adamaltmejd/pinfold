@@ -86,6 +86,9 @@ where
             }
             context.check_worktree(config.mount)?;
             config.check_host_paths(&root)?;
+            // Admission precedes automatic maintenance; the lease still
+            // holds shared project ownership.
+            clean::maintain();
             let id = project_id(&root);
             let [_, disk] = state::disk_names(&id);
             utf8(&root, "project root")?;
