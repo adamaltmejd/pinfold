@@ -105,6 +105,12 @@ pub(crate) enum Reply {
         reason: String,
         fields: Vec<String>,
     },
+    /// The owner's box start was refused as `spec` or `login`: the reason
+    /// token and the detail `box up`'s `refused` line would carry.
+    Refused {
+        reason: String,
+        detail: String,
+    },
 }
 
 #[derive(Serialize, Deserialize)]

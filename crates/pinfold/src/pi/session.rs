@@ -22,7 +22,7 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::cli;
 use crate::config::ProjectMount;
-use crate::core::r#box::{Box, Shutdown, Signals};
+use crate::core::r#box::{Box, RefusalReason, Shutdown, Signals};
 use crate::core::runtime::{ExecContext, runtime, sockets};
 use crate::core::{artifacts, clean, ownership, runs};
 use crate::formatting::terminal_text;
@@ -117,9 +117,12 @@ fn reply_error(reply: Reply) -> io::Error {
         Reply::Error { reason, .. } if reason == "stopped" => {
             io::Error::other("stopped during startup")
         }
-        Reply::Error { reason, .. }
-            if crate::core::r#box::RefusalReason::from_token(&reason).is_some() =>
+        Reply::Refused { reason, detail }
+            if RefusalReason::from_token(&reason).is_some_and(RefusalReason::authored) =>
         {
+            io::Error::other(format!("{reason}: {}", terminal_text(&detail)))
+        }
+        Reply::Error { reason, .. } if RefusalReason::from_token(&reason).is_some() => {
             io::Error::other(format!("{reason}: the project box was refused at startup"))
         }
         Reply::Ended {
@@ -1601,15 +1604,18 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
                 // keeps the durable claim for checked recovery.
                 if ownership::record(&plan.name)?.is_none() { locator.remove()?; }
                 use crate::core::r#box::UpError;
-                // A refusal travels as its reason token only, never its detail.
-                let reason = match &error {
-                    UpError::Control | UpError::Signal => "stopped".into(),
-                    UpError::Refused(refusal) => refusal.reason.token(),
-                    UpError::Other(_) => "owner-unavailable".into(),
+                // A refusal whose detail pinfold wrote travels as `box up`
+                // would print it; any other, which can carry a tool's
+                // output, as its token alone.
+                let reply = match &error {
+                    UpError::Refused(refusal) if refusal.reason.authored() => Reply::Refused { reason: refusal.reason.token(), detail: refusal.detail.clone() },
+                    UpError::Refused(refusal) => Reply::Error { reason: refusal.reason.token(), fields: vec![] },
+                    UpError::Control | UpError::Signal => Reply::Error { reason: "stopped".into(), fields: vec![] },
+                    UpError::Other(_) => Reply::Error { reason: "owner-unavailable".into(), fields: vec![] },
                 };
-                let _ = wire::write_reply(&mut writer, Reply::Error { reason, fields: vec![] }).await;
-                // The client may still drain this owner's stderr, so a refusal's
-                // detail is not reported there either.
+                let _ = wire::write_reply(&mut writer, reply).await;
+                // The client may still drain this owner's stderr, so the
+                // detail is not reported there too.
                 if matches!(error, UpError::Refused(_)) { return Ok(125); }
                 return Err(error.into());
             }
