@@ -212,7 +212,7 @@ impl Rules {
                     })
                 }
                 Route::Inject(inject) => {
-                    let (target, headers) = inject.resolve().map_err(io::Error::other)?;
+                    let (target, headers) = inject.resolve(name).map_err(io::Error::other)?;
                     Upstream::Inject {
                         target,
                         headers,
@@ -224,7 +224,7 @@ impl Rules {
                     login: codex.clone().expect("up resolves a Codex login's token"),
                 },
                 Route::Login(login) => {
-                    let (target, headers) = login.resolve().map_err(io::Error::other)?;
+                    let (target, headers) = login.resolve(name).map_err(io::Error::other)?;
                     Upstream::Inject {
                         target,
                         headers,
