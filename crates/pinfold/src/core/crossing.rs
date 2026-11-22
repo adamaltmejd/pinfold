@@ -436,14 +436,16 @@ pub(crate) fn fetch_cancellable(
         // the heads' history: an unreachable object naming a missing one
         // would migrate with the pack. Every object the box sent must be
         // connected. Not `index-pack --strict`, which refuses a pack whose
-        // trees name objects a partial clone's promisor holds.
+        // trees name objects a partial clone's promisor holds, and not
+        // `--missing=allow-promisor`, which passes a tag naming a missing
+        // object. Git's own fetch checks a partial clone this way.
         let objects: String = sent.iter().map(|oid| format!("{oid}\n")).collect();
         succeeded(git_input(
             repo,
             &[
                 "rev-list",
                 "--objects",
-                "--missing=allow-promisor",
+                "--exclude-promisor-objects",
                 "--quiet",
                 "--stdin",
                 "--not",

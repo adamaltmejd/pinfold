@@ -38,8 +38,8 @@ const BOX_PATH: &str =
 /// runs; while `/home/pinfold/.hostile` holds an object id, this one adds a
 /// branch `stolen` at that id to the branch listing. While `.prereq` holds
 /// one, the bundle names it as a prerequisite. While `.broken` holds one,
-/// the bundle's pack also carries a commit no head reaches whose tree is
-/// that id. Otherwise it is the image's git.
+/// the bundle's pack also carries an annotated tag no head reaches, of a
+/// tag of a commit at that id. Otherwise it is the image's git.
 const HOSTILE_GIT: &str = r#"#!/bin/sh
 h=/home/pinfold
 if [ -s $h/.hostile ] && [ "$3" = for-each-ref ] && [ "$5" = refs/heads/ ]; then
@@ -60,10 +60,15 @@ if [ "$5 $6" = "bundle create" ] && { [ -s $h/.prereq ] || [ -s $h/.broken ]; };
     printf -- '-%s\n' "$(cat $h/.prereq)"
     tail -n +2 "$b"
   else
-    commit=$(printf 'tree %s\nauthor b <b@b> 0 +0000\ncommitter b <b@b> 0 +0000\n\nbroken\n' "$(cat $h/.broken)" |
-      /usr/bin/git -C "$2" hash-object -t commit -w --stdin)
+    tag() {
+      printf 'object %s\ntype %s\ntag %s\ntagger b <b@b> 0 +0000\n\nbroken\n' "$1" "$2" "$3" |
+        /usr/bin/git -C "$repo" hash-object -t tag -w --stdin
+    }
+    repo=$2
+    inner=$(tag "$(cat $h/.broken)" commit inner)
+    outer=$(tag "$inner" tag outer)
     sed '/^$/q' "$b"
-    { printf '%s\n' "$revs" | /usr/bin/git -C "$2" rev-list --objects --stdin | cut -d' ' -f1; echo "$commit"; } |
+    { printf '%s\n' "$revs" | /usr/bin/git -C "$2" rev-list --objects --stdin | cut -d' ' -f1; echo "$inner"; echo "$outer"; } |
       /usr/bin/git -C "$2" pack-objects -q --stdout
   fi
   rm "$b"
@@ -81,7 +86,9 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     // `host_names` case-folded match. The forced tag fetch then writes the
     // box's `Light`.
     // Sabotage (run): drop `fetch_cancellable`'s `rev-list` connectivity
-    // check of the sent objects. The fetch with the broken commit exits 0.
+    // check of the sent objects, or give it `--missing=allow-promisor` in
+    // place of `--exclude-promisor-objects`. The fetch with the broken tag
+    // exits 0.
     // Sabotage (run): run `bundle verify` without `quarantine.env()`. The
     // promisor's commit lands in `.git/objects`.
     // The legitimate fetch, from the host as a partial clone, and the
@@ -217,10 +224,11 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     assert_eq!(tree(&project.root().join(".git/objects")), objects_before);
     in_box(&["rm /home/pinfold/.hostile"]);
 
-    // The box's pack also carries a commit no head reaches, whose tree
-    // exists nowhere. The fetch fails naming that tree and changes nothing.
+    // The box's pack also carries a tag no head reaches, of a tag of a
+    // commit that exists nowhere. The fetch fails naming that commit and
+    // changes nothing.
     let nowhere = env.root().join("nowhere");
-    fs::write(&nowhere, "no such tree\n").unwrap();
+    fs::write(&nowhere, "no such commit\n").unwrap();
     let missing = git(&["hash-object", nowhere.to_str().unwrap()]);
     in_box(&[
         "printf %s \"$1\" > /home/pinfold/.broken",
