@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -322,7 +321,7 @@ impl Client {
         self.2 = self
             .1
             .take()
-            .map(StderrDrain::start)
+            .map(|stderr| StderrDrain::start_fd(stderr.into_owned_fd()?))
             .transpose()
             .map_err(|error| format!("box diagnostics failed: {error}"))?;
         // Keep stdout drained; stderr has its own thread during blocking finish_start.
@@ -439,11 +438,6 @@ struct StderrDrain {
 }
 
 impl StderrDrain {
-    fn start(stderr: ChildStderr) -> io::Result<Self> {
-        let stderr: OwnedFd = stderr.into_owned_fd()?;
-        Self::start_fd(stderr)
-    }
-
     fn start_fd(stderr: OwnedFd) -> io::Result<Self> {
         crate::core::pipe::nonblocking(&stderr, "box diagnostics")?;
         let (stop, stopping) = crate::core::process::pipe()?;
@@ -600,7 +594,21 @@ impl Runtime for Apple {
             .strip_prefix("container CLI version ")
             .and_then(|value| value.split_whitespace().next())
             .unwrap_or(&reported);
-        super::require_version("container", version, [1, 6, 0])
+        let release: Option<[u64; 3]> = version
+            .split('+')
+            .next()
+            .unwrap_or_default()
+            .split('.')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()
+            .and_then(|parts| parts.try_into().ok());
+        if !release.is_some_and(|release| release >= [1, 6, 0]) {
+            return Err(io::Error::other(format!(
+                "container reports version {version:?}; pinfold requires stable container 1.6.0 or newer"
+            )));
+        }
+        Ok(())
     }
 
     fn finish_start(
@@ -971,11 +979,8 @@ fn project_exec(
     let stopped = AtomicBool::new(false);
     let result = std::thread::scope(|scope| {
         let worker_context = ExecContext {
-            project_directory: context.project_directory,
-            tty: context.tty,
-            agent: context.agent,
             cancel: Some(&stopped),
-            stdio: context.stdio,
+            ..*context
         };
         let worker =
             scope.spawn(move || super::exec_transport::exec(connection, &worker_context, argv));
@@ -1147,9 +1152,7 @@ fn exec_command(
     if context.tty {
         command.arg("-t");
         // Init applies a known initial size before a fast command starts.
-        metadata.window = size;
-        metadata.term = std::env::var_os("TERM").map(|value| value.as_bytes().to_vec());
-        metadata.colorterm = std::env::var_os("COLORTERM").map(|value| value.as_bytes().to_vec());
+        super::exec_transport::tty_metadata(&mut metadata, size);
     } else {
         // Without a TTY the runtime's exec gets its own process group, so
         // a terminal signal reaches pinfold and not the exec.

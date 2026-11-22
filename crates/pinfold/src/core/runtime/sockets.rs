@@ -1,7 +1,7 @@
 //! Checked generation socket directories, independent of the state root.
 
 use std::collections::BTreeSet;
-use std::ffi::{CString, OsStr};
+use std::ffi::{CStr, CString, OsStr};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -284,16 +284,10 @@ impl Sockets {
             return Err(io::ErrorKind::TimedOut.into());
         }
         self.validate()?;
-        #[cfg(target_os = "linux")]
-        return connect_at(&self.directory, OsStr::new("c.sock"), Some(deadline));
+        // Linux's connect checks the socket through its own descriptor.
         #[cfg(target_os = "macos")]
-        {
-            use std::os::fd::IntoRawFd;
-            check_socket(&self.directory, OsStr::new("c.sock"), false, true)?;
-            let socket =
-                socket_at_until(&self.directory, OsStr::new("c.sock"), true, Some(deadline))?;
-            Ok(unsafe { std::os::unix::net::UnixStream::from_raw_fd(socket.into_raw_fd()) })
-        }
+        check_socket(&self.directory, OsStr::new("c.sock"), false, true)?;
+        connect_at(&self.directory, OsStr::new("c.sock"), Some(deadline))
     }
 
     #[cfg(target_os = "linux")]
@@ -441,8 +435,9 @@ impl HostSocket {
     }
 }
 
-fn socket_identity(parent: &File, leaf: &OsStr) -> io::Result<(u64, u64)> {
-    let leaf = name(leaf)?;
+/// `leaf`'s own metadata, never a link's target. A failed call keeps its
+/// OS error.
+fn stat_at(parent: &File, leaf: &CStr) -> io::Result<libc::stat> {
     let mut metadata: libc::stat = unsafe { std::mem::zeroed() };
     // SAFETY: a live directory, terminated leaf and initialized output.
     syscall(unsafe {
@@ -452,8 +447,12 @@ fn socket_identity(parent: &File, leaf: &OsStr) -> io::Result<(u64, u64)> {
             &mut metadata,
             libc::AT_SYMLINK_NOFOLLOW,
         )
-    })
-    .map_err(failure)?;
+    })?;
+    Ok(metadata)
+}
+
+fn socket_identity(parent: &File, leaf: &OsStr) -> io::Result<(u64, u64)> {
+    let metadata = stat_at(parent, &name(leaf)?).map_err(failure)?;
     if metadata.st_mode & libc::S_IFMT != libc::S_IFSOCK {
         return Err(failure("unsafe socket"));
     }
@@ -462,18 +461,7 @@ fn socket_identity(parent: &File, leaf: &OsStr) -> io::Result<(u64, u64)> {
 }
 
 fn check_identity(parent: &File, leaf: &OsStr, expected: &File) -> io::Result<()> {
-    let leaf = name(leaf)?;
-    let mut metadata: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: a live directory, terminated leaf and initialized output.
-    syscall(unsafe {
-        libc::fstatat(
-            parent.as_raw_fd(),
-            leaf.as_ptr(),
-            &mut metadata,
-            libc::AT_SYMLINK_NOFOLLOW,
-        )
-    })
-    .map_err(failure)?;
+    let metadata = stat_at(parent, &name(leaf)?).map_err(failure)?;
     let expected = expected.metadata().map_err(failure)?;
     #[cfg(target_os = "macos")]
     let device = metadata.st_dev as u64;
@@ -617,22 +605,11 @@ fn unlink_at(parent: &File, leaf: &OsStr, flags: i32) -> io::Result<()> {
 }
 
 fn check_socket(directory: &File, leaf: &OsStr, absent: bool, mode: bool) -> io::Result<()> {
-    let leaf = name(leaf)?;
-    // SAFETY: fstatat initializes the output and does not follow a link.
-    let mut metadata: libc::stat = unsafe { std::mem::zeroed() };
-    let status = unsafe {
-        libc::fstatat(
-            directory.as_raw_fd(),
-            leaf.as_ptr(),
-            &mut metadata,
-            libc::AT_SYMLINK_NOFOLLOW,
-        )
-    };
-    match syscall(status) {
+    let metadata = match stat_at(directory, &name(leaf)?) {
         Err(error) if absent && error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(failure(error)),
-        Ok(_) => {}
-    }
+        Ok(metadata) => metadata,
+    };
     if metadata.st_mode & libc::S_IFMT != libc::S_IFSOCK
         || metadata.st_uid != nix::unistd::getuid().as_raw()
         || (mode && metadata.st_mode & 0o7777 != 0o600)
@@ -651,25 +628,30 @@ pub(crate) fn check_length(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) fn bind(path: &Path) -> io::Result<std::os::unix::net::UnixListener> {
-    check_length(path)?;
+/// `path`'s checked directory and its leaf.
+fn parent_leaf(path: &Path) -> io::Result<(File, &OsStr)> {
     let directory = checked_directory(
         path.parent()
             .ok_or_else(|| failure("socket has no directory"))?,
     )?;
-    bind_at(
-        &directory,
-        path.file_name()
-            .ok_or_else(|| failure("socket has no name"))?,
-    )
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| failure("socket has no name"))?;
+    Ok((directory, leaf))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn bind(path: &Path) -> io::Result<std::os::unix::net::UnixListener> {
+    check_length(path)?;
+    let (directory, leaf) = parent_leaf(path)?;
+    bind_at(&directory, leaf)
 }
 
 pub(crate) fn bind_at(
     directory: &File,
     leaf: &OsStr,
 ) -> io::Result<std::os::unix::net::UnixListener> {
-    let socket = socket_at(directory, leaf, false)?;
+    let socket = socket_at_until(directory, leaf, false, None)?;
     check_socket(directory, leaf, false, true)?;
     syscall(unsafe { libc::listen(socket.as_raw_fd(), 128) })?;
     use std::os::fd::IntoRawFd;
@@ -683,22 +665,20 @@ pub(crate) fn connect_shutdown(
 ) -> io::Result<std::os::unix::net::UnixStream> {
     crate::core::pipe::remaining(deadline, None, "box teardown")?;
     check_length(path)?;
-    let directory = checked_directory(
-        path.parent()
-            .ok_or_else(|| failure("socket has no directory"))?,
-    )?;
-    let leaf = path
-        .file_name()
-        .ok_or_else(|| failure("socket has no name"))?;
+    let (directory, leaf) = parent_leaf(path)?;
     check_socket(&directory, leaf, true, true)?;
-    #[cfg(target_os = "linux")]
-    return connect_at(&directory, leaf, Some(deadline));
-    #[cfg(target_os = "macos")]
-    {
-        use std::os::fd::IntoRawFd;
-        let socket = socket_at_until(&directory, leaf, true, Some(deadline))?;
-        Ok(unsafe { std::os::unix::net::UnixStream::from_raw_fd(socket.into_raw_fd()) })
-    }
+    connect_at(&directory, leaf, Some(deadline))
+}
+
+#[cfg(target_os = "macos")]
+fn connect_at(
+    directory: &File,
+    leaf: &OsStr,
+    deadline: Option<Instant>,
+) -> io::Result<std::os::unix::net::UnixStream> {
+    use std::os::fd::IntoRawFd;
+    let socket = socket_at_until(directory, leaf, true, deadline)?;
+    Ok(unsafe { std::os::unix::net::UnixStream::from_raw_fd(socket.into_raw_fd()) })
 }
 
 #[cfg(target_os = "linux")]
@@ -744,10 +724,6 @@ fn connect_at(
     }
     syscall(unsafe { libc::fcntl(connection.as_raw_fd(), libc::F_SETFL, 0) })?;
     Ok(std::os::unix::net::UnixStream::from(connection))
-}
-
-fn socket_at(directory: &File, leaf: &OsStr, connect: bool) -> io::Result<File> {
-    socket_at_until(directory, leaf, connect, None)
 }
 
 fn socket_at_until(
@@ -994,13 +970,7 @@ fn wait_connected(fd: libc::c_int, deadline: Instant) -> io::Result<()> {
 
 /// Remove an existing checked socket, never a link or another file type.
 pub(crate) fn remove_socket(path: &Path) -> io::Result<()> {
-    let directory = checked_directory(
-        path.parent()
-            .ok_or_else(|| failure("socket has no directory"))?,
-    )?;
-    let leaf = path
-        .file_name()
-        .ok_or_else(|| failure("socket has no name"))?;
+    let (directory, leaf) = parent_leaf(path)?;
     check_socket(&directory, leaf, true, false)?;
     unlink_at(&directory, leaf, 0)
 }

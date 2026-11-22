@@ -223,7 +223,7 @@ pub(super) fn exec(
     match (result, status) {
         (Err(error), Some(status)) => {
             if error.kind() != io::ErrorKind::Interrupted {
-                notice(format_args!("terminal transport: {error}"));
+                crate::core::process::diagnostic(format_args!("terminal transport: {error}"));
             }
             Ok(status)
         }
@@ -307,10 +307,6 @@ impl Client {
     fn close(&mut self, fd: RawFd) {
         self.1.retain(|endpoint| endpoint.as_raw_fd() != fd);
     }
-}
-
-fn notice(message: impl std::fmt::Display) {
-    crate::core::process::diagnostic(message);
 }
 
 impl Drop for Client {

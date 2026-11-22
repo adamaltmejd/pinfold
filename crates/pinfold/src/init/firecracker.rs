@@ -26,7 +26,7 @@
 //! - Exec (host dials guest [`EXEC_PORT`]): one request per connection.
 //!   ENV (count u32, name and value each) sets the box's environment once,
 //!   answered ENV_SET; an EXEC that arrives first waits for it. EXEC is
-//!   argv (count u32, strings), workdir (empty for `/`), tty u8, then the
+//!   argv (count u32, strings), tty u8, then the
 //!   fixed execution metadata string, followed by STDIN,
 //!   STDIN_END, RESIZE (rows u16, cols u16) and OUTPUT_END (stream kind) frames.
 //!   CREDIT (stream kind, consumed u32) replenishes each 64 KiB stream window.
@@ -936,7 +936,6 @@ pub(super) fn exec(
     let argv: Vec<OsString> = (0..fields.u32()?)
         .map(|_| fields.os())
         .collect::<io::Result<_>>()?;
-    let workdir = fields.os()?;
     let tty = fields.u8()? != 0;
     let mut metadata = super::ExecMetadata::decode(
         fields
@@ -984,11 +983,7 @@ pub(super) fn exec(
         .args(&argv)
         .env(super::EXEC_METADATA, metadata.encode());
     if !project {
-        command.current_dir(if workdir.is_empty() {
-            OsStr::new("/")
-        } else {
-            &workdir
-        });
+        command.current_dir("/");
     }
     let pty = if tty {
         let (master, slave) = open_pty(window)?;

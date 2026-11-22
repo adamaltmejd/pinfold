@@ -51,17 +51,13 @@ pub fn exec(
         ..Default::default()
     };
     if tty {
-        metadata.window = window()?;
-        metadata.term = std::env::var_os("TERM").map(|value| value.as_bytes().to_vec());
-        metadata.colorterm = std::env::var_os("COLORTERM").map(|value| value.as_bytes().to_vec());
+        tty_metadata(&mut metadata, window()?);
     }
     let mut payload = Vec::new();
     payload.extend((argv.len() as u32).to_be_bytes());
     for arg in argv {
         put(&mut payload, arg.as_bytes());
     }
-    // Init enters a project command's directory from its metadata.
-    put(&mut payload, &[]);
     payload.push(u8::from(tty));
     put(&mut payload, metadata.encode().as_bytes());
     // Terminal setup must finish before EXEC can start the command.
@@ -76,10 +72,8 @@ pub fn exec(
     write_frame(
         &mut Cancellable {
             connection: &connection,
-            stop: None,
             cancel,
             completed_first: true,
-            deadline: None,
         },
         EXEC,
         &payload,
@@ -360,31 +354,22 @@ pub(super) fn cancelled(cancel: Option<&AtomicBool>) -> io::Result<()> {
     }
 }
 
-fn wait(
-    fd: libc::c_int,
-    events: libc::c_short,
-    stop: Option<&io::PipeReader>,
-    cancel: Option<&AtomicBool>,
-    deadline: Option<Instant>,
-) -> io::Result<()> {
+/// The terminal identity an exec carries on a TTY.
+pub(super) fn tty_metadata(metadata: &mut crate::init::ExecMetadata, window: Option<(u16, u16)>) {
+    metadata.window = window;
+    metadata.term = std::env::var_os("TERM").map(|value| value.as_bytes().to_vec());
+    metadata.colorterm = std::env::var_os("COLORTERM").map(|value| value.as_bytes().to_vec());
+}
+
+fn wait(fd: libc::c_int, events: libc::c_short, cancel: Option<&AtomicBool>) -> io::Result<()> {
     loop {
         cancelled(cancel)?;
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            return Err(io::ErrorKind::TimedOut.into());
-        }
-        let mut fds = [
-            libc::pollfd {
-                fd,
-                events,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: stop.map_or(-1, AsRawFd::as_raw_fd),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        // SAFETY: poll reads and updates the two live pollfd values.
+        let mut fds = [libc::pollfd {
+            fd,
+            events,
+            revents: 0,
+        }];
+        // SAFETY: poll reads and updates the live pollfd value.
         let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 100) };
         if ready < 0 {
             let error = io::Error::last_os_error();
@@ -392,12 +377,6 @@ fn wait(
                 continue;
             }
             return Err(error);
-        }
-        if fds[1].revents != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "exec input ended",
-            ));
         }
         if fds[0].revents != 0 {
             return Ok(());
@@ -407,10 +386,8 @@ fn wait(
 
 pub(super) struct Cancellable<'a> {
     connection: &'a UnixStream,
-    stop: Option<&'a io::PipeReader>,
     cancel: Option<&'a AtomicBool>,
     completed_first: bool,
-    deadline: Option<Instant>,
 }
 
 impl<'a> Cancellable<'a> {
@@ -418,10 +395,8 @@ impl<'a> Cancellable<'a> {
     pub(super) fn startup(connection: &'a UnixStream, cancel: &'a AtomicBool) -> Self {
         Self {
             connection,
-            stop: None,
             cancel: Some(cancel),
             completed_first: false,
-            deadline: None,
         }
     }
 
@@ -438,26 +413,14 @@ impl<'a> Cancellable<'a> {
 impl Read for Cancellable<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         loop {
-            if self
-                .deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
-            {
-                return Err(io::ErrorKind::TimedOut.into());
-            }
             if !self.completed_first {
                 cancelled(self.cancel).map_err(|error| self.cancellation(error))?;
             }
             // A frame already readable, including EXIT, precedes client cancellation.
             match self.connection.read(buffer) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    wait(
-                        self.connection.as_raw_fd(),
-                        libc::POLLIN,
-                        self.stop,
-                        self.cancel,
-                        self.deadline,
-                    )
-                    .map_err(|error| self.cancellation(error))?;
+                    wait(self.connection.as_raw_fd(), libc::POLLIN, self.cancel)
+                        .map_err(|error| self.cancellation(error))?;
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
@@ -483,14 +446,8 @@ impl Write for Cancellable<'_> {
             cancelled(self.cancel).map_err(|error| self.cancellation(error))?;
             match self.connection.write(buffer) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    wait(
-                        self.connection.as_raw_fd(),
-                        libc::POLLOUT,
-                        self.stop,
-                        self.cancel,
-                        self.deadline,
-                    )
-                    .map_err(|error| self.cancellation(error))?;
+                    wait(self.connection.as_raw_fd(), libc::POLLOUT, self.cancel)
+                        .map_err(|error| self.cancellation(error))?;
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
