@@ -211,7 +211,7 @@ impl StdioRelay {
                     if nix::libc::write(2, b"R".as_ptr().cast(), 1) == 1 {
                         break;
                     }
-                    if *errno() != nix::libc::EINTR {
+                    if nix::errno::Errno::last_raw() != nix::libc::EINTR {
                         nix::libc::_exit(1);
                     }
                 }
@@ -326,23 +326,12 @@ impl Drop for StdioRelay {
             unsafe {
                 nix::libc::kill(pid, nix::libc::SIGKILL);
                 while nix::libc::waitpid(pid, std::ptr::null_mut(), 0) < 0 {
-                    if *errno() != nix::libc::EINTR {
+                    if nix::errno::Errno::last_raw() != nix::libc::EINTR {
                         break;
                     }
                 }
             }
         }
-    }
-}
-
-unsafe fn errno() -> *mut nix::libc::c_int {
-    #[cfg(target_os = "macos")]
-    unsafe {
-        nix::libc::__error()
-    }
-    #[cfg(target_os = "linux")]
-    unsafe {
-        nix::libc::__errno_location()
     }
 }
 
@@ -394,7 +383,7 @@ unsafe fn copy_stdio(parent: nix::libc::pid_t) -> ! {
             unsafe { nix::libc::_exit(0) }
         }
         if read < 0 {
-            let error = unsafe { *errno() };
+            let error = nix::errno::Errno::last_raw();
             if error == nix::libc::EINTR {
                 continue;
             }
@@ -425,7 +414,7 @@ unsafe fn copy_stdio(parent: nix::libc::pid_t) -> ! {
                 written += count as usize;
                 continue;
             }
-            let error = unsafe { *errno() };
+            let error = nix::errno::Errno::last_raw();
             if error == nix::libc::EINTR {
                 continue;
             }

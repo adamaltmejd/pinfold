@@ -819,11 +819,8 @@ fn socket_at_until(
                     libc::bind(3, (&address as *const libc::sockaddr_un).cast(), length),
                 )
             };
-            #[cfg(target_os = "macos")]
-            let error = if result < 0 { *libc::__error() } else { 0 };
-            #[cfg(target_os = "linux")]
             let error = if result < 0 {
-                *libc::__errno_location()
+                nix::errno::Errno::last_raw()
             } else {
                 0
             };
