@@ -237,7 +237,7 @@ impl Snapshot {
     }
 
     /// The `from` values this snapshot carries, decoded: the table the owner
-    /// starts the box with.
+    /// starts the box with. A name or value no environment could hold fails.
     pub(crate) fn values(&self) -> io::Result<Values> {
         let env = self
             .env_names
@@ -254,6 +254,9 @@ impl Snapshot {
             .chain(env)
             .map(|(from, value)| {
                 let value = crate::init::decode_hex(value.0.as_bytes())?;
+                if from.is_empty() || from.contains(['=', '\0']) || value.contains(&0) {
+                    return Err(io::Error::other("invalid encoded environment"));
+                }
                 Ok((from.clone(), OsString::from_vec(value)))
             })
             .collect::<io::Result<_>>()
