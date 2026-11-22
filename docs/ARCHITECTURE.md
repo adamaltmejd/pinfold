@@ -294,7 +294,7 @@ The default report names the resulting image. With `--json`, image operations
 print the following records. A successful build exits 0:
 
 ```json
-{"event":"built","image":NAME,"ref":"localhost/pinfold/image-<NAME>:<build>","latest":"localhost/pinfold/image-<NAME>:latest","id":ID,"labels":{…},"base":DIGEST|null}
+{"event":"built","image":NAME,"ref":"localhost/pinfold/image-<NAME>:<build>","latest":"localhost/pinfold/image-<NAME>:latest","id":ID,"labels":{…}}
 ```
 
 On Linux `id` is the runnable OCI manifest SHA-256; converter recipe,

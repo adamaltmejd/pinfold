@@ -1404,7 +1404,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         }
         let mut lease = match admitted {
             Ok(Some(lease)) => lease,
-            Ok(None) => { crate::update::notice("start"); clean::maintain(); return Ok(0); },
+            Ok(None) => { clean::maintain(); return Ok(0); },
             Err(_error) if signals.last().is_some() => return Ok(128 + signals.last().expect("received signal") as i32),
             Err(error) => {
                 if !is_output_failure(&error) {
@@ -1415,7 +1415,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
                 return Ok(125);
             },
         };
-        crate::update::notice("--");
+        crate::update::notice();
         if lease.share && std::env::var_os("GIT_OPTIONAL_LOCKS").is_none_or(|value| value != "0") {
             // A failed write is not fatal, but a signal received during it is.
             let _ = forward_diagnostics(OPTIONAL_LOCKS_WARNING.as_bytes().to_vec(), &mut signals).await;
