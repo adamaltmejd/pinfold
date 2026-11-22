@@ -31,7 +31,6 @@ RUN set -eux; \
     case "${TARGETARCH}" in \
         arm64) native=anydoc-linux-arm64-gnu ;; \
         amd64) native=anydoc-linux-x64-gnu ;; \
-        *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     anydoc=/opt/pinfold/anydoc/node_modules/@firecrawl; \
     mkdir -p "${anydoc}/anydoc" "${anydoc}/${native}"; \
