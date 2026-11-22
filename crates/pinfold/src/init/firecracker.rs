@@ -1150,12 +1150,10 @@ fn vsock_listen(port: u32) -> io::Result<OwnedFd> {
 /// listener today; the check keeps that true if one ever does. A failed
 /// accept backs off. Either way there is no connection.
 fn accept_host(listener: &OwnedFd) -> Option<UnixStream> {
-    let Ok(fd) = nix::sys::socket::accept4(listener.as_raw_fd(), SockFlag::SOCK_CLOEXEC) else {
+    let Ok(connection) = nix::sys::socket::accept4(listener, SockFlag::SOCK_CLOEXEC) else {
         super::back_off();
         return None;
     };
-    // Safety: accept4 returned a new descriptor, owned here alone.
-    let connection = unsafe { OwnedFd::from_raw_fd(fd) };
     match nix::sys::socket::getpeername::<VsockAddr>(connection.as_raw_fd()) {
         Ok(peer) if peer.cid() == HOST_CID => Some(UnixStream::from(connection)),
         _ => None,
