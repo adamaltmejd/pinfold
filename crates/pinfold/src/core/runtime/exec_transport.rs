@@ -67,9 +67,12 @@ pub fn exec(
     // Terminal setup must finish before EXEC can start the command.
     let raw = if tty { Raw::enter()? } else { None };
     let winch = if tty { Some(Winch::install()?) } else { None };
-    let stdin = StdioRelay::new(0, true)?;
-    let stdout = StdioRelay::new(1, false)?;
-    let stderr = StdioRelay::new(2, false)?;
+    let [input, output, errors] = context
+        .stdio
+        .map_or([0, 1, 2], |stdio| stdio.map(|fd| fd.as_raw_fd()));
+    let stdin = StdioRelay::new(input, true)?;
+    let stdout = StdioRelay::new(output, false)?;
+    let stderr = StdioRelay::new(errors, false)?;
     write_frame(
         &mut Cancellable {
             connection: &connection,
