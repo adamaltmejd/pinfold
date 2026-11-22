@@ -1850,8 +1850,11 @@ its project.
   lives. After stop, the next owner treats the folder by its current marker.
   A project admission frame is at most 16 MiB. Malformed, unsupported or
   oversized private messages fail as `session-protocol`; their contents are
-  never reported. An owner whose box start is refused passes only the
-  refusal's reason token to the client, which exits 125 naming it.
+  never reported. An owner whose box start is refused as `spec` or
+  `login` passes the reason token and detail of `up`'s `refused` line to
+  the client, which prints both and exits 125; any other refusal's detail
+  can carry a tool's output, so it passes the token alone, which the
+  client prints with a fixed sentence.
   Unavailable ownership refuses as `owner-unavailable`;
   a control deadline expires as `owner-timeout`. Transport failures retain a
   fixed source (`connect`, `inspect` or `reply`) without request contents.
@@ -2191,7 +2194,13 @@ executable or infrastructure install directory), `cached`, and
 downloaded. The builder asset includes `url`, `sha256` and `bytes`; its
 entry also reports the recipe identity. Without `--json`, `doctor --artifacts`
 prints a readable inventory. Plain `doctor` leads with findings and remedies.
-`doctor --json` prints the diagnostic report as structured data.
+In a configured project its `Logins` line names each effective login route
+with its agent, and Pi's provider, or says there is none. It reads
+configuration only: no value, and not whether a variable is set.
+`doctor --json` prints the diagnostic report as structured data. Its
+`config` has the `config --json` report's shape, or is null when doctor
+has no project report. Its `egress.routes` holds each route as
+configured, a login route with its `login`.
 
 `pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without
 touching the runtime or the state directory. Bare `pinfold` reports the
