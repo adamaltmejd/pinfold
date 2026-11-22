@@ -115,7 +115,6 @@ pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built
     let build_arg = matches!(&build.context, Context::Alone(_))
         .then_some(("PINFOLD_AGENT_RESOLVE", id.as_str()));
     let request = |context: &Path, containerfile: &Path| {
-        eprintln!("pinfold: building {stem} {}", build.source);
         images.build(&BuildRequest {
             context,
             containerfile,
@@ -212,6 +211,7 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
         }
     };
     let labels = request.labels;
+    eprintln!("pinfold: building image {}", request.name);
     build(
         images,
         Build {

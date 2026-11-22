@@ -1633,7 +1633,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
     // Root first: each image records the identity of the one just built
     // beneath it, and Linux also binds its source to it. Each is published
     // on its own, so a later failure leaves the lower ones published.
-    let recipes = profile
+    let recipes: Vec<_> = profile
         .links()
         .into_iter()
         .filter_map(|link| {
@@ -1643,11 +1643,29 @@ pub fn build(args: &[String]) -> io::Result<i32> {
                 link.containerfile.clone()?,
             ))
         })
-        .chain(project.map(|(id, bytes)| (clean::PROJECT_LABEL, id, bytes)));
+        .chain(project.map(|(id, bytes)| (clean::PROJECT_LABEL, id, bytes)))
+        .collect();
+    // The project's source is its opaque id, so progress names it in words.
+    let names: Vec<&str> = recipes
+        .iter()
+        .map(|(label, source, _)| match *label {
+            clean::PROJECT_LABEL => "the project image",
+            _ => source,
+        })
+        .collect();
+    let count = names.len();
+    if let [rest @ .., last, top] = names.as_slice() {
+        let below = match rest {
+            [] => last.to_string(),
+            _ => format!("{} and {last}", rest.join(", ")),
+        };
+        eprintln!("pinfold: {top} builds on {below}; building {count} images");
+    }
     let mut below: Option<image::Built> = None;
-    for (label, source, bytes) in recipes {
-        if let Some(built) = &below {
-            eprintln!("pinfold: profile published {}", built.reference);
+    for (index, (label, source, bytes)) in recipes.iter().enumerate() {
+        match count {
+            1 => eprintln!("pinfold: building {}", names[index]),
+            _ => eprintln!("pinfold: building {} ({}/{count})", names[index], index + 1),
         }
         let base = below.as_ref().and_then(|built| built.id.clone());
         #[cfg(target_os = "linux")]
@@ -1656,7 +1674,7 @@ pub fn build(args: &[String]) -> io::Result<i32> {
                 "image-base-changed: rebuilt profile identity unavailable",
             ));
         }
-        below = Some(build(label, &source, &bytes, base)?);
+        below = Some(build(label, source, bytes, base)?);
     }
     println!("{}", below.expect("a build has a recipe").latest);
     Ok(0)
