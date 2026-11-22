@@ -20,7 +20,7 @@ use std::sync::atomic::AtomicBool;
 use serde::de::DeserializeOwned;
 
 use crate::core::disk::{Directory, Fill, Seeding};
-use crate::core::plan::{Env, Plan};
+use crate::core::plan::{Env, Plan, Values};
 use crate::core::proxy::PROXY_URL;
 
 /// The box runtime for this OS: Apple `container` on macOS, Firecracker on
@@ -63,9 +63,11 @@ pub fn prepare(
 /// Start the box. Linux boot applies initial fills before generated mounts
 /// and seeds before ready. Apple populated disks under the claim and applies
 /// seeds in [`Runtime::finish_start`].
+#[allow(clippy::too_many_arguments)]
 pub fn start(
     prepared: Prepared,
     plan: &Plan,
+    values: &Values,
     init: &Path,
     proxy_socket: Option<&Path>,
     fills: &[Fill],
@@ -75,12 +77,20 @@ pub fn start(
     #[cfg(target_os = "linux")]
     {
         let _ = init;
-        firecracker::Vm::up(prepared, plan, proxy_socket, fills, seeding, directories)
+        firecracker::Vm::up(
+            prepared,
+            plan,
+            values,
+            proxy_socket,
+            fills,
+            seeding,
+            directories,
+        )
     }
     #[cfg(not(target_os = "linux"))]
     {
         let (Prepared, _, _, _) = (prepared, fills, seeding, directories);
-        apple::up(plan, init, proxy_socket)
+        apple::up(plan, values, init, proxy_socket)
     }
 }
 
@@ -294,16 +304,16 @@ pub trait Runtime: Sync {
 }
 
 /// The box's environment in order, a later entry winning: the spec's, a
-/// `from` entry read from pinfold's own environment under the entry's key,
-/// then the always-applied variables.
-fn guest_vars(plan: &Plan) -> Vec<(String, OsString)> {
+/// `from` entry's value from `values` under the entry's key, then the
+/// always-applied variables.
+fn guest_vars(plan: &Plan, values: &Values) -> Vec<(String, OsString)> {
     let mut vars: Vec<(String, OsString)> = plan
         .env
         .iter()
         .filter_map(|(name, value)| {
             let value = match value {
                 Env::Exact(value) => Some(OsString::from(value)),
-                Env::From { from } => std::env::var_os(from),
+                Env::From { from } => values.get(from).map(OsString::from),
             };
             Some((name.clone(), value?))
         })

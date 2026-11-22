@@ -857,7 +857,7 @@ async fn resolve_spec(
     let root = root.to_path_buf();
     let mut worker = tokio::task::spawn_blocking(move || {
         crate::core::process::with_cancellation(worker_cancel, || {
-            let resolved = Snapshot::resolve(&root, expected_mount)?;
+            let resolved = Snapshot::resolve(&root, expected_mount, None)?;
             let warnings = if startup {
                 launch::image_warnings(
                     &resolved.config,
@@ -1545,8 +1545,9 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let setup_flag = setup_cancel.clone();
         let setup_root = root.clone();
         let expected_mount = Some(snapshot.project_mount());
+        let values = snapshot.values().map_err(|_| protocol())?;
         let mut resolving = tokio::task::spawn_blocking(move || {
-            crate::core::process::with_cancellation(setup_flag, || Snapshot::resolve(&setup_root, expected_mount))
+            crate::core::process::with_cancellation(setup_flag, || Snapshot::resolve(&setup_root, expected_mount, Some(values)))
         });
         let setup = loop { tokio::select! {
             biased;
@@ -1573,7 +1574,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let init = artifacts::init_path()?;
         let image_id = resolved.snapshot.image_id().ok_or_else(unavailable)?.to_string();
         let started = {
-        let startup = Box::up_project(&plan, resolved.config.profile, &image_id, &mut signals, cancelled);
+        let startup = Box::up_project(&plan, &resolved.values, resolved.config.profile, &image_id, &mut signals, cancelled);
         tokio::pin!(startup);
         let mut disconnected = false;
         loop { tokio::select! {

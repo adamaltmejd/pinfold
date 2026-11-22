@@ -1,6 +1,7 @@
 //! The box spec: the JSON a caller gives `box up`, parsed into a [`Plan`].
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -55,7 +56,7 @@ pub enum Route {
     /// `host:port`: a host service.
     Address(String),
     /// `{ "to": ORIGIN, "headers": {…} }`: the proxy dials `to` and adds the
-    /// headers from its own environment.
+    /// headers from the launch's [`Values`].
     Inject(Inject),
     /// `{ "login": HARNESS, "provider"?: P, "from"?: VAR, "to"?: ORIGIN }`:
     /// the proxy dials the harness's origin with the harness's own headers.
@@ -139,18 +140,20 @@ impl Inject {
         Ok(target)
     }
 
-    /// The parsed target and each header with its value from this process's
-    /// environment. Errors name the header and the variable, never a value.
-    pub fn resolve(&self, route: &str) -> Result<(Target, Vec<(String, String)>), String> {
+    /// The parsed target and each header with its value from `values`.
+    /// Errors name the header and the variable, never a value.
+    pub fn resolve(
+        &self,
+        route: &str,
+        values: &Values,
+    ) -> Result<(Target, Vec<(String, String)>), String> {
         let target = self.check()?;
         let mut headers = Vec::with_capacity(self.headers.len());
         for (name, header) in &self.headers {
-            let value = match std::env::var(&header.from) {
-                Ok(value) => value,
-                Err(std::env::VarError::NotPresent) => {
-                    return Err(unset("route", route, &header.from));
-                }
-                Err(std::env::VarError::NotUnicode(_)) => {
+            let value = match values.get(&header.from).map(OsStr::to_str) {
+                Some(Some(value)) => value,
+                None => return Err(unset("route", route, &header.from)),
+                Some(None) => {
                     return Err(invalid(format!(
                         "route header {name:?}: {} is not UTF-8",
                         header.from
@@ -343,10 +346,13 @@ impl Login {
         })
     }
 
-    /// claude's or pi's dialed target and credential header, from this
-    /// process's environment once at start. The target and the value rules
-    /// are [`Inject::resolve`]'s.
-    pub fn resolve(&self, route: &str) -> Result<(Target, Vec<(String, String)>), String> {
+    /// claude's or pi's dialed target and credential header, from `values`.
+    /// The target and the value rules are [`Inject::resolve`]'s.
+    pub fn resolve(
+        &self,
+        route: &str,
+        values: &Values,
+    ) -> Result<(Target, Vec<(String, String)>), String> {
         let (header, prefix) = if self.is_pi() {
             match self.pi_provider()?.credential {
                 PiCredential::Key { header, prefix, .. } => (header, prefix),
@@ -359,7 +365,7 @@ impl Login {
         };
         // Every caller prefixes the agent and route, so these name neither.
         let from = self.from.clone().unwrap_or_default();
-        match std::env::var_os(&from) {
+        match values.get(&from) {
             None => return Err(format!("needs the host variable {from}, which is not set")),
             Some(value) if value.is_empty() => {
                 return Err(format!("the host variable {from} is empty"));
@@ -376,7 +382,30 @@ impl Login {
                 },
             )]),
         };
-        inject.resolve(route)
+        inject.resolve(route, values)
+    }
+}
+
+/// The host values a plan's `from` entries name, keyed by variable. The
+/// process that starts a launch reads them once; every later reader takes
+/// this table. An unset variable has no entry. No `Debug`: it holds secrets.
+#[derive(Clone, Default)]
+pub struct Values(pub(crate) BTreeMap<String, OsString>);
+
+impl Values {
+    /// Each variable `plan` names, from this process's environment.
+    pub fn read(plan: &Plan) -> Values {
+        Values(
+            plan.sources()
+                .filter_map(|(_, _, variable)| {
+                    Some((variable.to_string(), std::env::var_os(variable)?))
+                })
+                .collect(),
+        )
+    }
+
+    pub fn get(&self, variable: &str) -> Option<&OsStr> {
+        self.0.get(variable).map(OsString::as_os_str)
     }
 }
 
@@ -535,19 +564,31 @@ impl Plan {
         Ok(plan)
     }
 
-    /// Check a parsed spec.
-    pub fn validate(&self) -> Result<(), String> {
-        self.validate_inputs(true)
+    /// Check a parsed spec against the values its `from` entries name.
+    pub fn validate(&self, values: &Values) -> Result<(), String> {
+        self.validate_inputs(Some(values))
     }
 
     pub(crate) fn validate_structure(&self) -> Result<(), String> {
-        self.validate_inputs(false)
+        self.validate_inputs(None)
     }
 
     /// Refuse, naming the first unset one, when a caller variable the spec
-    /// reads (an env `from`, an injecting header, a login route) is missing.
-    /// Only presence is checked; no value is read.
-    pub(crate) fn check_variables(&self) -> Result<(), String> {
+    /// reads is missing from `values`. Only presence is checked.
+    pub(crate) fn check_variables(&self, values: &Values) -> Result<(), String> {
+        match self
+            .sources()
+            .find(|(_, _, variable)| values.get(variable).is_none())
+        {
+            Some((kind, name, variable)) => Err(unset(kind, name, variable)),
+            None => Ok(()),
+        }
+    }
+
+    /// Each caller variable the spec reads, as (`env` or `route`, the entry's
+    /// name, the variable): env `from`s, then injecting headers and login
+    /// routes.
+    pub(crate) fn sources(&self) -> impl Iterator<Item = (&'static str, &str, &str)> {
         let env = self.env.iter().filter_map(|(name, value)| match value {
             Env::From { from } => Some(("env", name.as_str(), from.as_str())),
             Env::Exact(_) => None,
@@ -570,16 +611,10 @@ impl Plan {
                     .collect(),
                 Route::Address(_) => Vec::new(),
             });
-        match env
-            .chain(routes)
-            .find(|(_, _, variable)| std::env::var_os(variable).is_none())
-        {
-            Some((kind, name, variable)) => Err(unset(kind, name, variable)),
-            None => Ok(()),
-        }
+        env.chain(routes)
     }
 
-    fn validate_inputs(&self, values: bool) -> Result<(), String> {
+    fn validate_inputs(&self, values: Option<&Values>) -> Result<(), String> {
         if cfg!(target_os = "linux") && self.mounts.iter().any(|m| m.kind == MountKind::Share) {
             return Err(invalid("share mounts are unsupported on Linux"));
         }
@@ -689,9 +724,8 @@ impl Plan {
             {
                 return Err(invalid(format!("env {name} must not hold a NUL byte")));
             }
-            if let Env::From { from } = value
-                && values
-                && std::env::var_os(from).is_none()
+            if let (Env::From { from }, Some(values)) = (value, values)
+                && values.get(from).is_none()
             {
                 return Err(unset("env", name, from));
             }
@@ -728,13 +762,10 @@ impl Plan {
                             return Err(invalid(detail));
                         }
                     }
-                    Route::Inject(inject) => {
-                        if values {
-                            inject.resolve(name)?;
-                        } else {
-                            inject.check()?;
-                        }
-                    }
+                    Route::Inject(inject) => match values {
+                        Some(values) => _ = inject.resolve(name, values)?,
+                        None => _ = inject.check()?,
+                    },
                     Route::Login(login) => {
                         login.check(name)?;
                         // pi takes one login route per pi provider, the
@@ -771,13 +802,14 @@ impl Plan {
     }
 
     /// Resolve each login route's credential before the claim, so a login
-    /// that cannot be used refuses as `login` rather than `spec`: from this
-    /// process's environment, or from the host helper for a login on the
-    /// host's Codex login. The value never enters the plan; the Codex token
+    /// that cannot be used refuses as `login` rather than `spec`: from
+    /// `values`, or from the host helper for a login on the host's Codex
+    /// login. The value never enters the plan; the Codex token
     /// is returned for the proxy. A codex route and pi's `openai-codex`
     /// route share that one token, so the helper is asked once.
     pub fn resolve_login(
         &self,
+        values: &Values,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<Option<login::Token>, String> {
         let mut token = None;
@@ -788,7 +820,7 @@ impl Plan {
                     None => login::token_from_helper(cancel).map(|codex| token = Some(codex)),
                 }
             } else {
-                login.resolve(route).map(|_| ())
+                login.resolve(route, values).map(|_| ())
             };
             resolved.map_err(|error| format!("{} login route {route:?}: {error}", login.login))?;
         }

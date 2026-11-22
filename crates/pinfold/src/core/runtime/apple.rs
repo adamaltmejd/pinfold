@@ -20,7 +20,7 @@ use tokio::process::{Child, ChildStderr, Command};
 
 use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::image::{BuildRequest, ImageInfo, ImageService};
-use crate::core::plan::{MountKind, Plan};
+use crate::core::plan::{MountKind, Plan, Values};
 use crate::core::runtime::{
     BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, captured, output,
     parse_json, spawn_error,
@@ -76,7 +76,12 @@ fn volume(name: &str) -> io::Result<String> {
 /// `init` is a host path; it and its directory are mounted read-only at the
 /// same path, so it is also the path PID 1 runs.
 #[cfg_attr(target_os = "linux", expect(dead_code))]
-pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<Client> {
+pub fn up(
+    plan: &Plan,
+    values: &Values,
+    init: &Path,
+    proxy_socket: Option<&Path>,
+) -> io::Result<Client> {
     let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
     let mut command = Command::new("container");
     command
@@ -107,7 +112,7 @@ pub fn up(plan: &Plan, init: &Path, proxy_socket: Option<&Path>) -> io::Result<C
     for (key, value) in &plan.labels {
         command.arg("--label").arg(format!("{key}={value}"));
     }
-    let mut vars: BTreeMap<_, _> = super::guest_vars(plan).into_iter().collect();
+    let mut vars: BTreeMap<_, _> = super::guest_vars(plan, values).into_iter().collect();
     let shares: Vec<_> = plan
         .mounts
         .iter()
