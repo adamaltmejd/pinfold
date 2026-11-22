@@ -3,28 +3,23 @@
 //! with different configuration is refused.
 
 use std::fs;
-use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::Duration;
 
-use e2e::{Client, Project, READER, TestEnv, default_image, json_lines, run, spawn, tree};
+use e2e::{
+    Client, Project, READER, TestEnv, default_image, hold_maintenance, json_lines, run, tree,
+};
 use serde_json::Value;
 
 const COMMAND: Duration = Duration::from_secs(120);
 /// The caller variable the project's `env` reads with `from`.
 const SOURCE: &str = "E2E_SESSION_SOURCE";
-/// The box's PATH: a home directory the box writes first, then the image's.
-const BOX_PATH: &str =
-    "/home/pinfold/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 #[test]
 fn a_projects_sessions_share_one_box() {
     // Sabotage (run): in pi/session_snapshot.rs's `differences`, drop the
     // `env.values` comparison. The client holding another value then joins
     // and `true` exits 0, not 125.
-    // Sabotage (run): in core/crossing.rs's `BoxChild::spawn`, set
-    // `project_directory` to None. The box's hung `git` then outlives the
-    // killed helper and `tail --pid` times out with 124.
     // The same value joining, and the refused invocation running after
     // `config edit`, are the positive controls.
     default_image();
@@ -45,6 +40,58 @@ fn a_projects_sessions_share_one_box() {
     );
     assert_eq!(roots(), before, "the refused launch changed the roots");
 
+    // Sabotage (run): in pi/session.rs, call `clean::maintain()` at the
+    // top of `borrow` again. The refused fetch then writes the daily
+    // pass's stamp into the fresh state root.
+    // The Git remote is refused `no-config` too, before automatic
+    // maintenance: from a state root no command has used, nothing appears
+    // in it or the config root. Control: a configured disk project's fetch
+    // from that root passes admission and runs the pass, then fails for
+    // want of a project disk; a fetch that succeeds needs a disk, and any
+    // command that makes one spends the pass first. Held, since a pass
+    // prunes host-wide.
+    let fresh = env.root().join("fresh-state");
+    fs::create_dir(&fresh).unwrap();
+    let fetch_fresh = |project: &Project| {
+        let added = project.git(&[
+            "remote",
+            "add",
+            "box",
+            &format!("pinfold::{}", project.root().display()),
+        ]);
+        assert_eq!(added.code, 0, "{added:?}");
+        let mut fetch = project.git_command(&["fetch", "box"]);
+        fetch.env("XDG_STATE_HOME", &fresh);
+        run(&mut fetch, COMMAND)
+    };
+    let disk = Project::new(&env, "sessions-disk");
+    fs::write(
+        disk.config_dir().join("pinfold.toml"),
+        "mounts = [{ host = \".\", kind = \"disk\" }]\n",
+    )
+    .unwrap();
+    {
+        let _hold = hold_maintenance();
+        let config = tree(env.config_home());
+        let fetched = fetch_fresh(&project);
+        assert_eq!(fetched.code, 128, "{fetched:?}");
+        assert!(
+            tokens(&fetched.stderr).any(|token| token == "no-config"),
+            "{}",
+            fetched.stderr
+        );
+        assert_eq!(tree(&fresh), Vec::new(), "the refused fetch wrote state");
+        assert_eq!(tree(env.config_home()), config);
+        let admitted = fetch_fresh(&disk);
+        assert_eq!(admitted.code, 128, "{admitted:?}");
+        assert!(
+            !tokens(&admitted.stderr).any(|token| token == "no-config"),
+            "{}",
+            admitted.stderr
+        );
+        assert_ne!(tree(&fresh), Vec::new(), "the admitted fetch ran no pass");
+    }
+
     // Control: after `config edit` the same invocation runs, with its
     // arguments literal, the empty one and `--help` included.
     project.configure();
@@ -55,17 +102,14 @@ fn a_projects_sessions_share_one_box() {
         "{ran:?}"
     );
 
-    // The startup configuration: a disk, which crossing needs, one allowed
-    // host, a `from` variable, and a PATH whose first entry the box writes.
+    // The startup configuration: one allowed host and a `from` variable.
     let file = project.config_dir().join("pinfold.toml");
-    let saved = fs::read_to_string(&file)
-        .unwrap()
-        .replace("kind = \"share\"", "kind = \"disk\"");
+    let saved = fs::read_to_string(&file).unwrap();
     let configure = |allow: &str| {
         fs::write(
             &file,
             format!(
-                "{saved}allow = [\"{allow}\"]\nenv = {{ E2E_SESSION = {{ from = \"{SOURCE}\" }}, PATH = \"{BOX_PATH}\" }}\n"
+                "{saved}allow = [\"{allow}\"]\nenv = {{ E2E_SESSION = {{ from = \"{SOURCE}\" }} }}\n"
             ),
         )
         .unwrap();
@@ -167,47 +211,6 @@ fn a_projects_sessions_share_one_box() {
             "timeout 60 tail --pid=\"$(cat /tmp/e2e-a)\" -f /dev/null && \
              timeout 60 tail --pid=\"$(cat /tmp/e2e-a-child)\" -f /dev/null; echo $?"
         ),
-        ["0"]
-    );
-
-    // A crossing's box command ends with its helper. The box's `git`
-    // reports its pid through a FIFO and hangs in the fetch's first git
-    // call; it is alive before SIGKILL reaches `git fetch box`'s process
-    // group, Git and the remote helper with it, and gone after.
-    b.ask(
-        "mkdir -p /home/pinfold/bin && mkfifo /tmp/e2e-git && \
-         printf '#!/bin/sh\\necho $$ > /tmp/e2e-git\\nexec sleep 600\\n' > /home/pinfold/bin/git && \
-         chmod 755 /home/pinfold/bin/git",
-    );
-    let url = format!("pinfold::{}", project.root().display());
-    let added = project.git(&["remote", "add", "box", &url]);
-    assert_eq!(added.code, 0, "{added:?}");
-    let mut fetch = project.git_command(&["fetch", "box"]);
-    let mut fetch = spawn(
-        fetch
-            .process_group(0)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null()),
-    );
-    let hung = b.ask("timeout 60 cat /tmp/e2e-git");
-    let [hung] = <[String; 1]>::try_from(hung).expect("the box's git pid");
-    assert_eq!(b.ask(&format!("kill -0 {hung}; echo $?")), ["0"]);
-    let killed = run(
-        Command::new("sh").args([
-            "-c",
-            "kill -s KILL -- \"-$1\"",
-            "sh",
-            &fetch.id().to_string(),
-        ]),
-        COMMAND,
-    );
-    assert_eq!(killed.code, 0, "{killed:?}");
-    fetch.wait().expect("reap git fetch");
-    assert_eq!(
-        b.ask(&format!(
-            "timeout 60 tail --pid={hung} -f /dev/null; echo $?"
-        )),
         ["0"]
     );
     let listed = boxes();

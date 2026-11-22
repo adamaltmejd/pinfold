@@ -535,7 +535,7 @@ impl<'a> Project<'a> {
         run(&mut self.git_command(args), COMMAND)
     }
 
-    /// Host `git ARGS` in the project's root, to spawn.
+    /// Host `git ARGS` in the project's root, to adjust or spawn.
     pub fn git_command(&self, args: &[&str]) -> Command {
         let mut command = git_command(self.env, &self.root);
         command.args(args);
