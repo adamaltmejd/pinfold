@@ -1,39 +1,34 @@
 # pinfold
 
 Run a coding agent in a disposable micro-VM: Apple `container` on macOS,
-Firecracker on Linux. New macOS project configurations share host files
-directly, `.git` included, so an agent commits with ordinary Git. Linux projects use a private
-disk, which starts empty; macOS also supports an explicit disk.
-Network egress uses the box’s allowlisting proxy.
+Firecracker on Linux. By default a macOS project shares your folder with
+the box, `.git` included, so the agent commits with ordinary Git. A Linux
+project uses a private disk that starts empty (macOS can use one too).
+Network egress goes through an allowlisting proxy.
 
-- **Interactive:** `pinfold -- pi`, `pinfold -- claude` or `pinfold -- bash`.
+- **Interactive:** `pinfold -- pi`, `pinfold -- claude` or `pinfold -- sh`.
 - **From another agent:** `pinfold -- pi -p` (see below).
-- **Programmatic:** drive boxes through `pinfold box` (JSON on stdio, the
-  [box spec](docs/ARCHITECTURE.md#process-interface)), and read project settings with `pinfold config --json`.
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-Core `box up` specs can declare an Apple writable host mount with
-`{"host":"/path/to/folder","guest":"/work","kind":"share"}`.
-The default mount kind is `readonly`; Linux refuses `share` as `spec`.
-A share is writable throughout, `.git` included. Shared working files and
-Git history can be deleted or corrupted, and host tools can execute
-box-written content, Git hooks and configuration included.
-See [Mounts](docs/ARCHITECTURE.md#mounts) and the
-[threat model](docs/ARCHITECTURE.md#threat-model). A linked worktree beneath
-a shared main root uses that root’s configuration and owner, at its invoking
-cwd. External worktrees and separate Git directories refuse. Independent
-nested repositories retain their own project discovery.
+A share is writable throughout, `.git` included. The box can delete or
+corrupt shared files and Git history, and host tools can run box-written
+content, Git hooks and configuration included. See
+[Mounts](docs/ARCHITECTURE.md#mounts) and the
+[threat model](docs/ARCHITECTURE.md#threat-model). A linked worktree under
+a shared main root uses that root's configuration; external worktrees and
+separate Git directories refuse.
 
 ## Requirements
 
 | Host | Runtime |
 |---|---|
 | macOS 26+ | Apple `container` 1.6.0+ (stable) |
-| Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces, Landlock and e2fsprogs; pinned Firecracker and isolated BuildKit image jobs |
+| Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces, Landlock and e2fsprogs |
 
+A disk project's Git remote expects host Git 2.29 or later.
 Linux image builds use the [pinned builder bootstrap](builder-root/README.md).
 
-On Ubuntu 24.04+, AppArmor may restrict user namespaces. If `box up` is
+On Ubuntu 24.04+, AppArmor may restrict user namespaces. If a launch is
 refused as `runtime` naming `userns-apparmor`, load pinfold's profile
 once, as root. It attaches to the path of the executable that prints it,
 so run these with the installed binary, and again after moving it:
@@ -57,9 +52,9 @@ install -m 0755 pinfold-*-aarch64-apple-darwin ~/.local/bin/pinfold
 ln -sf pinfold ~/.local/bin/git-remote-pinfold
 ```
 
-The `git-remote-pinfold` link is a disk project's Git remote (below); Git
-finds it on PATH. `pinfold update` and first-run setup of a disk project
-also create it beside pinfold when nothing is there.
+`git-remote-pinfold` is a disk project's Git remote (below); Git finds it
+on PATH. `pinfold update` and a disk project's first-run setup also create
+it when missing.
 
 `pinfold update` installs the latest stable release, verified; `--check`
 only reports it. Close boxes and other pinfold commands first; the install
@@ -134,8 +129,10 @@ Linux) and commented examples of the other keys. A project recipe is a
 `Containerfile` beside it. Moving or renaming a project gives it a new
 configuration path.
 
-A guest `/login` persists in the project home. A disk project also retains
-its project disk. `pinfold disk list` shows sizes and originating folders.
+Box work runs as your host uid; the built-in images name uids 501 and
+1000 `pinfold`. The project home, `/home/pinfold`, is a disk that persists,
+so a guest `/login` persists too. A disk project also retains its project
+disk. `pinfold disk list` shows sizes and originating folders.
 `disk rm --all` removes unattached disks in the current state root. An API
 key or a Claude or Codex subscription can stay on the host behind a login
 route in `routes` (ARCHITECTURE.md, Egress proxy). An API key can also
@@ -143,62 +140,22 @@ arrive through the environment. Using a Claude subscription through Pi is
 subject to Anthropic's terms: Pi presents the token as Claude Code and may
 bill it as extra usage.
 
-One detached owner serves each canonical project host-wide, independently of
-HOME and XDG roots. Each `pinfold -- CMD` starts or joins a session. Ending or
-disconnecting one client leaves other sessions running. The box ends when no
-session, crossing lease or keep remains. When a client departs, its guest helper
-sends TERM to that command's process group, then KILL after two seconds if needed.
-This includes client signals, terminal closure, SIGKILL and control connection
-loss. `pinfold start` keeps the box, not a departed session's command group.
-A terminal departure first hangs up its guest terminal. Normal command
-completion preserves background children. Output from background children is
-delivered for up to one second after the command exits. A process that leaves
-the command's process group, or for a terminal session ignores hangup after
-leaving it, may keep running. `pinfold stop` ends everything. Public `box exec`
-sends no signal on departure.
-
-`pinfold start` keeps the box without clients. Matching repeated starts
-succeed. `pinfold stop` stops its observed generation, without loading current
-configuration, and cannot stop a replacement. From the recorded main root,
-it also works with a hostile Git marker added during a share run. Share edits remain after stop; it neither
-commits nor rolls them back. On Apple an orphan box may retain share access
-after owner death until checked removal. Both take no arguments and
-print nothing to stdout. On success each prints a status line on stderr:
-`start` says `started` or `already running`, before any Rex lines; `stop`
-says `stopped` or `no box running`. Infrastructure failures return 125.
-Admission and silent-owner control waits have a ten-second deadline; timeout
-leaves ownership intact. Waiting for a busy launcher has no startup deadline
-and remains signal-cancellable. The last client and stop wait for acknowledged
-teardown to finish, beyond the control deadline, and remain signal-cancellable.
-A kept owner protects its project from cleanup and executable replacement;
-stop it before cleanup or an update.
-
-Joining or keeping preserves the running policy and credentials. Changed
-host roots or effective configuration refuse as `config-changed`, naming
-only differing fields. Stop the owner before applying those changes. Command
-metadata, recipe freshness and seed/shared-file contents do not affect
-comparison. Mount kind and canonical paths are startup configuration;
-working files, HEAD, refs, index and mtimes are not. Host and box edits and
-commits permit joining. A share whose root `.git` appears, disappears or
-becomes a non-directory refuses new joins and starts as `config-changed`
-until stop; the owner checks it on every join. Joining does not reseed
-or refresh login.
+One detached owner serves each project. Each `pinfold -- CMD` starts or
+joins a session; the box ends when no session or `start` keep remains, and
+`pinfold stop` ends everything. When a client leaves early (a signal, a
+closed terminal, a lost connection), its command's process group gets
+TERM, then KILL. Joining keeps the running policy and credentials; changed
+host roots or configuration refuse as `config-changed`, so stop the box
+first. `start` and `stop` take no arguments, print nothing to stdout, and
+on success print one status line on stderr: `start` says `started` or `already
+running`, `stop` says `stopped` or `no box running`. Infrastructure
+failures exit 125. Edits to a share remain after stop. A kept box protects
+its project from cleanup and executable replacement; stop it before
+cleanup or an update.
 
 Arguments after `--` pass literally to the command, including `--help`. Command exit codes
 pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
 pinfold diagnostics use stderr.
-
-Pinfold owns the caller's terminal settings and forwards input and window
-changes. Native Apple clients hold no caller-terminal descriptors. Without a
-TTY, stdout and stderr stay separate.
-The box-owning client's startup diagnostics stay in memory, bounded to 64 KiB,
-and are escaped when printed. After ready, its latest 64 KiB of stderr stays
-in memory and is printed, escaped, only if the box ends unexpectedly.
-Cancellation and teardown close its stderr pipe.
-
-Runtime sockets use private directories under `/tmp/pinfold-<uid>` (`/private/tmp` on macOS),
-independently of XDG state-root length. Unsafe socket paths refuse as
-`runtime-path`.
 
 For reusable Codex subscription login, sign in with Codex on the host and
 put this in the selected profile's `pinfold.toml`:
@@ -210,9 +167,6 @@ provider = "openai-codex"
 ```
 
 The token and refresh stay on the host across independent Pi homes.
-Login routes remove guest authentication headers and Connection-nominated
-fields before adding host authentication. Named credential query parameters
-are refused; malformed query escapes and Connection options are refused too.
 Login routes generate native configuration for the whole box. Claude and Codex
 use system configuration; Pi autoloads a read-only extension under its writable
 home. Agent configuration precedence still applies. Launch agents through PATH.
@@ -223,10 +177,8 @@ a reflecting upstream from returning credentials. See
 [Login routes](docs/ARCHITECTURE.md#egress-proxy) for the exact policy.
 An explicit project `routes` table replaces the profile's routes.
 Project reports use readable text, including when piped. Add `--json` to
-`config`, `doctor`, disk operations or caller image operations
-for structured output. Use `pinfold doctor --artifacts --json` for artifact pins.
-The `box` process interface retains its JSON records. Guest commands own
-their stdout and stderr.
+`config`, `doctor` and `disk` for structured output. Use
+`pinfold doctor --artifacts --json` for artifact pins.
 
 Managed builds of a chain that contains the bundled `default` recipe
 re-resolve stable agent releases through it every time. Installation
@@ -236,9 +188,7 @@ Add `--no-cache` to force the full recipe to run. Launch never installs agents.
 A build first rebuilds every profile beneath it, root first: a project
 build its selected profile and that profile's bases. Other projects and
 profiles on a rebuilt image report `image-outdated` at their next launch
-if its identity changed. Each image publishes separately; a failed build
-can leave the rebuilt images beneath it published. Caller `image build` retains its layer cache
-and `--no-cache` option.
+if its identity changed.
 
 Every built-in image includes standalone Pi, native Claude and Codex with
 its code-mode host on PATH. Built-in profiles seed `.pi/agent/APPEND_SYSTEM.md`,
@@ -249,11 +199,7 @@ Instructions do not enforce containment. Home settings are also missing-only;
 rebuilding preserves edited settings.
 
 Linux build egress has its own allowlist. Add exact hosts with
-`pinfold build --allow HOST` or `pinfold image build … --allow HOST`.
-Apple builds reject `--allow` additions.
-
-Rebuild old Podman-only Linux images explicitly with `build` or `image build`.
-Old Podman storage, derived roots and managed agent disks remain untouched.
+`pinfold build --allow HOST`. Apple builds reject `--allow` additions.
 
 For a share, host edits are live and the box stages and commits in the
 host's `.git`; a box commit is the host's commit. Pinfold reads share Git
@@ -263,8 +209,7 @@ deleted (see the threat model). Export `GIT_OPTIONAL_LOCKS=0` in the shell
 that runs `pinfold` and in host tools that poll `git status`; unless it is
 exactly `0`, `pinfold -- CMD` warns `git-optional-locks` on stderr. It does not cover
 host `git diff` or host commits while the box commits. There is no crossing;
-the Git remote refuses as `share-no-crossing`. A share launch never
-deletes an old project disk or copies it back. To select disk behavior on
+the Git remote refuses as `share-no-crossing`. To select disk behavior on
 macOS, set this in the project’s configuration:
 
 ```toml
@@ -272,7 +217,7 @@ mounts = [{ host = ".", kind = "disk" }]
 ```
 
 A project disk appears in the box at `/project`, where a share appears
-at the folder's own path. A new disk starts empty; no start copies code
+at the folder's own path; in both, `$PINFOLD_PROJECT` holds that path. A new disk starts empty; no start copies code
 into it or changes your repository. Clone inside the box, or send
 branches yourself. Only committed branches cross; commit local work (a
 WIP commit is enough) to send it in. After the first start has created the disk:
@@ -283,21 +228,20 @@ git push box main                         # a host branch into the box as host/m
 git fetch box                             # guest branches as box/*, to merge, and new tags
 ```
 
+Git prints `[new reference] main -> host/main` on every push of a branch;
+`git push box :` sends no branch.
+
 Crossing never touches a working tree. The first push into a disk
 without a repository creates an empty one there. To check a branch out,
 run `git switch -c main host/main` in the box. Pushed tags (`--tags`,
 `push.followTags`) land as the box's own tags. `git fetch box` brings
-the box's tags back as yours, as Git follows tags from any remote. A
+the box's new tags back as yours, as Git follows tags from any remote. A
 fetch never changes or deletes a tag you have, unless a refspec you type
-maps a ref to another tag name; a box tag by that name, in any case, stays in the box, as do
-symbolic and non-ASCII box tags, and every box tag while one of yours
-has a non-ASCII name. A fetched tag is yours to publish, and one named
-like a branch makes `git push box BRANCH` ambiguous until you delete it.
+maps a ref to another tag name. A fetched tag is yours to publish, and one
+named like a branch makes `git push box BRANCH` ambiguous until you delete it.
 
-Every byte from the box is checked before Git sees a ref, but the
-remote ends at refs: `git pull box`, a refspec on the command line
-(`git fetch box main:other`) and `--prune` let the box's branches reach
-or delete your refs, and a box branch named `HEAD` makes `box` name it.
+`git pull box`, a refspec such as `git fetch box main:other` and `--prune`
+let the box's branches reach or delete your refs.
 Without a running box, crossing starts a transient one on the project
 disk, without egress.
 
@@ -344,7 +288,7 @@ image = "localhost/pinfold/image-research-tools:latest"
 
 `image` can also be a profile default. A project `image` overrides it;
 there is no environment override. An explicit image cannot be combined with
-a project Containerfile. Explicit images resolve locally. With an explicit
+a project Containerfile. With an explicit
 image, `pinfold build` reports that there is no selected recipe to build.
 
 ### Your own profile
@@ -378,8 +322,6 @@ Custom profiles can omit `Containerfile` when an image or project recipe is
 selected. Keep Pi settings, extensions and skills in their native files under
 `home/` and `share/`. Home seeds fill missing files; changing profiles keeps
 saved settings, sessions and disks. Shared files are read-only at every start.
-`pinfold config --json` reports `image_source` and the selected recipe, even without
-a runtime installed.
 
 ## From another agent
 
@@ -486,6 +428,8 @@ project’s actual cwd; commit them for disk-project crossing.
 Read the [threat model](docs/ARCHITECTURE.md#threat-model) and [disks](docs/ARCHITECTURE.md#disks) before use.
 
 Shared-file reads can be stale or internally inconsistent after host changes;
-no fixed recovery delay is guaranteed. `git status` on a very large shared
-tree measured 10–15 seconds in the guest against about 0.1 seconds on the
-host. This is a known cost. Shares have no cross-box coordination.
+no fixed recovery delay is guaranteed. Shares have no cross-box
+coordination.
+
+Developers integrating pinfold: see the spec's
+[Process interface](docs/ARCHITECTURE.md#process-interface).
