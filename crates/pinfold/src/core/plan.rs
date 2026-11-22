@@ -117,11 +117,9 @@ impl Inject {
     /// The parsed target, after checking each header's declaration without
     /// reading its value.
     fn check(&self) -> Result<Target, String> {
+        // Never echo `to`: a pasted URL may hold a password or token.
         let target = parse_target(&self.to).ok_or_else(|| {
-            invalid(format!(
-                "route target {:?} must be an http:// or https:// origin",
-                self.to
-            ))
+            invalid("a route's `to` must be an http:// or https:// origin".to_string())
         })?;
         for (name, header) in &self.headers {
             if !valid_header_name(name) {
@@ -339,10 +337,9 @@ impl Login {
     /// The dialed target.
     pub fn target(&self) -> Result<Target, String> {
         let origin = self.origin()?;
+        // Never echo `to`, as for an injecting route.
         parse_target(origin).ok_or_else(|| {
-            invalid(format!(
-                "login target {origin:?} must be an http:// or https:// origin"
-            ))
+            invalid("a login route's `to` must be an http:// or https:// origin".to_string())
         })
     }
 
