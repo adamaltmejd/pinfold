@@ -771,22 +771,28 @@ fn serve_control(request: &Request, control: &OwnedFd, service: &OwnedFd) -> ! {
 /// End box work, so nothing keeps a disk busy, then sync and unmount every
 /// attachment, the nested ones first.
 fn unmount(request: &Request) -> io::Result<()> {
-    fs::write(format!("{WORK}/cgroup.kill"), "1")?;
-    let events = File::open(format!("{WORK}/cgroup.events"))?;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !fs::read_to_string(format!("{WORK}/cgroup.events"))?.contains("populated 0") {
-        if Instant::now() > deadline {
-            return Err(io::Error::other("box work did not end"));
-        }
-        // cgroup.events signals a change with POLLPRI.
-        let mut fds = [PollFd::new(events.as_fd(), PollFlags::POLLPRI)];
-        let _ = nix::poll::poll(&mut fds, PollTimeout::from(100u16));
-    }
+    stop_work(Some(Instant::now() + Duration::from_secs(10)))?;
     nix::unistd::sync();
     for attachment in request.attachments.iter().rev() {
         nix::mount::umount2(&attachment.guest, MntFlags::UMOUNT_NOFOLLOW).map_err(|error| {
             io::Error::other(format!("unmount {}: {error}", attachment.guest.display()))
         })?;
+    }
+    Ok(())
+}
+
+/// Kill the work cgroup and wait until it is empty, failing after
+/// `deadline` if there is one.
+pub(super) fn stop_work(deadline: Option<Instant>) -> io::Result<()> {
+    fs::write(format!("{WORK}/cgroup.kill"), "1")?;
+    let events = File::open(format!("{WORK}/cgroup.events"))?;
+    while !fs::read_to_string(format!("{WORK}/cgroup.events"))?.contains("populated 0") {
+        if deadline.is_some_and(|deadline| Instant::now() > deadline) {
+            return Err(io::Error::other("box work did not end"));
+        }
+        // cgroup.events signals a change with POLLPRI.
+        let mut fds = [PollFd::new(events.as_fd(), PollFlags::POLLPRI)];
+        let _ = nix::poll::poll(&mut fds, PollTimeout::from(100u16));
     }
     Ok(())
 }
@@ -930,7 +936,7 @@ pub(super) fn exec(
     connection: UnixStream,
     payload: &[u8],
     vars: Option<Vec<(OsString, OsString)>>,
-    departure: Option<(BorrowedFd<'_>, bool)>,
+    departure: Option<BorrowedFd<'_>>,
 ) -> io::Result<()> {
     let mut fields = Fields(payload);
     let argv: Vec<OsString> = (0..fields.u32()?)
@@ -966,12 +972,7 @@ pub(super) fn exec(
                 .envs(vars.into_iter().map(|(name, value)| {
                     let mut key = OsString::from(super::BOX_ENV_PREFIX);
                     key.push(name);
-                    let hex: String = value
-                        .as_bytes()
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect();
-                    (key, hex)
+                    (key, super::hex(value.as_bytes()))
                 }));
         }
         None => {
@@ -1062,7 +1063,8 @@ fn open_pty(window: Option<(u16, u16)>) -> io::Result<(File, File)> {
         }
         let slave = File::from_raw_fd(slave);
         if let Some((rows, cols)) = window {
-            set_window(&master, rows, cols).map_err(|error| context("set the window", error))?;
+            super::set_window(&master, rows, cols)
+                .map_err(|error| context("set the window", error))?;
         }
         Ok((master, slave))
     }
@@ -1070,20 +1072,6 @@ fn open_pty(window: Option<(u16, u16)>) -> io::Result<(File, File)> {
 
 fn context(what: &str, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{what}: {error}"))
-}
-
-pub(super) fn set_window(master: &impl AsRawFd, rows: u16, cols: u16) -> io::Result<()> {
-    let size = libc::winsize {
-        ws_row: rows,
-        ws_col: cols,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    // Safety: TIOCSWINSZ reads one winsize.
-    if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &size) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
 }
 
 /// The work cgroup's memory, pids and OOM kills, from the guest kernel.

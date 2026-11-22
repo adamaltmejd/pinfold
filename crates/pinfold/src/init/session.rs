@@ -100,15 +100,8 @@ impl Drop for Session {
         }
         // Relay-owned stdio, including the PTY master, drops before this guard.
         let _ = self.depart();
-        while self
-            .deadline
-            .is_some_and(|deadline| Instant::now() < deadline)
-        {
-            // SAFETY: zero descriptors leaves the null poll pointer unused.
-            let result = unsafe { nix::libc::poll(std::ptr::null_mut(), 0, self.timeout().max(1)) };
-            if result < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                break;
-            }
+        if let Some(deadline) = self.deadline {
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
         }
         let _ = self.signal(Signal::SIGKILL);
         if let Some(mut child) = self.child.take() {

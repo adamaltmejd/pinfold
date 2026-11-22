@@ -485,10 +485,6 @@ impl Layer {
                 .collect()
         });
         Ok(Layer {
-            profile: None,
-            base: None,
-            image: None,
-            mounts: None,
             allow: override_value("PINFOLD_ALLOW")?.as_deref().map(split_list),
             routes,
             route_declarations,
@@ -500,7 +496,7 @@ impl Layer {
                 })
                 .transpose()?,
             memory: override_value("PINFOLD_MEMORY")?,
-            env: None,
+            ..Default::default()
         })
     }
 

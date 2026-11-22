@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -99,13 +98,7 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
     let built = (|| {
         let input = if relay {
             discover(&job, host, Arc::clone(&log))?;
-            let mut bytes = Vec::new();
-            File::open("/work/discovery.json")?
-                .take(JSON_BYTES + 1)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() as u64 > JSON_BYTES {
-                return Err(io::Error::other("resource: discovery JSON"));
-            }
+            let bytes = read_bounded("/work/discovery.json", "discovery JSON")?;
             fs::remove_file("/work/discovery.json")?;
             write_frame(host, b'L', &bytes)?;
             let (kind, payload) = read_frame(host)?;
@@ -150,7 +143,7 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
         }
     };
     // No RUN descendant may keep changing an output after its daemon exited.
-    stop_work()?;
+    firecracker::stop_work(None)?;
     nix::unistd::sync();
     let (files, limit) = match job.phase {
         Phase::Convert => (vec![(b'D', output.to_path_buf())], ROOT_BYTES),
@@ -184,18 +177,24 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
 }
 
 fn read_job(path: &str) -> io::Result<Job> {
+    let bytes = read_bounded(path, "builder job metadata")?;
+    serde_json::from_slice(&bytes).map_err(io::Error::other)
+}
+
+/// The JSON file at `path`, refused as `resource: {what}` above [`JSON_BYTES`].
+fn read_bounded(path: &str, what: &str) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(path)?
         .take(JSON_BYTES + 1)
         .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > JSON_BYTES {
-        return Err(io::Error::other("resource: builder job metadata"));
+        return Err(io::Error::other(format!("resource: {what}")));
     }
-    serde_json::from_slice(&bytes).map_err(io::Error::other)
+    Ok(bytes)
 }
 
 fn finish(host: &mut UnixStream, failure: Option<&str>, selected_mounted: bool) -> io::Result<()> {
-    stop_work()?;
+    firecracker::stop_work(None)?;
     nix::unistd::sync();
     if selected_mounted {
         nix::mount::umount("/selected")?;
@@ -389,7 +388,7 @@ impl Daemon {
             Err(error) => return Err(error.into()),
         }
         self.child.wait()?;
-        stop_work()?;
+        firecracker::stop_work(None)?;
         if let Some(reader) = self.reader.take() {
             reader
                 .join()
@@ -405,55 +404,36 @@ impl Drop for Daemon {
     }
 }
 
+/// Push everything `reader` yields into `log`, until its end.
+fn record(reader: &mut io::PipeReader, log: &Mutex<Tail>) -> io::Result<()> {
+    let mut buffer = [0; 4096];
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(());
+        }
+        log.lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(&buffer[..count]);
+    }
+}
+
 fn logged(mut command: Command, log: Arc<Mutex<Tail>>) -> io::Result<()> {
     let (mut reader, writer) = io::pipe()?;
     command.stdout(writer.try_clone()?).stderr(writer);
     let child = command.spawn();
     drop(command);
     let mut child = child?;
-    let mut buffer = [0; 4096];
-    loop {
-        let count = match reader.read(&mut buffer) {
-            Ok(count) => count,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(error);
-            }
-        };
-        if count == 0 {
-            break;
-        }
-        log.lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-            .push(&buffer[..count]);
+    if let Err(error) = record(&mut reader, &log) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
     }
     let status = child.wait()?;
     if status.success() {
         Ok(())
     } else {
         Err(io::Error::other(format!("image job: {status}")))
-    }
-}
-
-fn stop_work() -> io::Result<()> {
-    fs::write("/sys/fs/cgroup/work/cgroup.kill", "1")?;
-    let mut events = File::open("/sys/fs/cgroup/work/cgroup.events")?;
-    loop {
-        events.seek(SeekFrom::Start(0))?;
-        let mut state = String::new();
-        events.read_to_string(&mut state)?;
-        if state.lines().any(|line| line == "populated 0") {
-            return Ok(());
-        }
-        let mut watch = [nix::poll::PollFd::new(
-            events.as_fd(),
-            nix::poll::PollFlags::POLLPRI | nix::poll::PollFlags::POLLERR,
-        )];
-        match nix::poll::poll(&mut watch, nix::poll::PollTimeout::NONE) {
-            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-            Err(error) => return Err(error.into()),
-        }
     }
 }
 
@@ -569,18 +549,7 @@ fn discover(job: &Job, host: &mut UnixStream, log: Arc<Mutex<Tail>>) -> io::Resu
     let child = command.spawn();
     drop(command);
     let mut child = child?;
-    let errors = thread::spawn(move || -> io::Result<()> {
-        let mut buffer = [0; 4096];
-        loop {
-            let count = reader.read(&mut buffer)?;
-            if count == 0 {
-                return Ok(());
-            }
-            log.lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .push(&buffer[..count]);
-        }
-    });
+    let errors = thread::spawn(move || record(&mut reader, &log));
     let queries = (|| {
         let mut output = BufReader::new(child.stdout.take().expect("discovery stdout is piped"));
         let mut input = child.stdin.take().expect("discovery stdin is piped");
@@ -639,7 +608,8 @@ fn convert(log: Arc<Mutex<Tail>>) -> io::Result<()> {
         "/work/tree",
     ]);
     logged(tar, Arc::clone(&log))?;
-    let (kib, entries) = tree_size(Path::new("/work/tree"))?;
+    let (blocks, entries) = tree_blocks(Path::new("/work/tree"), &mut BTreeSet::new())?;
+    let kib = blocks.div_ceil(2);
     let size = kib
         .checked_add(kib / 10)
         .and_then(|size| size.checked_add(entries / 4))
@@ -655,11 +625,6 @@ fn convert(log: Arc<Mutex<Tail>>) -> io::Result<()> {
         .arg((entries + 1024).to_string())
         .args(["-d", "/work/tree", "/work/root.ext4"]);
     logged(mkfs, log)
-}
-
-fn tree_size(path: &Path) -> io::Result<(u64, u64)> {
-    let (blocks, entries) = tree_blocks(path, &mut BTreeSet::new())?;
-    Ok((blocks.div_ceil(2), entries))
 }
 
 fn tree_blocks(path: &Path, seen: &mut BTreeSet<(u64, u64)>) -> io::Result<(u64, u64)> {
@@ -705,7 +670,7 @@ fn send(host: &mut UnixStream, kind: u8, path: &Path, remaining: &mut u64) -> io
     if size != metadata.len() {
         return Err(io::Error::other("image output changed"));
     }
-    let digest = format!("sha256:{}", hex(&sha.finalize()));
+    let digest = format!("sha256:{}", super::hex(&sha.finalize()));
     let header = serde_json::to_vec(&serde_json::json!({"digest": digest, "size": size}))?;
     write_frame(host, kind, &header)?;
     file.seek(SeekFrom::Start(0))?;
@@ -715,13 +680,4 @@ fn send(host: &mut UnixStream, kind: u8, path: &Path, remaining: &mut u64) -> io
     }
     *remaining -= size;
     Ok(())
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut text = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        write!(&mut text, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    text
 }

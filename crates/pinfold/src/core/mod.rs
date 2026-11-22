@@ -106,10 +106,7 @@ pub(crate) fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
     hex(&Sha256::digest(bytes))
 }
 
-/// `bytes` as lowercase hex.
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
+pub(crate) use crate::init::hex;
 
 /// Seconds since the Unix epoch; 0 for a clock before it.
 pub(crate) fn now() -> u64 {
