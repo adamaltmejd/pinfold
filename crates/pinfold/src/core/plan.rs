@@ -357,9 +357,14 @@ impl Login {
         } else {
             ("Authorization", "Bearer ")
         };
+        // Every caller prefixes the agent and route, so these name neither.
         let from = self.from.clone().unwrap_or_default();
-        if std::env::var_os(&from).is_some_and(|value| value.is_empty()) {
-            return Err(format!("environment variable {from} is empty"));
+        match std::env::var_os(&from) {
+            None => return Err(format!("needs the host variable {from}, which is not set")),
+            Some(value) if value.is_empty() => {
+                return Err(format!("the host variable {from} is empty"));
+            }
+            Some(_) => {}
         }
         let inject = Inject {
             to: self.origin()?.to_string(),
