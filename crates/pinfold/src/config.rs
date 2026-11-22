@@ -94,8 +94,8 @@ impl ProjectMount {
 # env = {{ LANG = \"C.UTF-8\", API_KEY = {{ from = \"MY_API_KEY\" }} }}
 # A Containerfile beside this file builds the project's own image.
 
-# Agent logins kept on the host; these tables stay last, and any routes here
-# replace the profile's. Pi on the host's Codex login:
+# Agent logins kept on the host. These tables stay last, take the place of the
+# routes line above, and replace the profile's routes. Pi on the host's Codex login:
 # [routes.openai]
 # login = \"pi\"
 # provider = \"openai-codex\"
