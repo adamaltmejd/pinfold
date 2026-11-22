@@ -505,7 +505,8 @@ The box spec `up` reads from stdin:
   starts with `op://`, holds no control character (below 0x20, or
   0x7f) and is at most 1024 bytes. `from` and
   `op` together, or neither, are refused as `spec`, naming only the key,
-  and a configuration file holding such an entry fails to load; so is a
+  and a configuration file holding such an env entry or injecting header
+  fails to load; so is a
   malformed reference, and an explicit null for either key. Only the process that starts the box
   reads a reference, and only after every check that needs no value:
   `box up` after the spec (an env or header `from` included), profile, mount preparation,

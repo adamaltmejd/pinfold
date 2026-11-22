@@ -28,7 +28,7 @@ pub struct Plan {
     #[serde(default)]
     pub disks: Vec<Disk>,
     /// Exact environment. `{ "from": "NAME" }` takes the caller's value.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "env_entries")]
     pub env: BTreeMap<String, Env>,
     /// Present means the box gets a proxy; absent means no way out at all.
     pub egress: Option<Egress>,
@@ -143,24 +143,58 @@ fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<S
     String::deserialize(deserializer).map(Some)
 }
 
-/// Refuse, naming the entry, a secret source in configuration that names
-/// both `from` and `op` or neither. Configuration load calls this, so a
-/// `PINFOLD_ENV_` variable replacing the entry cannot hide it.
+/// The box spec's env map, each entry's decoding error naming its key.
+fn env_entries<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, Env>, D::Error> {
+    struct Visitor;
+    impl<'de> serde::de::Visitor<'de> for Visitor {
+        type Value = BTreeMap<String, Env>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a map of environment variables")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut env = BTreeMap::new();
+            while let Some(name) = map.next_key::<String>()? {
+                let value = map
+                    .next_value::<Env>()
+                    .map_err(|error| serde::de::Error::custom(format!("env {name}: {error}")))?;
+                env.insert(name, value);
+            }
+            Ok(env)
+        }
+    }
+    deserializer.deserialize_map(Visitor)
+}
+
+/// Refuse, naming the entry, an env entry or injecting header in
+/// configuration that names both `from` and `op` or neither: main refused
+/// such a header at load too. Configuration load calls this, so a
+/// `PINFOLD_ENV_` variable replacing the entry cannot hide it. Login
+/// routes are checked at launch, as before `op`.
 pub(crate) fn check_declared(
     env: &BTreeMap<String, Env>,
     routes: &BTreeMap<String, Route>,
 ) -> Result<(), String> {
-    let plan = Plan {
-        env: env.clone(),
-        egress: Some(Egress {
-            allow: Vec::new(),
-            routes: routes.clone(),
-        }),
-        ..Plan::default()
-    };
-    for (kind, name, source) in plan.sources() {
+    let env = env
+        .iter()
+        .filter_map(|(name, value)| Some((format!("env {name:?}"), value.source()?)));
+    let headers = routes
+        .values()
+        .filter_map(|route| match route {
+            Route::Inject(inject) => Some(&inject.headers),
+            _ => None,
+        })
+        .flatten()
+        .map(|(name, header)| (format!("route header {name:?}"), header.source()));
+    for (entry, source) in env.chain(headers) {
         if let Err(error @ (BOTH | NEITHER)) = source {
-            return Err(format!("{kind} {name:?}: {error}"));
+            return Err(format!("{entry}: {error}"));
         }
     }
     Ok(())
