@@ -140,7 +140,7 @@ the current state root.
 | | `/login` in the box | Login route in `routes` |
 |---|---|---|
 | Credential | On the project's home disk | On the host; the box holds a placeholder |
-| Box code can read it | Yes | No; it can use it |
+| Box code can read it | Yes | Not directly; it can use it, and an upstream that echoes it returns it |
 | Scope | That project; persists across `stop` | Every project selecting the profile |
 
 Either way the agent's traffic goes through the proxy. Put a login route
