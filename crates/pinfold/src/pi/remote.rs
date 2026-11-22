@@ -181,7 +181,15 @@ fn push(batch: &[String], check: impl FnOnce(&Path) -> io::Result<()>) -> io::Re
         };
         for destination in accepted {
             report.push_str(&match &pushed {
-                Ok(()) => format!("ok {destination}\n"),
+                // Git updates the tracking ref for the reported name, the
+                // box's `refs/remotes/host/BRANCH`, so the host's
+                // `box/BRANCH` keeps naming the box's own branch.
+                Ok(()) => match destination.strip_prefix("refs/heads/") {
+                    Some(branch) => {
+                        format!("ok {destination}\noption refname refs/remotes/host/{branch}\n")
+                    }
+                    None => format!("ok {destination}\n"),
+                },
                 Err(_) => format!("error {destination} {reason}\n"),
             });
         }

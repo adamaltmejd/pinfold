@@ -268,6 +268,24 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     assert_eq!(in_box(&[worktree]), tree_before);
     assert_eq!(names(&planted), Vec::<String>::new());
     assert_eq!(files(&hooks), host_hooks);
+
+    // The host's `box/main` still names the box's own main after that push
+    // and after a repeat of it, which sends nothing new.
+    // Sabotage (run): in pi/remote.rs's `push`, drop the `option refname`
+    // line. Git then moves `box/main` to the host's main after the first
+    // push. Sabotage (run): in core/crossing.rs's `pushed_cancellable`, list
+    // the box's `refs/remotes/host/NAME` as `refs/heads/NAME` again. Git
+    // then calls the repeat up to date and moves `box/main` after it.
+    for push in ["first", "repeat"] {
+        if push == "repeat" {
+            git(&["push", "-q", "box", "main"]);
+        }
+        assert_eq!(
+            git(&["rev-parse", "refs/remotes/box/main"]),
+            in_box(&["git rev-parse main"]),
+            "{push} push"
+        );
+    }
 }
 
 /// `text` as one shell word.
