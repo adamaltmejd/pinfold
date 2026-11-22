@@ -42,7 +42,7 @@ use super::exec_wire::{ENV, EXEC, FAILED, STDERR, read_frame, write_frame};
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::TcpListener;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -785,16 +785,35 @@ fn unmount(request: &Request) -> io::Result<()> {
 /// `deadline` if there is one.
 pub(super) fn stop_work(deadline: Option<Instant>) -> io::Result<()> {
     fs::write(format!("{WORK}/cgroup.kill"), "1")?;
-    let events = File::open(format!("{WORK}/cgroup.events"))?;
-    while !fs::read_to_string(format!("{WORK}/cgroup.events"))?.contains("populated 0") {
-        if deadline.is_some_and(|deadline| Instant::now() > deadline) {
-            return Err(io::Error::other("box work did not end"));
+    let mut events = File::open(format!("{WORK}/cgroup.events"))?;
+    loop {
+        // cgroup v2 signals a change with POLLPRI|POLLERR on the descriptor
+        // last read, which stays ready until it is read again from 0.
+        events.seek(SeekFrom::Start(0))?;
+        let mut state = String::new();
+        events.read_to_string(&mut state)?;
+        if state.lines().any(|line| line == "populated 0") {
+            return Ok(());
         }
-        // cgroup.events signals a change with POLLPRI.
-        let mut fds = [PollFd::new(events.as_fd(), PollFlags::POLLPRI)];
-        let _ = nix::poll::poll(&mut fds, PollTimeout::from(100u16));
+        let timeout = match deadline {
+            None => PollTimeout::NONE,
+            Some(deadline) => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(io::Error::other("box work did not end"));
+                }
+                PollTimeout::try_from(left).unwrap_or(PollTimeout::MAX)
+            }
+        };
+        let mut fds = [PollFd::new(
+            events.as_fd(),
+            PollFlags::POLLPRI | PollFlags::POLLERR,
+        )];
+        match nix::poll::poll(&mut fds, timeout) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+            Err(error) => return Err(error.into()),
+        }
     }
-    Ok(())
 }
 
 /// The exec service: forked from PID 1, still root until
