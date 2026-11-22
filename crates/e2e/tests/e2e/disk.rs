@@ -6,12 +6,9 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::thread;
-use std::time::Duration;
 
-use e2e::{BoxUp, TestEnv, box_name, default_image, hold_maintenance, json_lines, run};
+use e2e::{BoxUp, COMMAND, TestEnv, box_name, default_image, hold_maintenance, json_lines, run};
 use serde_json::{Value, json};
-
-const COMMAND: Duration = Duration::from_secs(120);
 
 /// A box with one disk at `/data`.
 fn spec(name: &str, disk: &str, readonly: bool) -> Value {

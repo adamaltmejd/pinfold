@@ -5,12 +5,10 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
-use std::time::Duration;
 
-use e2e::{BoxUp, Fixture, TestEnv, box_name, default_image, run};
+use e2e::{BoxUp, COMMAND, Fixture, TestEnv, box_name, default_image, run};
 use serde_json::{Value, json};
 
-const COMMAND: Duration = Duration::from_secs(120);
 /// Each box's egress log cap (Egress proxy, Log).
 const CAP: u64 = 128 << 20;
 

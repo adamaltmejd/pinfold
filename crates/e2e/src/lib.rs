@@ -20,7 +20,7 @@ use serde_json::Value;
 /// A build of pinfold or of the default image, cold.
 const BUILD: Duration = Duration::from_secs(1800);
 /// Any other command a test runs on the host.
-const COMMAND: Duration = Duration::from_secs(120);
+pub const COMMAND: Duration = Duration::from_secs(120);
 
 /// The `pinfold` binary built from this checkout. Linux boxes run the CLI
 /// itself as PID 1, so there it is the static musl release build.
@@ -96,7 +96,6 @@ pub struct Exec {
 /// Run `command` with null stdin, capturing its output. Past `timeout` it
 /// is killed and the test fails naming it; nothing waits unbounded.
 pub fn run(command: &mut Command, timeout: Duration) -> Exec {
-    scrub(command);
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -144,8 +143,10 @@ pub fn run(command: &mut Command, timeout: Duration) -> Exec {
 /// Spawn `command`, one spawn at a time in this process. On macOS std
 /// makes a child's stdio pipes with `pipe()` and sets CLOEXEC in separate
 /// calls, so a spawn on another thread can inherit them: a refused `box up` then
-/// exits, but the other `box up` holds its stdout open (#379).
+/// exits, but the other `box up` holds its stdout open (#379). No user
+/// login reaches it ([`scrub`]).
 pub fn spawn(command: &mut Command) -> Child {
+    scrub(command);
     static SPAWN: Mutex<()> = Mutex::new(());
     let _spawning = SPAWN.lock().unwrap_or_else(PoisonError::into_inner);
     command
@@ -190,7 +191,6 @@ impl Roots {
     /// command that runs it, as host `git` runs the remote helper.
     fn apply(&self, command: &mut Command) {
         remove_vars(command, "PINFOLD_");
-        scrub(command);
         command
             .env("XDG_CONFIG_HOME", &self.config)
             .env("XDG_STATE_HOME", &self.state)
@@ -1026,7 +1026,7 @@ impl Below {
     pub fn of(pid: u32) -> Below {
         let mut parents = Vec::new();
         for entry in fs::read_dir("/proc").expect("read /proc").flatten() {
-            let Some((child, state, parent, name)) = entry
+            let Some((child, state, parent, _, name)) = entry
                 .file_name()
                 .to_str()
                 .and_then(|name| name.parse::<u32>().ok())
@@ -1070,17 +1070,19 @@ impl Below {
     }
 }
 
-/// `/proc/PID/stat`'s pid, state, parent pid and command name.
+/// `/proc/PID/stat`'s pid, state, parent pid, session id and command name.
 #[cfg(target_os = "linux")]
-fn stat(pid: u32) -> Option<(u32, String, u32, String)> {
+fn stat(pid: u32) -> Option<(u32, String, u32, u32, String)> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // `PID (COMM) STATE PPID ...`; COMM may hold spaces and parentheses.
+    // `PID (COMM) STATE PPID PGRP SESSION ...`; COMM may hold spaces and
+    // parentheses.
     let (head, tail) = stat.rsplit_once(')')?;
     let (_, name) = head.split_once('(')?;
     let mut fields = tail.split_whitespace();
     let state = fields.next()?.to_string();
     let parent = fields.next()?.parse().ok()?;
-    Some((pid, state, parent, name.to_string()))
+    let session = fields.nth(1)?.parse().ok()?;
+    Some((pid, state, parent, session, name.to_string()))
 }
 
 /// The live direct children of `pid` that lead a session of their own
@@ -1088,32 +1090,16 @@ fn stat(pid: u32) -> Option<(u32, String, u32, String)> {
 /// has yet to exec.
 #[cfg(target_os = "linux")]
 pub fn detached_children(pid: u32) -> Vec<u32> {
-    let mut found = Vec::new();
-    for entry in fs::read_dir("/proc").expect("read /proc").flatten() {
-        let Some(child) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let Ok(line) = fs::read_to_string(entry.path().join("stat")) else {
-            continue;
-        };
-        // `PID (COMM) STATE PPID PGRP SESSION ...`
-        let Some((_, tail)) = line.rsplit_once(')') else {
-            continue;
-        };
-        let fields: Vec<&str> = tail.split_whitespace().take(4).collect();
-        if let [state, parent, _, session] = fields[..]
-            && state != "Z"
-            && parent.parse() == Ok(pid)
-            && session.parse() == Ok(child)
-        {
-            found.push(child);
-        }
-    }
-    found
+    fs::read_dir("/proc")
+        .expect("read /proc")
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .filter_map(stat)
+        .filter(|(child, state, parent, session, _)| {
+            state != "Z" && *parent == pid && session == child
+        })
+        .map(|(child, ..)| child)
+        .collect()
 }
 
 /// Wait, bounded, until `pid` has exited (see [`exited`]).

@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use e2e::{
-    Client, Exec, Project, TestEnv, detached_children, hold_maintenance, run, tree, wait_exited,
+    COMMAND, Client, Exec, Project, TestEnv, detached_children, hold_maintenance, run, tree,
+    wait_exited,
 };
 use serde_json::Value;
 
@@ -71,10 +72,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // Dead boxes are every root's to prune; hold them for this pass.
     let hold = hold_maintenance();
-    let cleaned = run(
-        env.command().args(["clean", "--unused", "0s"]),
-        Duration::from_secs(120),
-    );
+    let cleaned = run(env.command().args(["clean", "--unused", "0s"]), COMMAND);
     drop(hold);
     assert_eq!(cleaned.code, 0, "{cleaned:?}");
 

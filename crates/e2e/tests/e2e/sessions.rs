@@ -5,14 +5,13 @@
 use std::fs;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use e2e::{
-    Client, Project, READER, TestEnv, default_image, hold_maintenance, json_lines, run, spawn, tree,
+    COMMAND, Client, Project, READER, TestEnv, default_image, hold_maintenance, json_lines, run,
+    spawn, tree,
 };
 use serde_json::Value;
 
-const COMMAND: Duration = Duration::from_secs(120);
 /// The caller variable the project's `env` reads with `from`.
 const SOURCE: &str = "E2E_SESSION_SOURCE";
 /// The box's PATH: a home directory the box writes first, then the image's.

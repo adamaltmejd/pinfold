@@ -4,12 +4,10 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use e2e::{Below, Leftover, Project, TestEnv, box_name, default_image, json_lines, run};
+use e2e::{Below, COMMAND, Leftover, Project, TestEnv, box_name, default_image, json_lines, run};
 use serde_json::{Value, json};
 
-const COMMAND: Duration = Duration::from_secs(120);
 const NAMESPACES: [&str; 6] = ["user", "mnt", "pid", "net", "ipc", "uts"];
 
 #[test]

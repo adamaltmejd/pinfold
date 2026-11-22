@@ -3,16 +3,14 @@
 
 #[cfg(target_os = "macos")]
 use std::process::Command;
-use std::time::Duration;
 
 #[cfg(target_os = "macos")]
 use e2e::Exec;
 use e2e::{
-    Client, Leftover, Project, TestEnv, box_name, default_image, hold_maintenance, json_lines, run,
+    COMMAND, Client, Leftover, Project, TestEnv, box_name, default_image, hold_maintenance,
+    json_lines, run,
 };
 use serde_json::{Value, json};
-
-const COMMAND: Duration = Duration::from_secs(120);
 
 #[test]
 fn losing_the_owner_fails_closed() {

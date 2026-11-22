@@ -13,11 +13,10 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
 
-use e2e::{Client, Fixture, Project, READER, Request, TestEnv, default_image, json_lines, run};
-
-const COMMAND: Duration = Duration::from_secs(120);
+use e2e::{
+    COMMAND, Client, Fixture, Project, READER, Request, TestEnv, default_image, json_lines, run,
+};
 
 /// A throwaway random word.
 fn random() -> String {

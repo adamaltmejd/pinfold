@@ -231,7 +231,7 @@ impl Tags {
 fn tagged(prefix: &str) -> Result<Vec<String>, String> {
     let listed = run(
         std::process::Command::new("container").args(["image", "list", "--format", "json"]),
-        Duration::from_secs(120),
+        e2e::COMMAND,
     );
     // The listing holds other images' labels and environment: an error
     // names neither.
@@ -265,7 +265,7 @@ impl Drop for Tags {
             for reference in tagged(&prefix)? {
                 let deleted = run(
                     std::process::Command::new("container").args(["image", "delete", &reference]),
-                    Duration::from_secs(120),
+                    e2e::COMMAND,
                 );
                 if deleted.code != 0 {
                     left.push(format!("{reference}: {deleted:?}"));
