@@ -200,10 +200,7 @@ fn project_client_exits_125(env: &TestEnv) {
     let leftover = Leftover::listed(env, &listed[0]);
     #[cfg(target_os = "linux")]
     let below = e2e::Below::of(leftover.owner());
-    let kill = run(
-        Command::new("kill").args(["-KILL", &leftover.owner().to_string()]),
-        COMMAND,
-    );
+    let kill = leftover.kill();
     assert_eq!(kill.code, 0, "kill the project owner: {kill:?}");
 
     let status = wait_until(&mut client.0, Instant::now() + COMMAND)
