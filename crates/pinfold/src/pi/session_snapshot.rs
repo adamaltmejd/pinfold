@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::config::{Config, ProjectMount};
 use crate::core::image::service;
 use crate::core::login::MAX_OP_VALUE;
-use crate::core::plan::{Env, MountKind, Plan, Source, Values, memory_mib, valid_op};
+use crate::core::plan::{self, Env, MountKind, Plan, Source, Values, memory_mib, valid_op};
 use crate::core::profile::Share;
 use crate::dirs;
 use crate::pi::{context::Context, launch, state};
@@ -350,11 +350,24 @@ impl Snapshot {
                 .flatten()
                 .all(|(_, header)| has(&header.from, &header.op)),
             Declaration::Login(login) => {
-                (login.from.is_none() && login.op.is_none()) || has(&login.from, &login.op)
+                let neither = login.from.is_none() && login.op.is_none();
+                let host_codex = plan::Login {
+                    login: login.login.clone(),
+                    provider: login.provider.clone(),
+                    from: None,
+                    op: None,
+                    to: None,
+                }
+                .uses_host_codex();
+                neither || (!host_codex && has(&login.from, &login.op))
             }
             Declaration::Address(_) => true,
-        }) && self.env_names.values().all(|source| match source {
-            EnvSource::Op { reference } => values.contains_key(&Source::Op(reference.clone())),
+        }) && self.env_names.iter().all(|(name, source)| match source {
+            // An `op` value travels only in `op`, never in an env slot.
+            EnvSource::Op { reference } => {
+                values.contains_key(&Source::Op(reference.clone()))
+                    && self.env_values.get(name).is_none_or(Option::is_none)
+            }
             EnvSource::Exact {} | EnvSource::From { .. } => true,
         });
         if !declared {
