@@ -4,7 +4,6 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use e2e::{Below, Leftover, Project, TestEnv, box_name, default_image, json_lines, run};
@@ -255,10 +254,7 @@ fn the_vmm_reaches_only_its_own_box() {
     }
 
     // Control: SIGKILL of the detached owner ends its VM.
-    let kill = run(
-        Command::new("kill").args(["-KILL", &leftover.owner().to_string()]),
-        COMMAND,
-    );
+    let kill = leftover.kill();
     assert_eq!(kill.code, 0, "kill the project owner: {kill:?}");
     b_below.wait_gone();
     drop(leftover);

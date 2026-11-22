@@ -3,6 +3,7 @@
 //! and the box spec. Nothing here imports pinfold.
 
 use std::fs;
+use std::hash::{BuildHasher, Hasher, RandomState};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::panic::{self, AssertUnwindSafe};
@@ -237,7 +238,8 @@ pub fn hold_maintenance() -> MutexGuard<'static, ()> {
 
 /// One test's throwaway config and state roots, removed on drop unless a
 /// box failed to end cleanly. The cache root is the suite run's own (see
-/// [`suite_cache`]) unless the test asks for its own. Every disk in its state root is removed by name on
+/// [`suite_cache`]) unless the test asks for its own. Every disk in its
+/// state root, whose pathname no earlier run used, is removed by name on
 /// drop, after the test's boxes, which are declared after it.
 pub struct TestEnv {
     root: PathBuf,
@@ -257,7 +259,14 @@ impl TestEnv {
     }
 
     fn with_cache(test: &str, cache: Option<&Path>) -> TestEnv {
-        let root = temp().join(format!("pinfold-e2e-{}-{test}", std::process::id()));
+        // A random component, so the root's pathname never recurs: on macOS
+        // a state root's disks are keyed by it, and teardown removes every
+        // disk under the key.
+        let token = RandomState::new().build_hasher().finish();
+        let root = temp().join(format!(
+            "pinfold-e2e-{}-{token:016x}-{test}",
+            std::process::id()
+        ));
         let roots = Roots {
             config: root.join("config"),
             state: root.join("state"),
@@ -969,18 +978,16 @@ impl BoxUp {
         // Never kill the owner: on Apple the guest would outlive it.
         drop(self.stdin.take());
         if !self.drain(Duration::from_secs(120)) {
+            // Before `ready` the name may be another box's: a refused `up`
+            // names a box that exists.
+            let Some(run_id) = self.ready["run_id"].as_str().map(str::to_string) else {
+                self.fail("stdin EOF did not end box up within 120 s, before ready; left as it is");
+                return;
+            };
             self.fail("stdin EOF did not end box up within 120 s; trying box down");
-            let mut down = self.roots.command();
-            down.args(["box", "down", &self.name]);
-            let (send, done) = mpsc::channel();
-            // `run` panics on its deadline; a Drop must not.
-            thread::spawn(move || {
-                let _ = send.send(run(&mut down, COMMAND).code);
-            });
-            match done.recv_timeout(COMMAND + Duration::from_secs(10)) {
-                Ok(0) => {}
-                Ok(code) => self.fail(&format!("box down exited {code}")),
-                Err(_) => self.fail("box down did not finish"),
+            let (name, roots) = (self.name.clone(), self.roots.clone());
+            if let Err(error) = in_drop(move || down_generation(&roots, &name, &run_id)) {
+                self.fail(&error);
             }
             if !self.drain(Duration::from_secs(60)) {
                 self.fail("box up still running after box down; left as it is");
@@ -1160,33 +1167,63 @@ impl Leftover {
     pub fn owner(&self) -> u32 {
         self.owner
     }
+
+    /// SIGKILL the owner, once `box list` shows that pid still owning this
+    /// generation: a pid from an earlier listing may since be another
+    /// process's. A short window between the check and the kill remains.
+    pub fn kill(&self) -> Exec {
+        let label = format!("dev.pinfold.generation={}", self.run_id);
+        let out = run(
+            self.roots
+                .command()
+                .args(["box", "list", "--label", &label]),
+            COMMAND,
+        );
+        let listed = json_lines(&out.stdout);
+        assert!(
+            out.code == 0
+                && listed.len() == 1
+                && listed[0]["owner"] == self.owner
+                && listed[0]["owner_alive"] == true,
+            "owner {} of generation {} before its SIGKILL: {out:?}",
+            self.owner,
+            self.run_id
+        );
+        run(
+            Command::new("kill").args(["-KILL", &self.owner.to_string()]),
+            COMMAND,
+        )
+    }
+}
+
+/// `box down NAME` only while the runtime lists generation `run_id`, so it
+/// never acts on another box of that name; then the generation must be gone.
+fn down_generation(roots: &Roots, name: &str, run_id: &str) -> Result<(), String> {
+    let label = format!("dev.pinfold.generation={run_id}");
+    let listed = || {
+        let out = run(
+            roots.command().args(["box", "list", "--label", &label]),
+            COMMAND,
+        );
+        match out.code {
+            0 => Ok(!out.stdout.trim().is_empty()),
+            _ => Err(format!("box list: {out:?}")),
+        }
+    };
+    if !listed()? {
+        return Ok(());
+    }
+    let down = run(roots.command().args(["box", "down", name]), COMMAND);
+    if down.code != 0 || listed()? {
+        return Err(format!("box down {name}: {down:?}"));
+    }
+    Ok(())
 }
 
 impl Drop for Leftover {
     fn drop(&mut self) {
         let (name, run_id, roots) = (self.name.clone(), self.run_id.clone(), self.roots.clone());
-        let result = in_drop(move || {
-            let label = format!("dev.pinfold.generation={run_id}");
-            let listed = || {
-                let out = run(
-                    roots.command().args(["box", "list", "--label", &label]),
-                    COMMAND,
-                );
-                match out.code {
-                    0 => Ok(!out.stdout.trim().is_empty()),
-                    _ => Err(format!("box list: {out:?}")),
-                }
-            };
-            if !listed()? {
-                return Ok(());
-            }
-            let down = run(roots.command().args(["box", "down", &name]), COMMAND);
-            if down.code != 0 || listed()? {
-                return Err(format!("box down {name}: {down:?}"));
-            }
-            Ok(())
-        });
-        if let Err(error) = result {
+        if let Err(error) = in_drop(move || down_generation(&roots, &name, &run_id)) {
             eprintln!("e2e: LEFTOVER BOX {} NOT REMOVED: {error}", self.name);
             self.roots.keep.store(true, Ordering::SeqCst);
         }
