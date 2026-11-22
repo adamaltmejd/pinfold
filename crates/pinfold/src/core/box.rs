@@ -109,6 +109,12 @@ impl RefusalReason {
             .unwrap_or_default()
     }
 
+    /// Whether pinfold writes every detail of this reason itself, naming
+    /// keys and paths only, never a tool's output.
+    pub fn authored(self) -> bool {
+        matches!(self, RefusalReason::Spec | RefusalReason::Login)
+    }
+
     /// The reason a token names, if it names one.
     pub fn from_token(token: &str) -> Option<RefusalReason> {
         serde_json::from_value(serde_json::Value::String(token.to_owned())).ok()
