@@ -244,8 +244,8 @@ impl Snapshot {
 
     /// The `from` values a starting client's snapshot carries, decoded: the
     /// table the owner starts the box with. That client refused any unset
-    /// variable, so a missing value, an empty or NUL name, or a NUL value
-    /// fails.
+    /// variable and any name holding `=` or NUL, so a declared source without
+    /// a value, such a name, or a NUL value fails.
     pub(crate) fn values(&self) -> io::Result<Values> {
         let env = self
             .env_names
@@ -256,10 +256,23 @@ impl Snapshot {
                 }
                 EnvSource::Exact {} => None,
             });
+        // Every declared route source needs its value, not only the ones listed.
+        let routes = self
+            .routes
+            .values()
+            .flat_map(|declaration| match declaration {
+                Declaration::Inject(inject) => inject
+                    .headers
+                    .iter()
+                    .flatten()
+                    .map(|(_, header)| &header.from)
+                    .collect(),
+                Declaration::Login(login) => login.from.iter().collect(),
+                Declaration::Address(_) => Vec::new(),
+            })
+            .map(|from| (from, self.route_values.get(from).and_then(Option::as_ref)));
         let invalid = || io::Error::other("invalid encoded environment");
-        self.route_values
-            .iter()
-            .map(|(from, value)| (from, value.as_ref()))
+        routes
             .chain(env)
             .map(|(from, value)| {
                 let value = crate::init::decode_hex(value.ok_or_else(invalid)?.0.as_bytes())?;
