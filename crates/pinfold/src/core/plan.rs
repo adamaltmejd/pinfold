@@ -148,7 +148,7 @@ impl Inject {
             let value = match std::env::var(&header.from) {
                 Ok(value) => value,
                 Err(std::env::VarError::NotPresent) => {
-                    return Err(needs("route", route, &header.from, "not set"));
+                    return Err(unset("route", route, &header.from));
                 }
                 Err(std::env::VarError::NotUnicode(_)) => {
                     return Err(invalid(format!(
@@ -545,12 +545,11 @@ impl Plan {
     }
 
     /// Refuse, naming the first unset one, when a caller variable the spec
-    /// reads (an env `from`, an injecting header, a login route) is missing,
-    /// or a login route's is empty, as `up` would refuse it later. Only
-    /// presence and emptiness are checked; no value is kept.
+    /// reads (an env `from`, an injecting header, a login route) is missing.
+    /// Only presence is checked; no value is read.
     pub(crate) fn check_variables(&self) -> Result<(), String> {
         let env = self.env.iter().filter_map(|(name, value)| match value {
-            Env::From { from } => Some(("env", name.as_str(), from.as_str(), false)),
+            Env::From { from } => Some(("env", name.as_str(), from.as_str())),
             Env::Exact(_) => None,
         });
         let routes = self
@@ -561,26 +560,21 @@ impl Plan {
                 Route::Inject(inject) => inject
                     .headers
                     .values()
-                    .map(|header| ("route", name.as_str(), header.from.as_str(), false))
+                    .map(|header| ("route", name.as_str(), header.from.as_str()))
                     .collect(),
                 Route::Login(login) => login
                     .from
                     .as_deref()
-                    .map(|from| ("route", name.as_str(), from, true))
+                    .map(|from| ("route", name.as_str(), from))
                     .into_iter()
                     .collect(),
                 Route::Address(_) => Vec::new(),
             });
-        match env.chain(routes).find_map(|(kind, name, variable, login)| {
-            match std::env::var_os(variable) {
-                None => Some(needs(kind, name, variable, "not set")),
-                Some(value) if login && value.is_empty() => {
-                    Some(needs(kind, name, variable, "empty"))
-                }
-                Some(_) => None,
-            }
-        }) {
-            Some(error) => Err(error),
+        match env
+            .chain(routes)
+            .find(|(_, _, variable)| std::env::var_os(variable).is_none())
+        {
+            Some((kind, name, variable)) => Err(unset(kind, name, variable)),
             None => Ok(()),
         }
     }
@@ -699,7 +693,7 @@ impl Plan {
                 && values
                 && std::env::var_os(from).is_none()
             {
-                return Err(needs("env", name, from, "not set"));
+                return Err(unset("env", name, from));
             }
         }
         if let Some(egress) = &self.egress {
@@ -1016,6 +1010,6 @@ fn invalid(message: impl fmt::Display) -> String {
 }
 
 /// `kind` is `env` or `route`, `name` its key; never a value.
-fn needs(kind: &str, name: &str, variable: &str, state: &str) -> String {
-    format!("{kind} {name:?} needs the host variable {variable}, which is {state}")
+fn unset(kind: &str, name: &str, variable: &str) -> String {
+    format!("{kind} {name:?} needs the host variable {variable}, which is not set")
 }
