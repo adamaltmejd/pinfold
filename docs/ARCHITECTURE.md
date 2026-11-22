@@ -805,7 +805,7 @@ process. Getting further needs a host kernel bug.
   The group comes from the helper's own child, never workload data.
   Other sessions, the helper and relay are untouched. Normal command completion
   leaves background children running, with output delivered for up to one second
-  after the command exits; a crossing's output is delivered whole, to EOF. A process that leaves the command's process group,
+  after the command exits. A process that leaves the command's process group,
   or for a terminal session ignores hangup after leaving it, may keep running.
   `pinfold stop` ends everything. TTY Ctrl-C and Ctrl-\ remain terminal input.
   Plain stdin EOF is not departure. Public `box exec` sends no signal on departure.

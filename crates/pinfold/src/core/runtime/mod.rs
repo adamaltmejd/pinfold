@@ -222,9 +222,6 @@ pub struct ExecContext<'a> {
     pub cancel: Option<&'a AtomicBool>,
     /// A project command's stdin, stdout and stderr in place of pinfold's.
     pub stdio: Option<[BorrowedFd<'a>; 3]>,
-    /// Deliver a project command's whole output, with no deadline after it
-    /// exits.
-    pub whole_output: bool,
 }
 
 /// One OS's box runtime. Command lines and VM configurations are built as

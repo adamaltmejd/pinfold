@@ -811,8 +811,6 @@ impl BoxChild {
                     project_directory: Some((&guest, Path::new(""))),
                     cancel: Some(&stop),
                     stdio: Some(theirs.each_ref().map(AsFd::as_fd)),
-                    // A bundle is useless cut short.
-                    whole_output: true,
                     ..ExecContext::default()
                 },
                 &argv,

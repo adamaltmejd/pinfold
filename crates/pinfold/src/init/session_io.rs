@@ -23,7 +23,6 @@ pub(super) fn relay(
     child: Child,
     pty: Option<File>,
     project: bool,
-    whole_output: bool,
     departure: Option<(BorrowedFd<'_>, bool)>,
 ) -> io::Result<()> {
     let mut session = Some(Session::new(child)?);
@@ -57,13 +56,7 @@ pub(super) fn relay(
     let lost = libc::POLLHUP | libc::POLLERR | if socket { libc::POLLRDHUP } else { 0 };
 
     loop {
-        observe(
-            &mut session,
-            &mut status,
-            &mut exit,
-            &mut drain,
-            whole_output,
-        )?;
+        observe(&mut session, &mut status, &mut exit, &mut drain)?;
         flush_control(
             &connection,
             &mut connected,
@@ -179,13 +172,7 @@ pub(super) fn relay(
             return Err(error);
         }
         // Observe completion before handling a simultaneously ready departure.
-        observe(
-            &mut session,
-            &mut status,
-            &mut exit,
-            &mut drain,
-            whole_output,
-        )?;
+        observe(&mut session, &mut status, &mut exit, &mut drain)?;
         if fds[2].revents & lost != 0 {
             disconnect(&connection, &mut connected, &mut writer);
             continue;
@@ -378,7 +365,6 @@ fn observe(
     status: &mut Option<i32>,
     exit: &mut Option<i32>,
     drain: &mut Option<Instant>,
-    whole_output: bool,
 ) -> io::Result<()> {
     if let Some(session) = session
         && let Some(completed) = session.status()?
@@ -389,8 +375,7 @@ fn observe(
             .unwrap_or(1);
         *status = Some(code);
         *exit = Some(code);
-        // Output after exit is delivered for a second, or whole until EOF.
-        *drain = (!whole_output).then(|| Instant::now() + Duration::from_secs(1));
+        *drain = Some(Instant::now() + Duration::from_secs(1));
     }
     if status.is_some() {
         session.take();

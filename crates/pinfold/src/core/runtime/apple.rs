@@ -976,7 +976,6 @@ fn project_exec(
             agent: context.agent,
             cancel: Some(&stopped),
             stdio: context.stdio,
-            whole_output: context.whole_output,
         };
         let worker =
             scope.spawn(move || super::exec_transport::exec(connection, &worker_context, argv));
@@ -997,10 +996,7 @@ fn project_exec(
                     input.take();
                     pending_input.clear();
                 }
-                // Whole output ends with the worker, once the guest has sent all.
-                if exited
-                    .is_some_and(|deadline| !context.whole_output && Instant::now() >= deadline)
-                {
+                if exited.is_some_and(|deadline| Instant::now() >= deadline) {
                     return Ok(());
                 }
                 if output.is_none() && pending_output.is_empty() {
