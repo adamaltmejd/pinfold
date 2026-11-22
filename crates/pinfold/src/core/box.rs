@@ -163,20 +163,7 @@ impl Box {
     /// before ready they remove what the start made and `up` returns
     /// [`UpError::Signal`]; after ready [`Box::hold`] watches them.
     pub async fn up(plan: &Plan, signals: &mut Signals) -> Result<Box, UpError> {
-        let mut values = Values::read(plan);
-        if plan.reads_op() {
-            // `op` may wait on the user, so a spec refused without values
-            // never runs it.
-            plan.validate_structure()
-                .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
-            let reading = plan.clone();
-            values = startup_work(signals, &mut None, None, move || {
-                values.read_op(&reading);
-                Ok(values)
-            })
-            .await?;
-        }
-        Self::up_disks(plan, &values, signals, false, None, None, None).await
+        Self::up_disks(plan, &Values::read(plan), signals, false, None, None, None).await
     }
 
     /// Export must never create a missing disk or inspect one another box holds.
@@ -215,9 +202,18 @@ impl Box {
         mut cancel_start: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<Box, UpError> {
         // The spec rules are the first refusal, before anything is created
-        // or resolved.
-        plan.validate(values)
-            .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
+        // or resolved. Only `box up` reads `op` itself: the project client
+        // sends its values. `op` may wait on the user, so it runs once every
+        // check before the claim that needs no value has passed.
+        let reads_op = expected_image.is_none() && plan.reads_op();
+        if reads_op {
+            plan.validate_structure()
+                .and_then(|()| plan.check_variables(values))
+        } else {
+            plan.validate(values)
+        }
+        .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
+        let (requested, mut values) = (plan, values.clone());
         let init_path = crate::core::artifacts::init_path()?;
         let init = init_path.as_path();
         let destinations =
@@ -250,33 +246,11 @@ impl Box {
         })
         .await?;
 
-        // A login route's token is read before the claim, so a missing
-        // variable or an unusable Codex login refuses as `login` and leaves
-        // nothing. codex's token goes to the proxy.
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_cancel = cancel.clone();
-        // The worker gets only the login routes' values.
-        let login_values = values.only(plan.logins().filter_map(|(_, login)| login.source()?.ok()));
-        let login_plan = plan.clone();
-        let mut resolving = tokio::task::spawn_blocking(move || {
-            login_plan.resolve_login(&login_values, Some(&worker_cancel))
-        });
-        let codex = tokio::select! {
-            biased;
-            _ = cancelled(&mut cancel_start) => {
-                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                let _ = resolving.await;
-                return Err(UpError::Control);
-            }
-            _ = signals.recv() => {
-                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-                let _ = resolving.await;
-                return Err(UpError::Signal);
-            }
-            result = &mut resolving => result,
-        }
-        .map_err(|error| io::Error::other(format!("login worker failed: {error}")))?
-        .map_err(|error| refused(&plan, RefusalReason::Login, error))?;
+        // The project's login tokens are read before its early claim.
+        let early_codex = match expected_image {
+            Some(_) => Some(resolve_logins(&plan, &values, signals, &mut cancel_start).await?),
+            None => None,
+        };
 
         let runtime = runtime();
         let state_dir = dirs::box_state_dir(&plan.name)?;
@@ -356,6 +330,23 @@ impl Box {
             .map(|seeds| home_disk(&plan, seeds))
             .transpose()
             .map_err(|error| refused(&plan, RefusalReason::Profile, error.to_string()))?;
+        let codex = match early_codex {
+            Some(codex) => codex,
+            None => {
+                if reads_op {
+                    let reading = plan.clone();
+                    values = startup_work(signals, &mut cancel_start, None, move || {
+                        values.read_op(&reading);
+                        Ok(values)
+                    })
+                    .await?;
+                    requested
+                        .validate(&values)
+                        .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
+                }
+                resolve_logins(&plan, &values, signals, &mut cancel_start).await?
+            }
+        };
         // The image's identity labels are the box's too: Apple copies no
         // image label onto a box. Every image also carries the other
         // families empty, so pinfold's own label (`dev.pinfold.project` for
@@ -511,7 +502,7 @@ impl Box {
             runs::create(&run_id)?;
             let (observed, egress_log) = start(
                 &mut plan,
-                values,
+                &values,
                 init,
                 &identity.id,
                 seeding.as_ref(),
@@ -1337,6 +1328,41 @@ async fn startup_work<T: Send + 'static>(
         }
     }
     result
+}
+
+/// Read each login route's token before the claim, so a missing value or
+/// an unusable Codex login refuses as `login` and leaves nothing. codex's
+/// token goes to the proxy.
+async fn resolve_logins(
+    plan: &Plan,
+    values: &Values,
+    signals: &mut Signals,
+    cancel_start: &mut Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<Option<login::Token>, UpError> {
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+    // The worker gets only the login routes' values.
+    let login_values = values.only(plan.logins().filter_map(|(_, login)| login.source()?.ok()));
+    let login_plan = plan.clone();
+    let mut resolving = tokio::task::spawn_blocking(move || {
+        login_plan.resolve_login(&login_values, Some(&worker_cancel))
+    });
+    tokio::select! {
+        biased;
+        _ = cancelled(cancel_start) => {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = resolving.await;
+            return Err(UpError::Control);
+        }
+        _ = signals.recv() => {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = resolving.await;
+            return Err(UpError::Signal);
+        }
+        result = &mut resolving => result,
+    }
+    .map_err(|error| io::Error::other(format!("login worker failed: {error}")))?
+    .map_err(|error| refused(plan, RefusalReason::Login, error))
 }
 
 async fn cancelled(cancel: &mut Option<tokio::sync::watch::Receiver<bool>>) {
