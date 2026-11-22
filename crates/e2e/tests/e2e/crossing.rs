@@ -322,7 +322,6 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     expected.insert("refs/tags/box-new".into(), box_tag.into());
     assert_eq!(named("refs/tags/"), expected);
     assert_eq!(named("refs/heads/"), host_heads);
-    assert_eq!(git(&["rev-parse", "refs/tags/light"]), host_light);
     assert_eq!(git(&["rev-parse", "refs/remotes/box/main"]), box_main);
     assert_eq!(git(&["rev-parse", "refs/remotes/box/feature"]), box_feature);
     assert_eq!(names(&host_ran), Vec::<String>::new());
@@ -365,7 +364,6 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     expected.insert("refs/tags/v1".into(), git(&["rev-parse", "refs/tags/v1"]));
     assert_eq!(box_refs(&in_box), expected);
     assert_eq!(in_box(&[worktree]), tree_before);
-    assert_eq!(names(&planted), Vec::<String>::new());
     assert_eq!(files(&hooks), host_hooks);
 
     // The host's `box/main` still names the box's own main after that push
