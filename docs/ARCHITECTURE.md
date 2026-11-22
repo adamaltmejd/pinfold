@@ -133,8 +133,6 @@ Not protected:
   - Git's own fetch behaviour applies: it writes `FETCH_HEAD`, may run
     auto maintenance, and may fetch submodule commits the box's history
     names from the submodules' own remotes.
-  - `git push box` moves `refs/remotes/box/BRANCH` to the pushed commit
-    until the next fetch.
 - CDN fronting beyond the SNI check (Host-header fronting needs TLS
   interception).
 - Allowlisted services that accept writes (GitHub with a token, registries).
@@ -1962,19 +1960,23 @@ cross. The helper:
   the box's `refs/tags/TAG`, rejecting other pairings, sources (a stash,
   a commit expression) and destinations, and deletions; a box failure,
   an existing box tag at another object included, rejects every ref of
-  that push;
-- answers `list for-push` with the box's `refs/remotes/host/NAME` as
-  `refs/heads/NAME` and its `refs/tags/NAME`, read through Fetch's
-  listing checks (line bound, object id width, 4096 refs, prefixes,
+  that push. It reports each pushed branch as the box's
+  `refs/remotes/host/BRANCH`, which host Git 2.29 or later reads, so Git
+  leaves `refs/remotes/box/BRANCH` where the last fetch put it;
+- at `list for-push`, reads the box's `refs/remotes/host/*` and
+  `refs/tags/*` through Fetch's listing checks (line bound, object id width, 4096 refs, prefixes,
   `check-ref-format`); a byte after the empty line fails it, and
   nothing of it is written to disk. pinfold then keeps only entries
   whose id is the id of a host `refs/heads/*` or `refs/tags/*` ref (a
   tag ref's own id), from one `git for-each-ref`; it looks up no
   box-supplied id, and every id Git sees is one a host ref points at.
-  Git plans the push from what remains:
-  - an unchanged branch or tag is up to date;
-  - a box `host/NAME` at an older host commit that is no longer a ref
-    tip looks absent, so Git prints `[new branch]` and pushes;
+  It answers Git with the tags only, and Git plans the push from them:
+  - every branch looks absent: Git sends a branch the push names,
+    explicitly or by the push default, each time as a new reference,
+    and a matching push (`:`) sends none; pinfold bundles and pushes
+    only a branch whose box `host/NAME` is not at the host's tip, and
+    runs no push in the box when none is;
+  - an unchanged tag is up to date;
   - a box tag at an object no host ref points at looks absent, so
     `push.followTags` sends the host's tag of that name when Git
     selects it (annotated, on a pushed commit), and the box's tag
@@ -1983,9 +1985,8 @@ cross. The helper:
     `push.followTags` skips it, and Git rejects an explicit push of it
     unless forced.
 
-  pinfold always forces branches into `refs/remotes/host/*`; host Git
-  may itself reject a non-fast-forward it can see from the listing. A
-  lying box can only make Git skip or attempt a ref, and the listing
+  pinfold always forces branches into `refs/remotes/host/*`. A
+  lying box can only make a push skip or attempt a ref, and the listing
   never feeds a fetch. Any listing failure but a signal lists nothing
   and the push goes ahead;
 - speaks Git's protocol on its own descriptors: its standard input is
@@ -2244,7 +2245,7 @@ cut rows.
 | 2 | **Only allowlisted hosts get through.** The proxy lets out only allowlisted names, never an IP literal or a name resolving to a refused address (Egress proxy). A route reaches exactly its one host service. | `localhost` and the host's own address are put on the allowlist and requested; each gets a 403, logged `loopback` and `ip literal`. A CONNECT to an allowlisted name whose ClientHello SNI names another host is accepted, then refused and logged `sni mismatch`. `example.com` gets a 403 logged `not allowlisted`, over CONNECT and plain HTTP. Control: in the same box, `api.github.com` answers, and a route reaches the host fixture with the Host header rewritten; its log line names the method, the path without its query and the upstream status. |
 | 5 | **Nothing can gain privileges.** Box work runs as the host uid with no capabilities and cannot regain privileges, in a VM with its own kernel. | In a box on the built-in `default` image, a grandchild of an exec'd command (fork then exec) has the host uid, `CapBnd` 0 and `NoNewPrivs` 1, and its `unshare -U` fails with `ENOSPC`. Box work can reach no image-provided setuid or setgid file: there is none in any directory it can enter, and each directory it cannot enter refuses it. The box's root is not writable. On Linux, PID 1 keeps only `CAP_SYS_ADMIN`, and the exec service is the host uid with every capability set empty. Control: a plain child runs in the same box. Two boxes report different `/proc/sys/kernel/random/boot_id` values, and on Linux each differs from the host's, so each box boots its own kernel. |
 | 8 | **Losing the owner fails closed.** If the owner dies, the box loses its way out, and the leftover can be removed. | SIGKILL of `box up`. On Apple the guest survives: `box exec` runs a script in it that prints a marker and then requests an allowlisted host; the marker appears and the request gets no upstream response. On Linux the VM ends with its owner (43). Another state root sees the owner dead, and `box prune` in a state root whose daily pass is due removes the leftover; the name is reusable. SIGKILL of a detached project owner while a session runs makes the client exit 125. Control: the same in-box request succeeds before the kill. |
-| 10 | **Disk-project branches and tags cross only through the Git remote.** A fetch writes box branches only under `refs/remotes/box/*` and adds only new tags; it never moves or deletes the host's own branches or tags, except as the threat model lists. A push lands only in the box's `refs/remotes/host/*` and its tags. Crossing carries no hook or configuration. | (a) A box that writes its own listing names a branch at a host-only commit. `git fetch box` fails naming that branch, no ref under `refs/remotes/box/` changes, and `.git/objects` is unchanged. So does a bundle whose pack also carries an unreachable commit naming a missing tree, failing naming that tree; and, with the host a partial clone of a local promisor, a listing that names the branch at a commit only the promisor holds and a bundle naming it as a prerequisite. (b) Separately, a valid listing carries a tag named like a host tag at another object. After `git fetch --force --tags --prune --prune-tags box`, every host tag is where it was. The box then commits hooks under every client-side name, `core.hooksPath`, `.husky/` and `.githooks/`; the host fetches, merges and checks out twice, and nothing planted runs. With `push.followTags`, `git push box main` lands main only in the box's `refs/remotes/host/main` and its annotated tags as box tags, and changes no box working-tree file. A fresh start leaves the project disk empty and the host's `.git/config` byte-identical; the first push creates the box repository. Control: a host hook runs, and a legitimate branch and new tag land under `refs/remotes/box/*` and `refs/tags/*`. |
+| 10 | **Disk-project branches and tags cross only through the Git remote.** A fetch writes box branches only under `refs/remotes/box/*` and adds only new tags; it never moves or deletes the host's own branches or tags, except as the threat model lists. A push lands only in the box's `refs/remotes/host/*` and its tags. Crossing carries no hook or configuration. | (a) A box that writes its own listing names a branch at a host-only commit. `git fetch box` fails naming that branch, no ref under `refs/remotes/box/` changes, and `.git/objects` is unchanged. So does a bundle whose pack also carries an unreachable commit naming a missing tree, failing naming that tree; and, with the host a partial clone of a local promisor, a listing that names the branch at a commit only the promisor holds and a bundle naming it as a prerequisite. (b) Separately, a valid listing carries a tag named like a host tag at another object. After `git fetch --force --tags --prune --prune-tags box`, every host tag is where it was. The box then commits hooks under every client-side name, `core.hooksPath`, `.husky/` and `.githooks/`; the host fetches, merges and checks out twice, and nothing planted runs. With `push.followTags`, `git push box main` lands main only in the box's `refs/remotes/host/main` and its annotated tags as box tags, and changes no box working-tree file; after it and after a repeat, the host's `refs/remotes/box/main` is the box's own main. A fresh start leaves the project disk empty and the host's `.git/config` byte-identical; the first push creates the box repository. Control: a host hook runs, and a legitimate branch and new tag land under `refs/remotes/box/*` and `refs/tags/*`. |
 | 11 | **Disks persist and attach exclusively.** A disk outlives its box. One box at a time writes it, and a disk left unclean is not read until a writable run recovers it. | Two writable `up`s race for one new disk: exactly one runs, and the other is refused `disk-in-use`. After the writer's owner is SIGKILLed, a read-only attachment is refused `disk-in-use` while the dead box's claim stands; once `box prune` retires it, the same attachment is refused `disk-unclean` until a writable run ends. `disk rm` of an attached disk is refused `disk-in-use`. Control: a file one box writes is read by the next box that attaches the disk. |
 | 15 | **Cleanup removes only pinfold's garbage.** `clean` never removes a live project's state or disks, host files, or containers and images pinfold did not create. | A kept project with a live box and no clients, beside an idle project. `clean --unused 0s` removes the idle project's state and disk and keeps the live one's: a write still reads back through its box. On Apple it leaves a share project's host files, an externally started container and an unlabeled image untouched. Control: the idle project's disk is gone. |
 | 26 | **Credentials stay on the host.** pinfold adds a route's credential at the proxy and never puts it in the box; an upstream that returns it can still hand it back (threat model). A `from` or `PINFOLD_ENV_` value reaches the box's environment, never host argv, the runtime's records or a file pinfold writes. | One box with an injecting route, a Claude login route and a Pi `openrouter` login route, each pointed at a host fixture that echoes no credential, plus a `from` variable and a `PINFOLD_ENV_` value. Through the injecting route the guest sends its own value for the injected header, in another letter case; the fixture receives only the host's. Through the Pi login route the guest sends mixed-case duplicate `Authorization` and `X-Api-Key` fields and a `Connection` field nominating them; the fixture receives only the host credential. A `?api_key=` query on that login route gets 403 `login credential query` and no upstream request. No route credential is in the box's environment, any file it can read, its home disk or the egress log. On the host no secret, plain or hex, is in any file under the state, config or cache roots or in any process argv; on Apple, neither in `container inspect` nor in the container's directory. Control: the same login request without the query succeeds in the same box; the `from` and `PINFOLD_ENV_` values arrive in the box's environment; Claude and Pi each complete one fixture exchange through their generated configuration. |
