@@ -223,7 +223,7 @@ sysctl rather than the failing call.
    mount, before deeper attachments. Then create missing generated-mount
    parents as the box user, without changing existing ownership, and only
    then attach generated configuration. Preparation never marks a disk clean. On Linux a
-   failed start may retain a reused disk’s unclean mark before boot even when
+   failed start may retain a reused disk’s unclean mark before BOOT even when
    no disk was written. An ordinary
    directory population already created is retained; a symlink or non-directory
    anywhere along the generated path fails startup.

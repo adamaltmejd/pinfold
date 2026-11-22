@@ -141,11 +141,11 @@ subject to Anthropic's terms: Pi presents the token as Claude Code and may
 bill it as extra usage.
 
 One detached owner serves each project. Each `pinfold -- CMD` starts or
-joins a session; the box ends when no session or `start` keep remains, and
-`pinfold stop` ends everything. When a client leaves early (a signal, a
+joins a session; the box ends when no session, Git crossing or `start`
+keep remains, and `pinfold stop` ends everything. When a client leaves early (a signal, a
 closed terminal, a lost connection), its command's process group gets
 TERM, then KILL. Joining keeps the running policy and credentials; changed
-host roots or configuration refuse as `config-changed`, so stop the box
+host roots or effective configuration refuse as `config-changed`, so stop the box
 first. `start` and `stop` take no arguments, print nothing to stdout, and
 on success print one status line on stderr: `start` says `started` or `already
 running`, `stop` says `stopped` or `no box running`. Infrastructure
@@ -217,7 +217,7 @@ mounts = [{ host = ".", kind = "disk" }]
 ```
 
 A project disk appears in the box at `/project`, where a share appears
-at the folder's own path; in both, `$PINFOLD_PROJECT` holds that path. A new disk starts empty; no start copies code
+at the folder's own path; `$PINFOLD_PROJECT` holds that path unless your `env` sets it. A new disk starts empty; no start copies code
 into it or changes your repository. Clone inside the box, or send
 branches yourself. Only committed branches cross; commit local work (a
 WIP commit is enough) to send it in. After the first start has created the disk:
@@ -228,7 +228,7 @@ git push box main                         # a host branch into the box as host/m
 git fetch box                             # guest branches as box/*, to merge, and new tags
 ```
 
-Git prints `[new reference] main -> host/main` on every push of a branch;
+Git prints `[new reference] main -> host/main` on every successful push of a branch;
 `git push box :` sends no branch.
 
 Crossing never touches a working tree. The first push into a disk
