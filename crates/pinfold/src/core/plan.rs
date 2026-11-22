@@ -488,12 +488,17 @@ impl Values {
     /// Each variable `plan` names, from this process's environment. A name
     /// validation refuses is never read; nor is any `op` reference.
     pub fn read(plan: &Plan) -> Values {
+        let variables: BTreeSet<String> = plan
+            .sources()
+            .filter_map(|(_, _, source)| match source {
+                Ok(Source::From(variable)) => Some(variable),
+                _ => None,
+            })
+            .collect();
         let mut values = Values::default();
-        for (_, _, source) in plan.sources() {
-            if let Ok(Source::From(variable)) = &source
-                && let Some(value) = std::env::var_os(variable)
-            {
-                values.values.insert(Source::From(variable.clone()), value);
+        for variable in variables {
+            if let Some(value) = std::env::var_os(&variable) {
+                values.values.insert(Source::From(variable), value);
             }
         }
         values
