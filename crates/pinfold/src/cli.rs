@@ -1654,18 +1654,18 @@ pub fn build(args: &[String]) -> io::Result<i32> {
         })
         .collect();
     let count = names.len();
-    if let [rest @ .., last, top] = names.as_slice() {
-        let below = match rest {
-            [] => last.to_string(),
-            _ => format!("{} and {last}", rest.join(", ")),
-        };
-        eprintln!("pinfold: {top} builds on {below}; building {count} images");
+    let selected = &profile.name;
+    if count > 1 {
+        let order = names.join(", ");
+        eprintln!("pinfold: {selected} needs {count} images, built in order: {order}");
     }
     let mut below: Option<image::Built> = None;
     for (index, (label, source, bytes)) in recipes.iter().enumerate() {
+        let name = names[index];
         match count {
-            1 => eprintln!("pinfold: building {}", names[index]),
-            _ => eprintln!("pinfold: building {} ({}/{count})", names[index], index + 1),
+            1 if name == selected => eprintln!("pinfold: building {name}"),
+            1 => eprintln!("pinfold: building {name} for {selected}"),
+            _ => eprintln!("pinfold: building {name} ({}/{count})", index + 1),
         }
         let base = below.as_ref().and_then(|built| built.id.clone());
         #[cfg(target_os = "linux")]
