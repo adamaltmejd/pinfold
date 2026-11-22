@@ -20,8 +20,7 @@ pub(crate) fn check_paths_outside(
     check_extra_paths_outside(root, protected_paths(profile, extra)?, bidirectional)
 }
 
-/// The pi layer adds its resolved project configuration paths to share admission.
-pub(crate) fn check_extra_paths_outside(
+fn check_extra_paths_outside(
     root: &Path,
     paths: impl IntoIterator<Item = PathBuf>,
     bidirectional: bool,

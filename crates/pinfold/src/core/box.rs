@@ -475,6 +475,7 @@ impl Box {
         let mut progress = Starting {
             claimed,
             directories,
+            destinations,
             sockets: claim.sockets().clone(),
             child: None,
             proxy: None,
@@ -804,6 +805,8 @@ struct Starting {
     /// The disks claimed for the box, which a failed start releases.
     claimed: disk::Claimed,
     directories: Vec<disk::Directory>,
+    /// The login configuration directories, from the spec's checked logins.
+    destinations: Vec<PathBuf>,
 }
 
 /// The start after the claim: route files, seeds, proxy, runtime, readiness.
@@ -826,11 +829,11 @@ async fn start(
     let preparation_sockets = progress.sockets.clone();
     let cancel = progress.cancel.clone();
     let image_id = image_id.to_string();
+    let generated = progress.destinations.clone();
     let worker = progress
         .preparing
         .insert(tokio::task::spawn_blocking(move || {
-            let generated = login_destinations(&resolved).map_err(io::Error::other)?;
-            prepare_logins(&mut resolved, &preparation_dir)?;
+            prepare_logins(&mut resolved, &preparation_dir, &generated)?;
             let prepared = runtime::prepare(
                 &resolved,
                 &preparation_dir,
@@ -1085,8 +1088,7 @@ fn generated_directories(plan: &Plan, destinations: &[PathBuf]) -> Vec<disk::Dir
 }
 
 /// Render route names and provider metadata, never resolved credentials.
-fn prepare_logins(plan: &mut Plan, state_dir: &Path) -> io::Result<()> {
-    let destinations = login_destinations(plan).map_err(io::Error::other)?;
+fn prepare_logins(plan: &mut Plan, state_dir: &Path, destinations: &[PathBuf]) -> io::Result<()> {
     let logins: Vec<(String, Login)> = plan
         .logins()
         .map(|(route, login)| (route.to_owned(), login.clone()))
@@ -1134,7 +1136,7 @@ fn prepare_logins(plan: &mut Plan, state_dir: &Path) -> io::Result<()> {
         fs::write(dir.join(file), contents)?;
         plan.mounts.push(Mount {
             host: dir,
-            guest: destination,
+            guest: destination.clone(),
             kind: MountKind::Readonly,
         });
     }

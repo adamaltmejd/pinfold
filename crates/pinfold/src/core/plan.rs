@@ -114,16 +114,15 @@ pub struct Target {
 }
 
 impl Inject {
-    /// The parsed target and each header with its value from this process's
-    /// environment. Errors name the header and the variable, never a value.
-    pub fn resolve(&self) -> Result<(Target, Vec<(String, String)>), String> {
+    /// The parsed target, after checking each header's declaration without
+    /// reading its value.
+    fn check(&self) -> Result<Target, String> {
         let target = parse_target(&self.to).ok_or_else(|| {
             invalid(format!(
                 "route target {:?} must be an http:// or https:// origin",
                 self.to
             ))
         })?;
-        let mut headers = Vec::with_capacity(self.headers.len());
         for (name, header) in &self.headers {
             if !valid_header_name(name) {
                 return Err(invalid(format!("route header {name:?} cannot be injected")));
@@ -133,6 +132,21 @@ impl Inject {
                     "route header {name:?} needs a from variable"
                 )));
             }
+            if header.prefix.contains(['\r', '\n', '\0']) {
+                return Err(invalid(format!(
+                    "route header {name:?}: its prefix holds CR, LF or NUL"
+                )));
+            }
+        }
+        Ok(target)
+    }
+
+    /// The parsed target and each header with its value from this process's
+    /// environment. Errors name the header and the variable, never a value.
+    pub fn resolve(&self) -> Result<(Target, Vec<(String, String)>), String> {
+        let target = self.check()?;
+        let mut headers = Vec::with_capacity(self.headers.len());
+        for (name, header) in &self.headers {
             let value = match std::env::var(&header.from) {
                 Ok(value) => value,
                 Err(std::env::VarError::NotPresent) => {
@@ -149,7 +163,7 @@ impl Inject {
             // A line break or NUL would let the value frame its own headers.
             if value.contains(['\r', '\n', '\0']) {
                 return Err(invalid(format!(
-                    "route header {name:?}: its prefix or {} holds CR, LF or NUL",
+                    "route header {name:?}: {} holds CR, LF or NUL",
                     header.from
                 )));
             }
@@ -558,15 +572,10 @@ impl Plan {
         }
     }
 
-    pub(crate) fn validate_platform(&self) -> Result<(), String> {
+    fn validate_inputs(&self, values: bool) -> Result<(), String> {
         if cfg!(target_os = "linux") && self.mounts.iter().any(|m| m.kind == MountKind::Share) {
             return Err(invalid("share mounts are unsupported on Linux"));
         }
-        Ok(())
-    }
-
-    fn validate_inputs(&self, values: bool) -> Result<(), String> {
-        self.validate_platform()?;
         if !valid_name(&self.name) {
             return Err(invalid(format!(
                 "name {:?} must start alphanumeric and hold only [A-Za-z0-9._-]",
@@ -716,19 +725,7 @@ impl Plan {
                         if values {
                             inject.resolve()?;
                         } else {
-                            if parse_target(&inject.to).is_none() {
-                                return Err(invalid(
-                                    "route target must be an http:// or https:// origin",
-                                ));
-                            }
-                            for (name, header) in &inject.headers {
-                                if !valid_header_name(name)
-                                    || header.from.is_empty()
-                                    || header.prefix.contains(['\r', '\n', '\0'])
-                                {
-                                    return Err(invalid("invalid injecting header declaration"));
-                                }
-                            }
+                            inject.check()?;
                         }
                     }
                     Route::Login(login) => {
