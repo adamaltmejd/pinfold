@@ -117,10 +117,10 @@ fn reply_error(reply: Reply) -> io::Error {
         Reply::Error { reason, .. } if reason == "stopped" => {
             io::Error::other("stopped during startup")
         }
-        Reply::Error { reason, .. }
+        Reply::Refused { reason, detail }
             if crate::core::r#box::RefusalReason::from_token(&reason).is_some() =>
         {
-            io::Error::other(format!("{reason}: the project box was refused at startup"))
+            io::Error::other(format!("{reason}: {}", terminal_text(&detail)))
         }
         Reply::Ended {
             generation,
@@ -1601,15 +1601,16 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
                 // keeps the durable claim for checked recovery.
                 if ownership::record(&plan.name)?.is_none() { locator.remove()?; }
                 use crate::core::r#box::UpError;
-                // A refusal travels as its reason token only, never its detail.
-                let reason = match &error {
-                    UpError::Control | UpError::Signal => "stopped".into(),
-                    UpError::Refused(refusal) => refusal.reason.token(),
-                    UpError::Other(_) => "owner-unavailable".into(),
+                // A refusal travels as `box up` would print it: its token and
+                // detail, which never holds a value.
+                let reply = match &error {
+                    UpError::Refused(refusal) => Reply::Refused { reason: refusal.reason.token(), detail: refusal.detail.clone() },
+                    UpError::Control | UpError::Signal => Reply::Error { reason: "stopped".into(), fields: vec![] },
+                    UpError::Other(_) => Reply::Error { reason: "owner-unavailable".into(), fields: vec![] },
                 };
-                let _ = wire::write_reply(&mut writer, Reply::Error { reason, fields: vec![] }).await;
-                // The client may still drain this owner's stderr, so a refusal's
-                // detail is not reported there either.
+                let _ = wire::write_reply(&mut writer, reply).await;
+                // The client may still drain this owner's stderr, so the
+                // detail is not reported there too.
                 if matches!(error, UpError::Refused(_)) { return Ok(125); }
                 return Err(error.into());
             }

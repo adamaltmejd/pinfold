@@ -1812,8 +1812,9 @@ its project.
   lives. After stop, the next owner treats the folder by its current marker.
   A project admission frame is at most 16 MiB. Malformed, unsupported or
   oversized private messages fail as `session-protocol`; their contents are
-  never reported. An owner whose box start is refused passes only the
-  refusal's reason token to the client, which exits 125 naming it.
+  never reported. An owner whose box start is refused passes the
+  refusal's reason token and detail, those of `up`'s `refused` line, to
+  the client, which prints both and exits 125.
   Unavailable ownership refuses as `owner-unavailable`;
   a control deadline expires as `owner-timeout`. Transport failures retain a
   fixed source (`connect`, `inspect` or `reply`) without request contents.
