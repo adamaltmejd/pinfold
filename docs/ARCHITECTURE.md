@@ -1025,8 +1025,9 @@ network listener, no token: the socket identifies the box.
   closed, only when neither direction has carried bytes for 5 minutes;
   its log line names `idle timeout`.
   A write blocked for 5 minutes closes the connection even when the other
-  direction has activity; its line names `write timeout` unless the tunnel
-  was also idle. A fatal relay error closes both directions.
+  direction has activity; its line names `write timeout` unless either
+  direction ended idle, which names `idle timeout`. A fatal relay error
+  closes both directions.
 - **Log:** one JSON line per decision in the run's egress log at
   `~/.local/state/pinfold/runs/<run_id>/egress.jsonl`, so a reused name
   starts an empty log. It names the decision's UTC
