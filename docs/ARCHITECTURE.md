@@ -1970,10 +1970,11 @@ cross. The helper:
   tag ref's own id), from one `git for-each-ref`; it looks up no
   box-supplied id, and every id Git sees is one a host ref points at.
   It answers Git with the tags only, and Git plans the push from them:
-  - every branch looks absent, so Git prints it as a new reference and
-    sends it each time; pinfold crosses only a branch whose box
-    `host/NAME` is not at the host's tip, and starts no box when none
-    is;
+  - every branch looks absent: Git sends a branch the push names,
+    explicitly or by the push default, each time as a new reference,
+    and a matching push (`:`) sends none; pinfold bundles and pushes
+    only a branch whose box `host/NAME` is not at the host's tip, and
+    runs no push in the box when none is;
   - an unchanged tag is up to date;
   - a box tag at an object no host ref points at looks absent, so
     `push.followTags` sends the host's tag of that name when Git

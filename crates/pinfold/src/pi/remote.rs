@@ -131,7 +131,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
 /// `refs/remotes/host/*` and a tag in its `refs/tags/*`, every one in one
 /// transaction. A tag the box holds at another object needs `+`, or the
 /// whole push fails. A branch HELD already names at the host's tip does
-/// not cross; when none crosses, the box is not started. The host reads
+/// not cross; when none crosses, no push runs in the box. The host reads
 /// nothing from the box but its exit status.
 fn push(
     batch: &[String],
