@@ -207,7 +207,9 @@ pub(crate) struct Resolved {
 }
 
 impl Snapshot {
-    pub(crate) fn owner_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    /// The owner's environment: the fixed names from this process's, and each
+    /// `from` variable from `values`, this launch's one read.
+    pub(crate) fn owner_environment(&self, values: &Values) -> Vec<(OsString, OsString)> {
         let mut names = std::collections::BTreeSet::from_iter(
             [
                 "PATH",
@@ -224,16 +226,20 @@ impl Snapshot {
             ]
             .map(String::from),
         );
-        names.extend(self.route_values.keys().cloned());
+        let mut sources = std::collections::BTreeSet::from_iter(self.route_values.keys().cloned());
         for source in self.env_names.values() {
             if let EnvSource::From { name } = source {
-                names.insert(name.clone());
+                sources.insert(name.clone());
             }
         }
-        names
+        names.retain(|name| !sources.contains(name));
+        let fixed = names
             .into_iter()
-            .filter_map(|name| std::env::var_os(&name).map(|value| (name.into(), value)))
-            .collect()
+            .filter_map(|name| Some((name.clone().into(), std::env::var_os(&name)?)));
+        let sources = sources
+            .into_iter()
+            .filter_map(|name| Some((name.clone().into(), values.get(&name)?.to_os_string())));
+        fixed.chain(sources).collect()
     }
 
     /// The `from` values this snapshot carries, decoded: the table the owner

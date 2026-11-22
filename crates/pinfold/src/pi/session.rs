@@ -764,7 +764,13 @@ async fn admit(
             .map_err(|error| io::Error::new(error.kind(), error.to_string()))?
             .check_worktree(resolved.config.mount)?;
         let share = resolved.config.mount == crate::config::ProjectMount::Share;
-        let mut child = spawn_owner(&resolved.snapshot, &launch, executable, &_maintenance)?;
+        let mut child = spawn_owner(
+            &resolved.snapshot,
+            &resolved.values,
+            &launch,
+            executable,
+            &_maintenance,
+        )?;
         let mut stream = child.0;
         let sent = wire::write_request(
             &mut stream,
@@ -887,6 +893,7 @@ struct Diagnostics {
 
 fn spawn_owner(
     snapshot: &Snapshot,
+    values: &crate::core::plan::Values,
     launch: &File,
     executable: &File,
     maintenance: &File,
@@ -911,7 +918,7 @@ fn spawn_owner(
         .arg("__project-owner")
         .args(descriptors.map(|fd| fd.to_string()))
         .env_clear()
-        .envs(snapshot.owner_environment())
+        .envs(snapshot.owner_environment(values))
         .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
