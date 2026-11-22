@@ -176,10 +176,16 @@ fn project_client_exits_125(env: &TestEnv) {
     let listed = json_lines(&listed.stdout);
     assert_eq!(listed.len(), 1, "boxes of project {id}: {listed:?}");
     let leftover = Leftover::listed(env, &listed[0]);
+    #[cfg(target_os = "linux")]
+    let below = e2e::Below::of(leftover.owner());
     let kill = leftover.kill();
     assert_eq!(kill.code, 0, "kill the project owner: {kill:?}");
 
     // `finish` closes stdin, which `sleep` never reads.
     assert_eq!(client.finish(), 125, "the client after its owner's SIGKILL");
+    // The client can exit before the VMM has; removing the leftover
+    // before then fails on a still-running orphan VMM.
+    #[cfg(target_os = "linux")]
+    below.wait_gone();
     drop(leftover);
 }
