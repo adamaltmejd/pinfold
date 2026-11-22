@@ -156,7 +156,7 @@ pub fn spawn(command: &mut Command) -> Child {
 
 /// Wait for `child` until `deadline`; past it, kill and reap it and return
 /// `None`.
-pub fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
+fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
     loop {
         if let Some(status) = child.try_wait().expect("wait for a host process") {
             return Some(status);
@@ -1228,7 +1228,7 @@ impl Drop for Leftover {
     }
 }
 
-pub fn exit_code(status: ExitStatus) -> i32 {
+fn exit_code(status: ExitStatus) -> i32 {
     use std::os::unix::process::ExitStatusExt;
     status
         .code()
