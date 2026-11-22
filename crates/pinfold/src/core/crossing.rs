@@ -5,8 +5,8 @@
 //! host only verifies a bundle and indexes its objects with fsck into a
 //! quarantine. Git, through the remote helper, writes the refs.
 
-use crate::core::process::{ExitWait, GroupChild, drain};
-pub(crate) use crate::core::process::{output_cancellable, output_discard_cancellable};
+pub(crate) use crate::core::process::output_cancellable;
+use crate::core::process::{ExitWait, drain, fork_guard};
 
 use nix::fcntl::{Flock, FlockArg};
 use nix::poll::{PollFd, PollFlags};
@@ -14,11 +14,13 @@ use std::collections::{BTreeMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::core::r#box::RefusalReason;
@@ -144,7 +146,7 @@ pub type Refs = BTreeMap<String, String>;
 /// Cancellation reaps each host helper before return.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn push_cancellable(
-    runtime: &dyn Runtime,
+    runtime: &'static dyn Runtime,
     init: &Path,
     name: &str,
     repo: &Path,
@@ -182,24 +184,33 @@ pub(crate) fn push_cancellable(
         &[],
         cancel,
     )?)?;
-    let mut command = runtime.exec_command(
-        name,
+    // The box's output is its own text; a push reports only its outcome.
+    let null = || File::options().write(true).open("/dev/null");
+    let mut child = BoxChild::spawn(
+        runtime,
         init,
-        &ExecContext::default(),
-        &script(
+        name,
+        guest_repo,
+        script(
             PUSH_SCRIPT,
             [guest_repo, format.as_str()]
                 .into_iter()
                 .chain(refspecs.iter().map(String::as_str)),
         ),
+        [
+            Some(File::open(&bundle.path)?),
+            Some(null()?),
+            Some(null()?),
+        ],
     )?;
-    // The box's stderr is its own text; a push reports only its outcome.
-    command
-        .stdin(File::open(&bundle.path)?)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let output = output_discard_cancellable(&mut command, None, cancel)?;
-    match output.status.code() {
+    let mut wait = ExitWait::new();
+    while !child.exited() {
+        if cancel.load(Ordering::Acquire) {
+            return Err(io::Error::from(io::ErrorKind::Interrupted).into());
+        }
+        wait.poll(&mut [])?;
+    }
+    match child.finish()?.code() {
         Some(TAG_EXISTS) => Err(CrossingError::Failed(TAG_EXISTS_DETAIL.into())),
         code => box_status(code, "", guest_repo),
     }
@@ -210,7 +221,7 @@ pub(crate) fn push_cancellable(
 /// objects and never feeds a fetch; a lying box can only make a push skip
 /// or attempt a ref.
 pub(crate) fn pushed_cancellable(
-    runtime: &dyn Runtime,
+    runtime: &'static dyn Runtime,
     init: &Path,
     name: &str,
     repo: &Path,
@@ -219,19 +230,17 @@ pub(crate) fn pushed_cancellable(
 ) -> Result<Refs, CrossingError> {
     check_args(repo, guest_repo, cancel)?;
     let width = object_width(repo, cancel)?;
-    let mut command = runtime.exec_command(
-        name,
+    let child = BoxChild::spawn(
+        runtime,
         init,
-        &ExecContext::default(),
-        &script(PUSHED_SCRIPT, [guest_repo]),
+        name,
+        guest_repo,
+        script(PUSHED_SCRIPT, [guest_repo]),
+        [Some(File::open("/dev/null")?), None, None],
     )?;
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
     // No bundle: a byte after the listing fails it, and nothing is written.
     let listed = receive(
-        &mut command,
+        child,
         b"",
         None,
         width,
@@ -293,7 +302,7 @@ impl Fetched {
 /// Have the box bundle GUEST_REPO's branches, less what REPO's
 /// `refs/remotes/REMOTE/*` hold, and check every byte the box sends.
 pub(crate) fn fetch_cancellable(
-    runtime: &dyn Runtime,
+    runtime: &'static dyn Runtime,
     init: &Path,
     name: &str,
     guest_repo: &str,
@@ -318,19 +327,17 @@ pub(crate) fn fetch_cancellable(
         .stdout,
     )
     .into_owned();
-    let mut command = runtime.exec_command(
-        name,
+    let child = BoxChild::spawn(
+        runtime,
         init,
-        &ExecContext::default(),
-        &script(FETCH_SCRIPT, [guest_repo]),
+        name,
+        guest_repo,
+        script(FETCH_SCRIPT, [guest_repo]),
+        [None, None, None],
     )?;
-    command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
     let bundle = Bundle::new()?;
     let listed = receive(
-        &mut command,
+        child,
         held.as_bytes(),
         Some(&bundle.path),
         width,
@@ -731,6 +738,124 @@ fn box_status(code: Option<i32>, stderr: &str, guest_repo: &str) -> Result<(), C
     }
 }
 
+/// A crossing script run in the box as a project command in GUEST_REPO,
+/// over the session transport from this process rather than from a child
+/// that could outlive it. However the crossing ends, a signal or SIGKILL
+/// included, the connection closes and the box ends the script's process
+/// group (Process supervision).
+struct BoxChild {
+    stdin: Option<io::PipeWriter>,
+    stdout: Option<io::PipeReader>,
+    stderr: Option<io::PipeReader>,
+    stop: Arc<AtomicBool>,
+    worker: Option<JoinHandle<io::Result<ExitStatus>>>,
+}
+
+impl BoxChild {
+    /// Each `None` in `stdio` is a pipe to this process.
+    fn spawn(
+        runtime: &'static dyn Runtime,
+        init: &Path,
+        name: &str,
+        guest_repo: &str,
+        argv: Vec<String>,
+        stdio: [Option<File>; 3],
+    ) -> io::Result<BoxChild> {
+        let [stdin, stdout, stderr] = stdio;
+        let (mut child, theirs) = {
+            // The pipes must not leak into a concurrent spawn before CLOEXEC.
+            let _guard = fork_guard();
+            let mut child = BoxChild {
+                stdin: None,
+                stdout: None,
+                stderr: None,
+                stop: Arc::new(AtomicBool::new(false)),
+                worker: None,
+            };
+            let stdin: OwnedFd = match stdin {
+                Some(file) => file.into(),
+                None => {
+                    let (read, write) = io::pipe()?;
+                    child.stdin = Some(write);
+                    read.into()
+                }
+            };
+            let output = |file: Option<File>, ours: &mut Option<io::PipeReader>| {
+                io::Result::Ok(match file {
+                    Some(file) => OwnedFd::from(file),
+                    None => {
+                        let (read, write) = io::pipe()?;
+                        *ours = Some(read);
+                        write.into()
+                    }
+                })
+            };
+            let theirs = [
+                stdin,
+                output(stdout, &mut child.stdout)?,
+                output(stderr, &mut child.stderr)?,
+            ];
+            (child, theirs)
+        };
+        let (init, name, guest) = (
+            init.to_path_buf(),
+            name.to_string(),
+            PathBuf::from(guest_repo),
+        );
+        let stop = child.stop.clone();
+        child.worker = Some(std::thread::Builder::new().spawn(move || {
+            runtime.exec(
+                &name,
+                &init,
+                &ExecContext {
+                    project_directory: Some((&guest, Path::new(""))),
+                    cancel: Some(&stop),
+                    stdio: Some(theirs.each_ref().map(AsFd::as_fd)),
+                    ..ExecContext::default()
+                },
+                &argv,
+            )
+        })?);
+        Ok(child)
+    }
+
+    fn take_stdin(&mut self) -> Option<io::PipeWriter> {
+        self.stdin.take()
+    }
+
+    fn take_stdout(&mut self) -> Option<io::PipeReader> {
+        self.stdout.take()
+    }
+
+    fn take_stderr(&mut self) -> Option<io::PipeReader> {
+        self.stderr.take()
+    }
+
+    /// Whether the command's status is in. The worker has then closed its
+    /// ends of the pipes.
+    fn exited(&self) -> bool {
+        self.worker.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
+    /// End the command if it still runs, and return its status.
+    fn finish(&mut self) -> io::Result<ExitStatus> {
+        self.stop.store(true, Ordering::Release);
+        self.worker
+            .take()
+            .ok_or_else(|| io::Error::other("box command already finished"))?
+            .join()
+            .map_err(|_| io::Error::other("box command worker failed"))?
+    }
+}
+
+impl Drop for BoxChild {
+    fn drop(&mut self) {
+        if self.worker.is_some() {
+            let _ = self.finish();
+        }
+    }
+}
+
 struct Receiver {
     /// Where bytes after the listing go; with none, any such byte fails.
     file: Option<File>,
@@ -830,7 +955,7 @@ impl Receiver {
 
 /// Read the ref listing and bounded bundle, reaping the helper on cancellation.
 fn receive(
-    command: &mut Command,
+    mut child: BoxChild,
     mut input: &[u8],
     bundle: Option<&str>,
     width: usize,
@@ -841,7 +966,6 @@ fn receive(
     if cancel.load(Ordering::Acquire) {
         return Err(io::Error::from(io::ErrorKind::Interrupted).into());
     }
-    let mut child = GroupChild::spawn(command)?;
     let mut stdin = child.take_stdin();
     let mut stdout = child.take_stdout();
     let mut stderr = child.take_stderr();
@@ -860,7 +984,7 @@ fn receive(
     let mut exited = None;
     let mut wait = ExitWait::new();
     loop {
-        if exited.is_none() && child.exited()? {
+        if exited.is_none() && child.exited() {
             exited = Some(Instant::now());
             stdin.take();
         }

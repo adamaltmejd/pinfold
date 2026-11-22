@@ -1436,6 +1436,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
                 .map_err(|_| io::Error::other("working directory is outside the project"))?;
             runtime().exec(&name, &init, &ExecContext {
                 project_directory: Some((&guest, relative)), tty, agent: Some(&argv[0]), cancel: Some(&worker_cancel),
+                stdio: None,
             }, &argv)
         });
         let (result, exec_finished, completed) = tokio::select! {

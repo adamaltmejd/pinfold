@@ -975,6 +975,7 @@ fn project_exec(
             tty: context.tty,
             agent: context.agent,
             cancel: Some(&stopped),
+            stdio: context.stdio,
         };
         let worker =
             scope.spawn(move || super::exec_transport::exec(connection, &worker_context, argv));

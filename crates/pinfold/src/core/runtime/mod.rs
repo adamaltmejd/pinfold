@@ -12,6 +12,7 @@ use crate::core::process::CommandGuard;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
+use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::AtomicBool;
@@ -219,6 +220,8 @@ pub struct ExecContext<'a> {
     pub tty: bool,
     pub agent: Option<&'a str>,
     pub cancel: Option<&'a AtomicBool>,
+    /// A project command's stdin, stdout and stderr in place of pinfold's.
+    pub stdio: Option<[BorrowedFd<'a>; 3]>,
 }
 
 /// One OS's box runtime. Command lines and VM configurations are built as
@@ -243,7 +246,7 @@ pub trait Runtime: Sync {
     /// Stop and remove the box of an owner that is gone.
     fn down(&self, name: &str) -> io::Result<()>;
 
-    /// Run `argv` in a running box with inherited stdio, through the box's
+    /// Run `argv` in a running box with inherited or given stdio, through the box's
     /// init: init raises its own `oom_score_adj` to 1000 and then becomes
     /// `argv`, so the kernel's OOM killer takes a box process before init.
     /// `init` is the host path Apple's `up` mounts at the same guest path;

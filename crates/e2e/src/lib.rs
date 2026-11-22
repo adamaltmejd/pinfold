@@ -532,7 +532,14 @@ impl<'a> Project<'a> {
 
     /// Host `git ARGS` in the project's root.
     pub fn git(&self, args: &[&str]) -> Exec {
-        run(git_command(self.env, &self.root).args(args), COMMAND)
+        run(&mut self.git_command(args), COMMAND)
+    }
+
+    /// Host `git ARGS` in the project's root, to spawn.
+    pub fn git_command(&self, args: &[&str]) -> Command {
+        let mut command = git_command(self.env, &self.root);
+        command.args(args);
+        command
     }
 }
 

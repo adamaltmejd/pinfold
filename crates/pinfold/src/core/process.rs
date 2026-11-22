@@ -528,24 +528,6 @@ pub(crate) fn output_cancellable(
     input: Option<&[u8]>,
     cancel: &AtomicBool,
 ) -> io::Result<Output> {
-    output_with_limit(command, input, cancel, None)
-}
-
-/// Drain helper stdout without retaining bytes that the caller discards.
-pub(crate) fn output_discard_cancellable(
-    command: &mut Command,
-    input: Option<&[u8]>,
-    cancel: &AtomicBool,
-) -> io::Result<Output> {
-    output_with_limit(command, input, cancel, Some(0))
-}
-
-fn output_with_limit(
-    command: &mut Command,
-    input: Option<&[u8]>,
-    cancel: &AtomicBool,
-    stdout_limit: Option<usize>,
-) -> io::Result<Output> {
     if cancel.load(Ordering::Acquire) {
         return Err(io::ErrorKind::Interrupted.into());
     }
@@ -598,7 +580,7 @@ fn output_with_limit(
                 Err(error) => return Err(error),
             }
         }
-        drain(&mut stdout, &mut out, stdout_limit)?;
+        drain(&mut stdout, &mut out, None)?;
         drain(&mut stderr, &mut err, Some(16 * 1024))?;
         if let Some(time) = exited
             && ((stdout.is_none() && stderr.is_none()) || time.elapsed() >= Duration::from_secs(1))
