@@ -989,14 +989,17 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
     }
 }
 
-/// Check project structure without resolving credentials or materializing shares.
+/// Check project structure without resolving credentials or materializing
+/// shares, and each `from` variable's presence in `values` when given.
 pub(crate) fn validate_project(
     plan: &Plan,
-    values: &Values,
+    values: Option<&Values>,
     profile: &Profile,
 ) -> Result<(), String> {
     plan.validate_structure()?;
-    plan.check_variables(values)?;
+    if let Some(values) = values {
+        plan.check_variables(values)?;
+    }
     let destinations = login_destinations(plan)?;
     let extra: Vec<&Path> = destinations.iter().map(PathBuf::as_path).collect();
     validate_generated(plan, &extra)?;

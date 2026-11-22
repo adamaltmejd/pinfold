@@ -299,8 +299,12 @@ impl Snapshot {
                 *from = dirs::resolve_host_path(from)?;
             }
         }
+        // The owner compares snapshots before anything checks its table: a
+        // source edited since its client resolved is `config-changed`, and an
+        // equal snapshot names only sources its client checked.
+        let check = received.is_none();
         let values = received.unwrap_or_else(|| Values::read(&plan));
-        crate::core::r#box::validate_project(&plan, &values, &config.profile)
+        crate::core::r#box::validate_project(&plan, check.then_some(&values), &config.profile)
             .map_err(io::Error::other)?;
         if !config.cpus.is_finite() {
             return Err(io::Error::other("spec-invalid: CPUs must be finite"));
