@@ -11,7 +11,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::core::clean;
 use crate::core::disk::Seeding;
-use crate::core::plan::{Disk, Env, Login, Mount, MountKind, Plan, Route, valid_name};
+use crate::core::plan::{Disk, Env, Login, Mount, MountKind, Plan, Route, Values, valid_name};
 use crate::core::profile::{Profile, Seed};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{self, BoxInfo, Child, Prepared, runtime};
@@ -163,16 +163,18 @@ impl Box {
     /// before ready they remove what the start made and `up` returns
     /// [`UpError::Signal`]; after ready [`Box::hold`] watches them.
     pub async fn up(plan: &Plan, signals: &mut Signals) -> Result<Box, UpError> {
-        Self::up_disks(plan, signals, false, None, None, None).await
+        Self::up_disks(plan, &Values::read(plan), signals, false, None, None, None).await
     }
 
     /// Export must never create a missing disk or inspect one another box holds.
     pub(crate) async fn up_existing(plan: &Plan, signals: &mut Signals) -> Result<Box, UpError> {
-        Self::up_disks(plan, signals, true, None, None, None).await
+        Self::up_disks(plan, &Values::read(plan), signals, true, None, None, None).await
     }
 
+    /// `values` are the ones the project client read and sent.
     pub(crate) async fn up_project(
         plan: &Plan,
+        values: &Values,
         profile: Profile,
         image_id: &str,
         signals: &mut Signals,
@@ -180,6 +182,7 @@ impl Box {
     ) -> Result<Box, UpError> {
         Self::up_disks(
             plan,
+            values,
             signals,
             false,
             Some(profile),
@@ -191,6 +194,7 @@ impl Box {
 
     async fn up_disks(
         plan: &Plan,
+        values: &Values,
         signals: &mut Signals,
         existing_only: bool,
         profile: Option<Profile>,
@@ -199,7 +203,7 @@ impl Box {
     ) -> Result<Box, UpError> {
         // The spec rules are the first refusal, before anything is created
         // or resolved.
-        plan.validate()
+        plan.validate(values)
             .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
         let init_path = crate::core::artifacts::init_path()?;
         let init = init_path.as_path();
@@ -238,9 +242,19 @@ impl Box {
         // nothing. codex's token goes to the proxy.
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancel = cancel.clone();
+        // The worker gets only the login routes' values.
+        let login_values = Values(
+            plan.logins()
+                .filter_map(|(_, login)| {
+                    let from = login.from.as_deref()?;
+                    Some((from.to_string(), values.get(from)?.to_os_string()))
+                })
+                .collect(),
+        );
         let login_plan = plan.clone();
-        let mut resolving =
-            tokio::task::spawn_blocking(move || login_plan.resolve_login(Some(&worker_cancel)));
+        let mut resolving = tokio::task::spawn_blocking(move || {
+            login_plan.resolve_login(&login_values, Some(&worker_cancel))
+        });
         let codex = tokio::select! {
             biased;
             _ = cancelled(&mut cancel_start) => {
@@ -491,6 +505,7 @@ impl Box {
             runs::create(&run_id)?;
             let (observed, egress_log) = start(
                 &mut plan,
+                values,
                 init,
                 &identity.id,
                 seeding.as_ref(),
@@ -814,8 +829,10 @@ struct Starting {
 /// a signal at any await, removes exactly that. Returns the box's labels as
 /// the runtime reports them, and the egress log the proxy was given (`None`
 /// without `egress`).
+#[allow(clippy::too_many_arguments)]
 async fn start(
     plan: &mut Plan,
+    values: &Values,
     init: &Path,
     image_id: &str,
     seeding: Option<&Seeding>,
@@ -861,6 +878,7 @@ async fn start(
             progress.proxy = Some(proxy::start(
                 progress.sockets.bind_proxy()?,
                 egress,
+                values,
                 codex,
                 log.clone(),
             )?);
@@ -876,6 +894,7 @@ async fn start(
     let child = progress.child.insert(runtime::start(
         prepared,
         plan,
+        values,
         init,
         socket.as_deref(),
         &progress.claimed.fills,
@@ -979,10 +998,17 @@ async fn wait_for_shutdown(signals: &mut Signals) -> io::Result<Shutdown> {
     }
 }
 
-/// Check project structure without resolving credentials or materializing shares.
-pub(crate) fn validate_project(plan: &Plan, profile: &Profile) -> Result<(), String> {
+/// Check project structure without resolving credentials or materializing
+/// shares, and each `from` variable's presence in `values` when given.
+pub(crate) fn validate_project(
+    plan: &Plan,
+    values: Option<&Values>,
+    profile: &Profile,
+) -> Result<(), String> {
     plan.validate_structure()?;
-    plan.check_variables()?;
+    if let Some(values) = values {
+        plan.check_variables(values)?;
+    }
     let destinations = login_destinations(plan)?;
     let extra: Vec<&Path> = destinations.iter().map(PathBuf::as_path).collect();
     validate_generated(plan, &extra)?;

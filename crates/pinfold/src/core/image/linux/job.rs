@@ -357,6 +357,7 @@ async fn run_transaction(
             allow: hosts,
             routes: BTreeMap::new(),
         },
+        &Default::default(),
         None,
         egress_log.clone(),
     )?);

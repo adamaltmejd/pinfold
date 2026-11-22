@@ -20,7 +20,7 @@ use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 
 use crate::core::login;
-use crate::core::plan::{Egress, Route, Target};
+use crate::core::plan::{Egress, Route, Target, Values};
 use crate::core::{network, now, rfc3339, runs, tls};
 use crate::init::Deadline;
 
@@ -142,10 +142,11 @@ impl Connection {
 pub fn start(
     listener: UnixListener,
     egress: &Egress,
+    values: &Values,
     codex: Option<login::Token>,
     log: PathBuf,
 ) -> io::Result<Server> {
-    let rules = Arc::new(Rules::new(egress, codex)?);
+    let rules = Arc::new(Rules::new(egress, values, codex)?);
     runs::open_log(&log)?;
     listener.set_nonblocking(true)?;
     let (failure, failed) = oneshot::channel();
@@ -194,9 +195,9 @@ enum Upstream {
 }
 
 impl Rules {
-    /// The rules for one box. Injected header values are read here, once,
-    /// from this process's environment; a codex login route takes `codex`.
-    fn new(egress: &Egress, codex: Option<login::Token>) -> io::Result<Rules> {
+    /// The rules for one box. Injected header values come from `values`; a
+    /// codex login route takes `codex`.
+    fn new(egress: &Egress, values: &Values, codex: Option<login::Token>) -> io::Result<Rules> {
         let codex = codex.map(|token| Arc::new(login::Codex::new(token)));
         let mut routes = BTreeMap::new();
         for (name, route) in &egress.routes {
@@ -212,7 +213,8 @@ impl Rules {
                     })
                 }
                 Route::Inject(inject) => {
-                    let (target, headers) = inject.resolve(name).map_err(io::Error::other)?;
+                    let (target, headers) =
+                        inject.resolve(name, values).map_err(io::Error::other)?;
                     Upstream::Inject {
                         target,
                         headers,
@@ -224,7 +226,7 @@ impl Rules {
                     login: codex.clone().expect("up resolves a Codex login's token"),
                 },
                 Route::Login(login) => {
-                    let (target, headers) = login.resolve(name).map_err(|error| {
+                    let (target, headers) = login.resolve(name, values).map_err(|error| {
                         io::Error::other(format!("{} login route {name:?}: {error}", login.login))
                     })?;
                     Upstream::Inject {

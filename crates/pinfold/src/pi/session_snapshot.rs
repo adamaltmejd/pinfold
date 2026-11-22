@@ -1,15 +1,16 @@
 //! In-memory comparison inputs. These are never retained in run records.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::config::{Config, ProjectMount};
 use crate::core::image::service;
-use crate::core::plan::{Env, MountKind, Plan, Route, memory_mib};
+use crate::core::plan::{Env, MountKind, Plan, Values, memory_mib};
 use crate::core::profile::Share;
 use crate::dirs;
 use crate::pi::{context::Context, launch, state};
@@ -32,6 +33,10 @@ impl Bytes {
 
     fn variable(name: &str) -> Option<Self> {
         std::env::var_os(name).map(|value| Self::new(value.as_bytes()))
+    }
+
+    fn value(values: &Values, name: &str) -> Option<Self> {
+        values.get(name).map(|value| Self::new(value.as_bytes()))
     }
 }
 
@@ -198,10 +203,13 @@ pub(crate) struct Resolved {
     pub(crate) snapshot: Snapshot,
     pub(crate) config: Config,
     pub(crate) plan: Plan,
+    pub(crate) values: Values,
 }
 
 impl Snapshot {
-    pub(crate) fn owner_environment(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    /// The owner's environment: the fixed names from this process's, and each
+    /// `from` variable from `values`, this launch's one read.
+    pub(crate) fn owner_environment(&self, values: &Values) -> Vec<(OsString, OsString)> {
         let mut names = std::collections::BTreeSet::from_iter(
             [
                 "PATH",
@@ -218,20 +226,75 @@ impl Snapshot {
             ]
             .map(String::from),
         );
-        names.extend(self.route_values.keys().cloned());
+        let mut sources = std::collections::BTreeSet::from_iter(self.route_values.keys().cloned());
         for source in self.env_names.values() {
             if let EnvSource::From { name } = source {
-                names.insert(name.clone());
+                sources.insert(name.clone());
             }
         }
-        names
+        names.retain(|name| !sources.contains(name));
+        let fixed = names
             .into_iter()
-            .filter_map(|name| std::env::var_os(&name).map(|value| (name.into(), value)))
-            .collect()
+            .filter_map(|name| Some((name.clone().into(), std::env::var_os(&name)?)));
+        let sources = sources
+            .into_iter()
+            .filter_map(|name| Some((name.clone().into(), values.get(&name)?.to_os_string())));
+        fixed.chain(sources).collect()
     }
+
+    /// The `from` values a starting client's snapshot carries, decoded: the
+    /// table the owner starts the box with. That client refused any unset
+    /// variable and any name holding `=` or NUL, so a declared source without
+    /// a value, such a name, or a NUL value fails.
+    pub(crate) fn values(&self) -> io::Result<Values> {
+        let invalid = || io::Error::other("invalid encoded environment");
+        let decode = |from: &String, value: Option<&Bytes>| {
+            let value = crate::init::decode_hex(value.ok_or_else(invalid)?.0.as_bytes())?;
+            if from.is_empty() || from.contains(['=', '\0']) || value.contains(&0) {
+                return Err(invalid());
+            }
+            Ok((from.clone(), OsString::from_vec(value)))
+        };
+        // Each entry is decoded once; an env entry is one per box variable.
+        let routes = self
+            .route_values
+            .iter()
+            .map(|(from, value)| decode(from, value.as_ref()));
+        let env = self
+            .env_names
+            .iter()
+            .filter_map(|(name, source)| match source {
+                EnvSource::From { name: from } => Some(decode(
+                    from,
+                    self.env_values.get(name).and_then(Option::as_ref),
+                )),
+                EnvSource::Exact {} => None,
+            });
+        let values: BTreeMap<_, _> = routes.chain(env).collect::<io::Result<_>>()?;
+        let declared = self.routes.values().all(|declaration| match declaration {
+            Declaration::Inject(inject) => inject
+                .headers
+                .iter()
+                .flatten()
+                .all(|(_, header)| self.route_values.contains_key(&header.from)),
+            Declaration::Login(login) => login
+                .from
+                .as_ref()
+                .is_none_or(|from| self.route_values.contains_key(from)),
+            Declaration::Address(_) => true,
+        });
+        if !declared {
+            return Err(invalid());
+        }
+        Ok(Values(values))
+    }
+
+    /// Resolve the project's configuration. A client reads each `from`
+    /// value here, once; the owner passes the table its client sent.
     pub(crate) fn resolve(
         root: &Path,
         expected_mount: Option<ProjectMount>,
+        received: Option<Values>,
     ) -> io::Result<Resolved> {
         let roots = Roots::resolve()?;
         let context = Context::discover(root)?;
@@ -265,7 +328,13 @@ impl Snapshot {
                 *from = dirs::resolve_host_path(from)?;
             }
         }
-        crate::core::r#box::validate_project(&plan, &config.profile).map_err(io::Error::other)?;
+        // The owner compares snapshots before anything checks its table: a
+        // source edited since its client resolved is `config-changed`, and an
+        // equal snapshot names only sources its client checked.
+        let check = received.is_none();
+        let values = received.unwrap_or_else(|| Values::read(&plan));
+        crate::core::r#box::validate_project(&plan, check.then_some(&values), &config.profile)
+            .map_err(io::Error::other)?;
         if !config.cpus.is_finite() {
             return Err(io::Error::other("spec-invalid: CPUs must be finite"));
         }
@@ -314,22 +383,11 @@ impl Snapshot {
                 .map_err(|_| io::Error::other("spec-invalid: invalid route declaration"))?;
             routes.insert(name.clone(), declaration);
         }
-        let mut route_values = BTreeMap::new();
-        for route in config.routes.values() {
-            match route {
-                Route::Inject(inject) => {
-                    for header in inject.headers.values() {
-                        route_values.insert(header.from.clone(), Bytes::variable(&header.from));
-                    }
-                }
-                Route::Login(login) => {
-                    if let Some(from) = &login.from {
-                        route_values.insert(from.clone(), Bytes::variable(from));
-                    }
-                }
-                Route::Address(_) => {}
-            }
-        }
+        let route_values = plan
+            .sources()
+            .filter(|(kind, _, _)| *kind == "route")
+            .map(|(_, _, from)| (from.to_string(), Bytes::value(&values, from)))
+            .collect();
         let mut env_names = BTreeMap::new();
         let mut env_values = BTreeMap::new();
         for (name, value) in &plan.env {
@@ -337,7 +395,7 @@ impl Snapshot {
                 Env::Exact(value) => (EnvSource::Exact {}, Some(Bytes::new(value.as_bytes()))),
                 Env::From { from } => (
                     EnvSource::From { name: from.clone() },
-                    Bytes::variable(from),
+                    Bytes::value(&values, from),
                 ),
             };
             env_names.insert(name.clone(), source);
@@ -372,6 +430,7 @@ impl Snapshot {
             snapshot,
             config,
             plan,
+            values,
         })
     }
 

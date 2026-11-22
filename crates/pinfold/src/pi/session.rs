@@ -764,7 +764,13 @@ async fn admit(
             .map_err(|error| io::Error::new(error.kind(), error.to_string()))?
             .check_worktree(resolved.config.mount)?;
         let share = resolved.config.mount == crate::config::ProjectMount::Share;
-        let mut child = spawn_owner(&resolved.snapshot, &launch, executable, &_maintenance)?;
+        let mut child = spawn_owner(
+            &resolved.snapshot,
+            &resolved.values,
+            &launch,
+            executable,
+            &_maintenance,
+        )?;
         let mut stream = child.0;
         let sent = wire::write_request(
             &mut stream,
@@ -857,7 +863,7 @@ async fn resolve_spec(
     let root = root.to_path_buf();
     let mut worker = tokio::task::spawn_blocking(move || {
         crate::core::process::with_cancellation(worker_cancel, || {
-            let resolved = Snapshot::resolve(&root, expected_mount)?;
+            let resolved = Snapshot::resolve(&root, expected_mount, None)?;
             let warnings = if startup {
                 launch::image_warnings(
                     &resolved.config,
@@ -887,6 +893,7 @@ struct Diagnostics {
 
 fn spawn_owner(
     snapshot: &Snapshot,
+    values: &crate::core::plan::Values,
     launch: &File,
     executable: &File,
     maintenance: &File,
@@ -911,7 +918,7 @@ fn spawn_owner(
         .arg("__project-owner")
         .args(descriptors.map(|fd| fd.to_string()))
         .env_clear()
-        .envs(snapshot.owner_environment())
+        .envs(snapshot.owner_environment(values))
         .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -1545,8 +1552,9 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let setup_flag = setup_cancel.clone();
         let setup_root = root.clone();
         let expected_mount = Some(snapshot.project_mount());
+        let values = snapshot.values().map_err(|_| protocol())?;
         let mut resolving = tokio::task::spawn_blocking(move || {
-            crate::core::process::with_cancellation(setup_flag, || Snapshot::resolve(&setup_root, expected_mount))
+            crate::core::process::with_cancellation(setup_flag, || Snapshot::resolve(&setup_root, expected_mount, Some(values)))
         });
         let setup = loop { tokio::select! {
             biased;
@@ -1572,8 +1580,9 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let (cancel, cancelled) = watch::channel(false);
         let init = artifacts::init_path()?;
         let image_id = resolved.snapshot.image_id().ok_or_else(unavailable)?.to_string();
+        let values = resolved.values;
         let started = {
-        let startup = Box::up_project(&plan, resolved.config.profile, &image_id, &mut signals, cancelled);
+        let startup = Box::up_project(&plan, &values, resolved.config.profile, &image_id, &mut signals, cancelled);
         tokio::pin!(startup);
         let mut disconnected = false;
         loop { tokio::select! {
@@ -1583,6 +1592,8 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
             result = &mut startup => break result,
         }}
         };
+        // Admission compares the encoded snapshot; the started proxy holds its own headers.
+        drop(values);
         let box_ = match started {
             Ok(box_) => box_,
             Err(error) => {

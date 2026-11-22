@@ -161,7 +161,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn decode_hex(value: &[u8]) -> io::Result<Vec<u8>> {
+pub(crate) fn decode_hex(value: &[u8]) -> io::Result<Vec<u8>> {
     let decoded: Option<Vec<u8>> = value
         .as_chunks::<2>()
         .0

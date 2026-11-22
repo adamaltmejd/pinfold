@@ -18,7 +18,7 @@ use super::vsock;
 use crate::core::artifacts;
 use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::image::{ImageService, linux};
-use crate::core::plan::Plan;
+use crate::core::plan::{Plan, Values};
 use crate::core::runtime::output;
 use crate::core::runtime::sockets::Sockets;
 use crate::formatting::terminal_text;
@@ -192,6 +192,7 @@ impl Vm {
     pub fn up(
         prepared: Prepared,
         plan: &Plan,
+        values: &Values,
         proxy_socket: Option<&Path>,
         fills: &[Fill],
         seeding: Option<&Seeding>,
@@ -290,7 +291,7 @@ impl Vm {
                     request,
                     fills,
                     seeding: seeding.cloned(),
-                    env: env(plan, prepared.image_env),
+                    env: env(plan, values, prepared.image_env),
                 },
             )),
             sockets,
@@ -467,12 +468,16 @@ pub(crate) fn config(plan: &Plan, drives: &[(PathBuf, bool)]) -> serde_json::Val
 
 /// The box's environment: the image's `Env`, under the spec's, under the
 /// always-applied variables.
-fn env(plan: &Plan, image_env: Vec<(OsString, OsString)>) -> Vec<(OsString, OsString)> {
+fn env(
+    plan: &Plan,
+    values: &Values,
+    image_env: Vec<(OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
     let mut vars: std::collections::BTreeMap<OsString, OsString> = image_env.into_iter().collect();
     vars.entry("PATH".into())
         .or_insert_with(|| DEFAULT_PATH.into());
     vars.extend(
-        crate::core::runtime::guest_vars(plan)
+        crate::core::runtime::guest_vars(plan, values)
             .into_iter()
             .map(|(name, value)| (name.into(), value)),
     );

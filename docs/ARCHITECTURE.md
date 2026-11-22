@@ -479,7 +479,10 @@ The box spec `up` reads from stdin:
   An env name must match
   `[A-Za-z_][A-Za-z0-9_]*`; any other name is refused as `spec`, naming it.
   A literal holding NUL is refused as `spec`, naming only the variable.
-  `{ "from": "NAME" }` reads the caller's value. Guest values reach the
+  `{ "from": "NAME" }` reads the caller's value. A `from` name, here, in
+  an injecting header or in a login route, that is empty or holds `=` or
+  NUL is never read and is refused as `spec`, naming only its key. Guest
+  values reach the
   guest after boot, over pinfold's own channel to init (Always applied);
   pinfold passes none to the runtime as environment, so they cannot
   configure the host runtime client. A `from` value never reaches argv,
@@ -910,9 +913,11 @@ network listener, no token: the socket identifies the box.
   `https://` origin. The box sends `http://<route>/path` as for any route;
   the proxy dials `to`, over TLS for `https` with SNI and the certificate
   checked against the host's roots, sets `Host` to `to`'s authority, and
-  sets each named header to `prefix` plus `$VAR` from `up`'s own
-  environment, replacing any the box sent under that name. Values are read
-  once at start; a missing variable refuses `up`. An `https` target is
+  sets each named header to `prefix` plus `$VAR`, replacing any the box
+  sent under that name. `$VAR` is read once per start, from the
+  environment of the process that starts the box: `box up`'s own, or a
+  project box's starting client (Configuration); a missing variable
+  refuses the start. An `https` target is
   resolved and checked like an allowlisted host; an `http` target is a host
   service. The value never reaches argv, the box, the spec or the log. The
   box can use the credential but not read it, unless `to` echoes request
@@ -2043,14 +2048,20 @@ sets cannot be unset above it. A configured `HOME` is ignored:
 the project box sets it, as it does the always-applied names, and
 `config --json` omits it.
 
-A `from` value is read once, when a new box starts. A missing variable
+A `from` value is read once per launch, from the environment of the
+client whose launch starts a new box; a joining or keeping client reads
+its current values only for the admission comparison. A `from` name the
+box spec refuses (Process interface) refuses the start before any owner
+starts. A missing variable
 refuses the start before any owner starts, and so does a missing injecting
 or login route variable: the client prints `env "NAME" needs the host
 variable VAR, which is not set` or `route "NAME" needs the host variable
-VAR, which is not set` on stderr and exits 125. The value travels as a `PINFOLD_ENV_`
-value does: in the environment of the detached owner and its runtime
-client, and, for the join comparison, in the admission snapshot, held in
-memory and sent over the private project socket. `config --json` names
+VAR, which is not set` on stderr and exits 125. The value travels as a
+`PINFOLD_ENV_` value does: in the environment of the detached owner and
+its runtime client, and in the admission snapshot, held in memory and
+sent over the private project socket. The owner starts the box with the
+snapshot's values, and a running owner compares a joining client's
+snapshot with its own. `config --json` names
 the variable, never its value; elsewhere it follows the box spec's `env`
 rules (Process interface). A literal is configuration, not a secret:
 `config --json` shows it; the launch record names it, like every box
