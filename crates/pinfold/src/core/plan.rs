@@ -395,11 +395,11 @@ pub struct Values(pub(crate) BTreeMap<String, OsString>);
 impl Values {
     /// Each variable `plan` names, from this process's environment.
     pub fn read(plan: &Plan) -> Values {
+        let variables: BTreeSet<&str> = plan.sources().map(|(_, _, variable)| variable).collect();
         Values(
-            plan.sources()
-                .filter_map(|(_, _, variable)| {
-                    Some((variable.to_string(), std::env::var_os(variable)?))
-                })
+            variables
+                .into_iter()
+                .filter_map(|variable| Some((variable.to_string(), std::env::var_os(variable)?)))
                 .collect(),
         )
     }

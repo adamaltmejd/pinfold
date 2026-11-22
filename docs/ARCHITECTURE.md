@@ -910,10 +910,11 @@ network listener, no token: the socket identifies the box.
   `https://` origin. The box sends `http://<route>/path` as for any route;
   the proxy dials `to`, over TLS for `https` with SNI and the certificate
   checked against the host's roots, sets `Host` to `to`'s authority, and
-  sets each named header to `prefix` plus `$VAR` from `box up`'s own
-  environment, or the project client's that starts the box, replacing any
-  the box sent under that name. Values are read
-  once at start; a missing variable refuses `up`. An `https` target is
+  sets each named header to `prefix` plus `$VAR`, replacing any the box
+  sent under that name. `$VAR` is read once per start, from the
+  environment of the process that starts the box: `box up`'s own, or a
+  project box's starting client (Configuration); a missing variable
+  refuses the start. An `https` target is
   resolved and checked like an allowlisted host; an `http` target is a host
   service. The value never reaches argv, the box, the spec or the log. The
   box can use the credential but not read it, unless `to` echoes request
@@ -2044,7 +2045,9 @@ sets cannot be unset above it. A configured `HOME` is ignored:
 the project box sets it, as it does the always-applied names, and
 `config --json` omits it.
 
-A `from` value is read once, when a new box starts. A missing variable
+A `from` value is read once per launch, from the environment of the
+client whose launch starts a new box; a joining or keeping client reads
+its current values only for the admission comparison. A missing variable
 refuses the start before any owner starts, and so does a missing injecting
 or login route variable: the client prints `env "NAME" needs the host
 variable VAR, which is not set` or `route "NAME" needs the host variable
