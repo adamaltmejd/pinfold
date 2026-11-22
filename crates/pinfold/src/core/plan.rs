@@ -128,9 +128,9 @@ impl Source {
             (Some(from), None) if valid_from(from) => Ok(Source::From(from.to_string())),
             (Some(_), None) => Err("its from variable is empty or holds = or NUL"),
             (None, Some(op)) if valid_op(op) => Ok(Source::Op(op.to_string())),
-            (None, Some(_)) => {
-                Err("its op reference must start with op://, hold no NUL and be at most 1024 bytes")
-            }
+            (None, Some(_)) => Err(
+                "its op reference must start with op://, hold no control character and be at most 1024 bytes",
+            ),
         }
     }
 
@@ -688,7 +688,16 @@ impl<'de> Deserialize<'de> for Env {
                 }
                 let Secret { from, op } =
                     Secret::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(Env::Secret { from, op })
+                // Refused at load, so a `PINFOLD_ENV_` variable replacing
+                // the entry cannot hide it.
+                match (&from, &op) {
+                    (Some(_), Some(_)) | (None, None) => Err(serde::de::Error::custom(
+                        Source::declared(from.as_deref(), op.as_deref())
+                            .err()
+                            .unwrap_or_default(),
+                    )),
+                    _ => Ok(Env::Secret { from, op }),
+                }
             }
         }
         deserializer.deserialize_any(Visitor)
@@ -1139,7 +1148,9 @@ fn valid_from(name: &str) -> bool {
 
 /// A 1Password secret reference `op read` takes as one argument.
 pub(crate) fn valid_op(reference: &str) -> bool {
-    reference.starts_with("op://") && !reference.contains('\0') && reference.len() <= 1024
+    reference.starts_with("op://")
+        && !reference.chars().any(|c| c.is_ascii_control())
+        && reference.len() <= 1024
 }
 
 fn valid_env_name(name: &str) -> bool {
