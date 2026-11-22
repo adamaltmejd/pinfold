@@ -150,10 +150,12 @@ fn the_vmm_reaches_only_its_own_box() {
 
         // Socket identity. The vsock socket directory is the one holding
         // the socket the VMM itself listens on, as the kernel names it.
-        // The jail's only sockets are in that directory. No other host
-        // socket, the project's session and shutdown control sockets and
-        // the other box's vsock sockets among them, shares a device and
-        // inode with anything in the jail.
+        // The jail's only sockets are that listener and, beside it, its
+        // host listeners for guest ports, `<listener>_<port>`
+        // (Firecracker's vsock convention). No other host socket, the
+        // project's session and shutdown control sockets and the other
+        // box's vsock sockets among them, shares a device and inode with
+        // anything in the jail.
         let bound = vmm.bound();
         let listening: Vec<&PathBuf> = bound
             .iter()
@@ -167,6 +169,7 @@ fn the_vmm_reaches_only_its_own_box() {
         );
         let listener = listening[0];
         let dir = listener.parent().expect("a socket directory");
+        let name = listener.file_name().unwrap().to_str().unwrap();
         let vsock_dir = inode(&vmm.root().join(dir.strip_prefix("/").unwrap()));
         for (identity, line) in &directories {
             assert_eq!(
@@ -175,11 +178,21 @@ fn the_vmm_reaches_only_its_own_box() {
             );
         }
         for entry in seen.iter().filter(|entry| entry.socket) {
+            let entry_name = entry.path.file_name().and_then(|n| n.to_str());
+            let vsock_name = entry_name.is_some_and(|entry_name| {
+                entry_name == name
+                    || entry_name
+                        .strip_prefix(name)
+                        .and_then(|rest| rest.strip_prefix('_'))
+                        .is_some_and(|port| {
+                            !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit())
+                        })
+            });
             let parent = entry.path.parent().unwrap().strip_prefix("/").unwrap();
-            assert_eq!(
-                inode(&vmm.root().join(parent)),
-                vsock_dir,
-                "a socket in the jail outside its vsock socket directory: {}",
+            assert!(
+                vsock_name && inode(&vmm.root().join(parent)) == vsock_dir,
+                "a socket in the jail that is not its vsock listener or a guest \
+                 port's: {}",
                 entry.path.display()
             );
         }
