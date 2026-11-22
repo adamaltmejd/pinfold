@@ -11,10 +11,19 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
     // Sabotage (run): delete `paths.extend(extra)` in core/mounts.rs's
     // `protected_paths`. With the configuration directory symlinked in,
     // `-- true` then runs and exits 0.
+    // Sabotage (run): in `protected_paths`, drop the init's own directory
+    // (keep `artifacts/init`). With `artifacts/init/<sha>` linked in, `--
+    // true` is then refused `spec` after creating project state.
     // The same project running, and `config edit` succeeding, with each
     // symlink removed are the positive controls.
     default_image();
-    let env = TestEnv::new("protected");
+    // On macOS the init case moves the supplied init, so the cache root is
+    // the test's own; it holds no image there.
+    let env = if cfg!(target_os = "macos") {
+        TestEnv::own_cache("protected")
+    } else {
+        TestEnv::new("protected")
+    };
     // A user profile on default's image, which each project selects.
     let profile = env.config_home().join("pinfold/profiles/e2e-base");
     fs::create_dir_all(&profile).unwrap();
@@ -25,15 +34,34 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
     // reads it. Both commands are refused and change nothing under the
     // state or config roots or the moved directory; with the link replaced
     // by the directory, both succeed.
-    let mut projects = Vec::new();
-    for case in ["config", "profile"] {
+    // On macOS also the supplied init's own directory, below
+    // `artifacts/init`, which the first case's control installs.
+    let mut cases = vec!["config", "profile"];
+    if cfg!(target_os = "macos") {
+        cases.push("init");
+    }
+    let mut projects: Vec<Project> = Vec::new();
+    for case in cases {
         let project = Project::new(&env, &format!("protected-{case}"));
         let file = project.config_dir().join("pinfold.toml");
         let saved = fs::read_to_string(&file).unwrap();
         fs::write(&file, format!("profile = \"e2e-base\"\n{saved}")).unwrap();
         let protected = match case {
             "config" => project.config_dir().to_path_buf(),
-            _ => profile.clone(),
+            "profile" => profile.clone(),
+            _ => {
+                // No box of the earlier cases still attaches it.
+                for earlier in &projects {
+                    let stop = earlier.pinfold(&["stop"]);
+                    assert_eq!(stop.code, 0, "{stop:?}");
+                }
+                let inits: Vec<_> = fs::read_dir(env.cache_home().join("pinfold/artifacts/init"))
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect();
+                assert_eq!(inits.len(), 1, "{inits:?}");
+                inits[0].clone()
+            }
         };
         let protected = protected.as_path();
         let inside = project.root().join("linked");

@@ -2443,7 +2443,6 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
             None
         };
         launch::require_repo(root)?;
-        clean::maintain();
         return Ok(CrossingLease {
             _maintenance: maintenance,
             launch: Some(launch),

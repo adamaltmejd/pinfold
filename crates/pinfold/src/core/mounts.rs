@@ -59,12 +59,19 @@ fn protected_paths(
         dirs::artifacts_dir()?,
         super::ownership::host_dir()?,
     ];
-    // `artifacts/init` may be a symlink resolving elsewhere. Its top always
-    // resolves, even as a stray file; `prepare` names the init's own
-    // directory. On Linux the init is pinfold's own executable: protecting
+    // `artifacts/init` and any directory below it may be a symlink
+    // resolving elsewhere. Its top always resolves, even as a stray file;
+    // the init's own directory then fails with ENOTDIR and is covered by
+    // the top. On Linux the init is pinfold's own executable: protecting
     // its directory would refuse a checkout holding a pinfold build.
     if cfg!(target_os = "macos") {
         paths.push(dirs::artifacts_dir()?.join("init"));
+        let init = super::artifacts::init_path()?;
+        match dirs::resolve_host_path(init.parent().expect("init has a directory")) {
+            Ok(path) => paths.push(path),
+            Err(error) if error.kind() == io::ErrorKind::NotADirectory => {}
+            Err(error) => return Err(error),
+        }
     }
     paths.extend(extra);
     if let Some(profile) = profile {
@@ -117,7 +124,7 @@ pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -
     if !shares {
         return Ok(());
     }
-    let paths = protected_paths(profile, [dirs::resolve_host_path(&init)?])?;
+    let paths = protected_paths(profile, [])?;
     for mount in plan.mounts.iter_mut() {
         mount.guest = guest_path(&mount.guest);
         if mount.kind == MountKind::Share {

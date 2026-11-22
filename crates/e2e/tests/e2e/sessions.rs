@@ -6,7 +6,9 @@ use std::fs;
 use std::process::Command;
 use std::time::Duration;
 
-use e2e::{Client, Project, READER, TestEnv, default_image, json_lines, run, tree};
+use e2e::{
+    Client, Project, READER, TestEnv, default_image, hold_maintenance, json_lines, run, tree,
+};
 use serde_json::Value;
 
 const COMMAND: Duration = Duration::from_secs(120);
@@ -37,6 +39,45 @@ fn a_projects_sessions_share_one_box() {
         refused.stderr
     );
     assert_eq!(roots(), before, "the refused launch changed the roots");
+
+    // Sabotage (run): in pi/session.rs, call `clean::maintain()` at the
+    // top of `borrow` again. The refused fetch then writes the daily
+    // pass's stamp into the fresh state root.
+    // The Git remote is refused `no-config` too, before automatic
+    // maintenance: from a state root no command has used, nothing appears
+    // in it or the config root. Control: a working command from the same
+    // fresh root does write it. Held, since a pass prunes host-wide.
+    let added = project.git(&[
+        "remote",
+        "add",
+        "box",
+        &format!("pinfold::{}", project.root().display()),
+    ]);
+    assert_eq!(added.code, 0, "{added:?}");
+    let fresh = env.root().join("fresh-state");
+    fs::create_dir(&fresh).unwrap();
+    {
+        let _hold = hold_maintenance();
+        let config = tree(env.config_home());
+        let mut fetch = project.git_command(&["fetch", "box"]);
+        fetch.env("XDG_STATE_HOME", &fresh);
+        let fetched = run(&mut fetch, COMMAND);
+        assert_eq!(fetched.code, 128, "{fetched:?}");
+        assert!(
+            tokens(&fetched.stderr).any(|token| token == "no-config"),
+            "{}",
+            fetched.stderr
+        );
+        assert_eq!(tree(&fresh), Vec::new(), "the refused fetch wrote state");
+        assert_eq!(tree(env.config_home()), config);
+        let mut listed = env.command();
+        listed
+            .args(["disk", "list", "--json"])
+            .env("XDG_STATE_HOME", &fresh);
+        let listed = run(&mut listed, COMMAND);
+        assert_eq!(listed.code, 0, "{listed:?}");
+        assert_ne!(tree(&fresh), Vec::new(), "a working command wrote nothing");
+    }
 
     // Control: after `config edit` the same invocation runs, with its
     // arguments literal, the empty one and `--help` included.
