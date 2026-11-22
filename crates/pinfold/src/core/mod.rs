@@ -26,8 +26,6 @@ use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
-use sha2::{Digest, Sha256};
-
 /// Visit names through an owned directory descriptor without following paths.
 pub(crate) fn directory_entries(
     directory: std::os::fd::OwnedFd,
@@ -103,7 +101,7 @@ pub(crate) fn absent_ok(result: io::Result<()>) -> io::Result<()> {
 /// The sha256 of `bytes` as lowercase hex. Ids and cache paths on disk are
 /// made of it.
 pub(crate) fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
-    hex(&Sha256::digest(bytes))
+    hex(ring::digest::digest(&ring::digest::SHA256, bytes.as_ref()).as_ref())
 }
 
 pub(crate) use crate::init::hex;

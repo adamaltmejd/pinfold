@@ -2205,10 +2205,10 @@ lives in `cli.rs`.
 | `aarch64-unknown-linux-musl` | init on Macs |
 | `x86_64-unknown-linux-musl` | Linux x64 CLI and init |
 
-Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `sha2`, `toml`, `nix`
+Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `toml`, `nix`
 (with `socket` for vsock, `sched` and `mount` for the VMM jail; Landlock
 through nix's `libc` syscalls),
-`ring` for host builder-file and image-store SHA-256, and the TLS client for
+`ring` for host SHA-256, `sha2` only in the guest builder init, and the TLS client for
 injecting routes: `rustls` (ring) with `rustls-native-certs` for the host's roots.
 SNI comes from rustls's ClientHello acceptor. The Public Suffix List is
 data, `crates/pinfold/public_suffix_list.dat`, embedded with `include_str!`.

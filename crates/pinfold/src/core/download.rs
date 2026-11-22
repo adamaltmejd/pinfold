@@ -9,8 +9,6 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use sha2::{Digest, Sha256};
-
 use crate::core::pipe::{self, nonblocking};
 
 pub fn bytes(url: &str, timeout: Duration, limit: u64) -> io::Result<Vec<u8>> {
@@ -96,7 +94,7 @@ fn transfer(
 
 pub fn sha256_file(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
-    let mut hash = Sha256::new();
+    let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         let read = file.read(&mut buffer)?;
@@ -105,5 +103,5 @@ pub fn sha256_file(path: &Path) -> io::Result<String> {
         }
         hash.update(&buffer[..read]);
     }
-    Ok(crate::core::hex(&hash.finalize()))
+    Ok(crate::core::hex(hash.finish().as_ref()))
 }

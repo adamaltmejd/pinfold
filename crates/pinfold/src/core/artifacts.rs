@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 
 use ring::digest;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::dirs;
 
@@ -376,7 +375,7 @@ pub(crate) fn init_path() -> io::Result<PathBuf> {
     }
     let dir = dirs::artifacts_dir()?
         .join("init")
-        .join(super::hex(&Sha256::digest(INIT)))
+        .join(super::hex(digest::digest(&digest::SHA256, INIT).as_ref()))
         .join("linux-arm64");
     Ok(dir.join("pinfold"))
 }
