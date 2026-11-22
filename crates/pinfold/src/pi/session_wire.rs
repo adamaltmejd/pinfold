@@ -1,11 +1,10 @@
 //! Private owner admission framing. Payloads never appear in diagnostics.
 
 use std::io;
-use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::os::fd::AsFd;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use nix::libc;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -45,17 +44,36 @@ pub(crate) enum Request {
         root: PathBuf,
         generation: String,
         snapshot: Snapshot,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         rex: bool,
     },
     Borrow {
         root: PathBuf,
         generation: String,
         roots: Roots,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         share_only: bool,
     },
     Leave {},
+}
+
+impl Request {
+    /// The project root and owner generation a client request addresses.
+    pub(crate) fn target(&self) -> Option<(&Path, &str)> {
+        match self {
+            Self::Probe {
+                root, generation, ..
+            }
+            | Self::Join {
+                root, generation, ..
+            }
+            | Self::Keep {
+                root, generation, ..
+            }
+            | Self::Borrow {
+                root, generation, ..
+            } => Some((root, generation)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -72,7 +90,6 @@ pub(crate) enum Reply {
     Kept {
         name: String,
         generation: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         rex: Option<crate::pi::rex::Status>,
     },
     Left {},
@@ -204,36 +221,14 @@ pub(crate) async fn write_reply(
     write_frame(stream, &ReplyFrame { version: 1, reply }).await
 }
 
-pub(crate) fn peer(stream: &impl AsRawFd) -> io::Result<()> {
+pub(crate) fn peer(stream: &impl AsFd) -> io::Result<()> {
+    let denied = |_| protocol(io::ErrorKind::PermissionDenied);
     #[cfg(target_os = "linux")]
-    let uid = {
-        let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-        let mut length = std::mem::size_of_val(&credentials) as libc::socklen_t;
-        // SAFETY: getsockopt writes into the sized live credentials value.
-        let result = unsafe {
-            libc::getsockopt(
-                stream.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_PEERCRED,
-                (&mut credentials as *mut libc::ucred).cast(),
-                &mut length,
-            )
-        };
-        if result != 0 || length as usize != std::mem::size_of_val(&credentials) {
-            return Err(protocol(io::ErrorKind::PermissionDenied));
-        }
-        credentials.uid
-    };
+    let uid = nix::sys::socket::getsockopt(stream, nix::sys::socket::sockopt::PeerCredentials)
+        .map_err(denied)?
+        .uid();
     #[cfg(target_os = "macos")]
-    let uid = {
-        let mut uid = 0;
-        let mut gid = 0;
-        // SAFETY: getpeereid writes the two live credential outputs.
-        if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } != 0 {
-            return Err(protocol(io::ErrorKind::PermissionDenied));
-        }
-        uid
-    };
+    let uid = nix::unistd::getpeereid(stream).map_err(denied)?.0.as_raw();
     if uid == nix::unistd::geteuid().as_raw() {
         Ok(())
     } else {

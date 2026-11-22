@@ -19,13 +19,7 @@ struct Bytes(String);
 
 impl Bytes {
     fn new(bytes: &[u8]) -> Self {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut encoded = String::with_capacity(bytes.len() * 2);
-        for byte in bytes {
-            encoded.push(HEX[(byte >> 4) as usize] as char);
-            encoded.push(HEX[(byte & 15) as usize] as char);
-        }
-        Self(encoded)
+        Self(crate::core::hex(bytes))
     }
 
     fn path(path: &Path) -> Self {

@@ -125,9 +125,7 @@ fn project_intro(unconfigured: &mut bool) -> io::Result<Option<Option<PathBuf>>>
                 }
                 None => println!("Box       running"),
             }
-            if let Some(mount) = mount {
-                println!("Box files {}", project_files(*mount, root));
-            }
+            println!("Box files {}", project_files(*mount, root));
         }
         Ok(ProjectStatus::Unavailable) | Err(_) => println!("Box       status unavailable"),
     }
