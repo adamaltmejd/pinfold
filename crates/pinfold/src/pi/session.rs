@@ -1573,8 +1573,9 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let (cancel, cancelled) = watch::channel(false);
         let init = artifacts::init_path()?;
         let image_id = resolved.snapshot.image_id().ok_or_else(unavailable)?.to_string();
+        let values = resolved.values;
         let started = {
-        let startup = Box::up_project(&plan, &resolved.values, resolved.config.profile, &image_id, &mut signals, cancelled);
+        let startup = Box::up_project(&plan, &values, resolved.config.profile, &image_id, &mut signals, cancelled);
         tokio::pin!(startup);
         let mut disconnected = false;
         loop { tokio::select! {
@@ -1584,6 +1585,8 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
             result = &mut startup => break result,
         }}
         };
+        // Admission compares the encoded snapshot; the started proxy holds its own headers.
+        drop(values);
         let box_ = match started {
             Ok(box_) => box_,
             Err(error) => {
