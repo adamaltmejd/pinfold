@@ -708,8 +708,8 @@ impl Plan {
                 match route {
                     Route::Address(address) => {
                         if !valid_route_address(address) {
-                            let mut detail =
-                                format!("route {name:?} target {address:?} must be host:port");
+                            // Never echo the address, as for an injecting route.
+                            let mut detail = format!("route {name:?} target must be host:port");
                             if address.contains("://") {
                                 detail.push_str(
                                     "; the object form { \"to\": … } is what takes an origin",
