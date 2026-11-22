@@ -1654,7 +1654,11 @@ pub fn build(args: &[String]) -> io::Result<i32> {
         })
         .collect();
     let count = names.len();
-    let selected = &profile.name;
+    // A chain that ends in the project's image is the project's.
+    let selected = match recipes.last() {
+        Some((clean::PROJECT_LABEL, ..)) => "this project",
+        _ => &profile.name,
+    };
     if count > 1 {
         let order = names.join(", ");
         eprintln!("pinfold: {selected} needs {count} images, built in order: {order}");
@@ -1663,7 +1667,9 @@ pub fn build(args: &[String]) -> io::Result<i32> {
     for (index, (label, source, bytes)) in recipes.iter().enumerate() {
         let name = names[index];
         match count {
-            1 if name == selected => eprintln!("pinfold: building {name}"),
+            1 if name == selected || *label == clean::PROJECT_LABEL => {
+                eprintln!("pinfold: building {name}")
+            }
             1 => eprintln!("pinfold: building {name} for {selected}"),
             _ => eprintln!("pinfold: building {name} ({}/{count})", index + 1),
         }
