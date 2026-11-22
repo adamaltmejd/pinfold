@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 
 use ring::digest;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::dirs;
 
@@ -118,7 +117,7 @@ pub fn builder(cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
             .open(&root)?;
         // Bootstrap bytes are publisher-pinned. Only their named root is
         // streamed to our fixed path; archive ownership and paths are not applied.
-        let mut child = Command::new("tar")
+        let child = Command::new("tar")
             .arg("-xOzf")
             .arg(&snapshot)
             .arg("root.ext4")
@@ -126,30 +125,9 @@ pub fn builder(cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
             .stdout(output)
             .stderr(std::process::Stdio::null())
             .spawn_guarded()?;
-        let unpacked = (|| {
-            loop {
-                super::pipe::remaining(deadline, cancel, "builder install")?;
-                if let Some(status) = child.try_wait()? {
-                    return if status.success() {
-                        Ok(())
-                    } else {
-                        Err(io::Error::other("builder archive extraction failed"))
-                    };
-                }
-                super::pipe::wait_ready(
-                    None,
-                    nix::poll::PollFlags::empty(),
-                    deadline,
-                    cancel,
-                    "builder install",
-                )?;
-            }
-        })();
-        if unpacked.is_err() {
-            let _ = child.kill();
+        if !super::process::wait_child(child, deadline, cancel, "builder install")?.success() {
+            return Err(io::Error::other("builder archive extraction failed"));
         }
-        let _ = child.wait();
-        unpacked?;
         builder_root(&root, deadline, cancel)?;
         fs::remove_file(snapshot)
     })?;
@@ -363,7 +341,7 @@ pub struct Vmm {
 /// Install [`VMM`] for this host if the cache lacks it.
 #[cfg(target_os = "linux")]
 pub fn vmm(cancel: Option<&AtomicBool>) -> io::Result<Vmm> {
-    let dir = VMM.install_os_arch(OS_ARCH, cancel)?;
+    let dir = VMM.install_os_arch("linux-x64", cancel)?;
     let (firecracker, _) = VMM
         .version
         .split_once('+')
@@ -375,14 +353,6 @@ pub fn vmm(cancel: Option<&AtomicBool>) -> io::Result<Vmm> {
         kernel: dir.join("vmlinux"),
     })
 }
-
-/// The `os-arch` of a box on this host: Apple `container` and Firecracker
-/// run native images.
-const OS_ARCH: &str = if cfg!(target_arch = "aarch64") {
-    "linux-arm64"
-} else {
-    "linux-x64"
-};
 
 /// The `os-arch` of a host helper on this host, as its rows name it. The
 /// macOS CLI is arm64 only; Linux arm64 is unsupported.
@@ -405,7 +375,7 @@ pub(crate) fn init_path() -> io::Result<PathBuf> {
     }
     let dir = dirs::artifacts_dir()?
         .join("init")
-        .join(super::hex(&Sha256::digest(INIT)))
+        .join(super::hex(digest::digest(&digest::SHA256, INIT).as_ref()))
         .join("linux-arm64");
     Ok(dir.join("pinfold"))
 }
@@ -477,7 +447,7 @@ pub fn pins() -> io::Result<Vec<Pin>> {
         dir.join("codex-app-server")
     })?];
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        pins.push(pin(&VMM, OS_ARCH, |dir| dir)?);
+        pins.push(pin(&VMM, "linux-x64", |dir| dir)?);
         let path = builder_dir()?.join("linux-x64");
         pins.push(Pin {
             name: "builder",

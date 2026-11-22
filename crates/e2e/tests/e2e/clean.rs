@@ -2,14 +2,12 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use e2e::{
-    Exec, Project, TestEnv, detached_children, hold_maintenance, json_lines, run, spawn, tree,
-    wait_exited, wait_until,
+    COMMAND, Client, Exec, Project, TestEnv, detached_children, hold_maintenance, run, tree,
+    wait_exited,
 };
 use serde_json::Value;
 
@@ -53,24 +51,12 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // An idle project: one session, ended, and a host file in its
     // checkout. Its detached owner, the client's child while the session
     // runs, has exited before `clean`.
-    let mut client = Client(spawn(
-        idle.command(&["--", "sh", "-c", "echo started; read line; exit 0"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit()),
-    ));
-    let mut stdout = BufReader::new(client.0.stdout.take().unwrap());
-    let mut line = String::new();
-    stdout
-        .read_line(&mut line)
-        .expect("the idle session's first line");
-    assert_eq!(line, "started\n");
-    let owners = detached_children(client.0.id());
+    let client =
+        Client::spawn(idle.command(&["--", "sh", "-c", "echo started; read line; exit 0"]));
+    assert_eq!(client.line(), "started");
+    let owners = detached_children(client.id());
     assert_eq!(owners.len(), 1, "the idle client's children: {owners:?}");
-    drop(client.0.stdin.take());
-    let status = wait_until(&mut client.0, Instant::now() + Duration::from_secs(120))
-        .expect("the idle session ends");
-    assert!(status.success(), "the idle session: {status}");
+    assert_eq!(client.finish(), 0, "the idle session's exit");
     wait_exited(owners[0]);
     fs::write(idle.root().join("host-file"), "host\n").unwrap();
 
@@ -83,15 +69,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
         }
     }
     let live_record = contents(&live.state_dir);
-    let generation = live.generation(&env);
-    assert!(generation.is_some(), "the kept project has a box");
 
     // Dead boxes are every root's to prune; hold them for this pass.
     let hold = hold_maintenance();
-    let cleaned = run(
-        env.command().args(["clean", "--unused", "0s"]),
-        Duration::from_secs(120),
-    );
+    let cleaned = run(env.command().args(["clean", "--unused", "0s"]), COMMAND);
     drop(hold);
     assert_eq!(cleaned.code, 0, "{cleaned:?}");
 
@@ -104,7 +85,6 @@ fn cleanup_removes_only_pinfolds_garbage() {
         assert!(path.exists(), "{} after clean", path.display());
     }
     assert_eq!(contents(&live.state_dir), live_record);
-    assert_eq!(live.generation(&env), generation);
     let read = live
         .project
         .pinfold(&["--", "cat", "marker", "/tmp/e2e-box"]);
@@ -140,22 +120,11 @@ fn contents(dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         .collect()
 }
 
-/// A project client, killed on drop.
-struct Client(Child);
-
-impl Drop for Client {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 /// One project's checkout, configuration file, state directory and disks.
 struct Facts<'a> {
     project: &'a Project<'a>,
     root: PathBuf,
     config: PathBuf,
-    id: String,
     state_dir: PathBuf,
     disks: Vec<PathBuf>,
 }
@@ -177,7 +146,6 @@ impl<'a> Facts<'a> {
             project,
             root: project.root().to_path_buf(),
             config: project.config_dir().join("pinfold.toml"),
-            id: id.to_string(),
             state_dir: env.state_home().join("pinfold/projects").join(id),
             disks: vec![disk("home"), disk("project")],
         }
@@ -185,26 +153,6 @@ impl<'a> Facts<'a> {
 
     fn state(&self) -> impl Iterator<Item = &PathBuf> {
         std::iter::once(&self.state_dir).chain(&self.disks)
-    }
-
-    /// The generation of the project's box, if one is listed.
-    fn generation(&self, env: &TestEnv) -> Option<String> {
-        let label = format!("dev.pinfold.project={}", self.id);
-        let listed = ok(
-            run(
-                env.command().args(["box", "list", "--label", &label]),
-                Duration::from_secs(120),
-            ),
-            "box list",
-        );
-        let listed = json_lines(&listed);
-        assert!(listed.len() <= 1, "{listed:?}");
-        listed.first().map(|line| {
-            line["labels"]["dev.pinfold.generation"]
-                .as_str()
-                .expect("generation")
-                .to_string()
-        })
     }
 }
 

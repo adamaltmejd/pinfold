@@ -50,14 +50,13 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                 }
                 listed = true;
                 let remote = remote.clone();
-                let landing = crossed(launch::cross(
-                    guard,
-                    move |runtime, init, name, root, guest, cancel| {
+                let landing =
+                    launch::cross(guard, move |runtime, init, name, root, guest, cancel| {
                         crossing::fetch_cancellable(
                             runtime, init, name, guest, root, &remote, cancel,
                         )
-                    },
-                )?)?;
+                    })?
+                    .map_err(|error| io::Error::other(describe(&error)))?;
                 // Git reads a listing's object ids as SHA-1 unless told.
                 let mut listing = format!(":object-format {}\n", object_format()?);
                 for (name, oid) in &landing.refs {
@@ -426,11 +425,6 @@ fn read_line(input: &mut impl BufRead) -> io::Result<String> {
 fn send(output: &mut File, text: &str) -> io::Result<()> {
     output.write_all(text.as_bytes())?;
     output.flush()
-}
-
-/// A crossing's outcome, its refusal or failure as an error to report.
-fn crossed<T>(result: Result<T, CrossingError>) -> io::Result<T> {
-    result.map_err(|error| io::Error::other(describe(&error)))
 }
 
 fn describe(error: &CrossingError) -> String {

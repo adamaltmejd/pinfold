@@ -72,12 +72,7 @@ impl ExecMetadata {
     // Shared with the host; the standalone Apple init only decodes.
     #[allow(dead_code)]
     pub fn encode(&self) -> String {
-        let optional = |value: Option<&[u8]>| {
-            value.map_or_else(
-                || "-".to_string(),
-                |value| value.iter().map(|byte| format!("{byte:02x}")).collect(),
-            )
-        };
+        let optional = |value: Option<&[u8]>| value.map_or_else(|| "-".to_string(), hex);
         let window = self
             .window
             .map_or_else(|| "-".to_string(), |(rows, cols)| format!("{rows},{cols}"));
@@ -144,6 +139,26 @@ impl ExecMetadata {
             colorterm: optional(fields[3])?,
         })
     }
+}
+
+/// Set the window size of the terminal `fd` refers to.
+pub(crate) fn set_window(fd: &impl AsRawFd, rows: u16, cols: u16) -> io::Result<()> {
+    let size = nix::libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: TIOCSWINSZ reads one winsize.
+    if unsafe { nix::libc::ioctl(fd.as_raw_fd(), nix::libc::TIOCSWINSZ, &size) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// `bytes` as lowercase hex.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn decode_hex(value: &[u8]) -> io::Result<Vec<u8>> {
@@ -351,21 +366,11 @@ fn exec(args: &[String]) -> ! {
     } else {
         None
     };
-    if let Some((rows, cols)) = metadata.window {
-        let size = nix::libc::winsize {
-            ws_row: rows,
-            ws_col: cols,
-            ws_xpixel: 0,
-            ws_ypixel: 0,
-        };
-        // SAFETY: TIOCSWINSZ reads the supplied winsize for the inherited TTY.
-        if unsafe { nix::libc::ioctl(0, nix::libc::TIOCSWINSZ, &size) } < 0 {
-            eprintln!(
-                "pinfold init exec: terminal size: {}",
-                io::Error::last_os_error()
-            );
-            process::exit(125);
-        }
+    if let Some((rows, cols)) = metadata.window
+        && let Err(error) = set_window(&io::stdin(), rows, cols)
+    {
+        eprintln!("pinfold init exec: terminal size: {error}");
+        process::exit(125);
     }
     let mut command = process::Command::new(program);
     command.args(args).env_remove(EXEC_METADATA);
@@ -454,7 +459,7 @@ fn session_exec() -> io::Result<()> {
     if kind != exec_wire::EXEC {
         return Err(io::Error::other("expected command frame"));
     }
-    let result = firecracker::exec(connection, &payload, None, Some((departure.as_fd(), false)));
+    let result = firecracker::exec(connection, &payload, None, Some(departure.as_fd()));
     let _ = drain.recv_timeout(Duration::from_secs(1));
     result
 }
@@ -714,23 +719,22 @@ pub const STREAM_EXECUTABLE: u8 = b'x';
 pub const STREAM_SYMLINK: u8 = b'l';
 pub const STREAM_END: u8 = 0;
 
-/// `init receive [--missing] DIR`: write the copy stream on stdin below
-/// DIR, as the box user. With `--missing`, an entry already present is
-/// left as it is: a profile's seeds.
+/// `init receive --missing DIR`: write the copy stream on stdin below
+/// DIR, as the box user. An entry already present is left as it is: a
+/// profile's seeds.
 fn receive(args: &[String]) -> io::Result<()> {
-    let (missing, root) = match args {
-        [flag, root] if flag == "--missing" => (true, root),
-        [root] => (false, root),
+    let root = match args {
+        [flag, root] if flag == "--missing" => root,
         _ => {
             return Err(io::Error::other(
-                "usage: pinfold init receive [--missing] DIR",
+                "usage: pinfold init receive --missing DIR",
             ));
         }
     };
     receive_into(
         Path::new(root),
         &mut io::BufReader::new(io::stdin().lock()),
-        missing,
+        true,
     )
 }
 

@@ -84,11 +84,9 @@ fn main() -> ExitCode {
     ) {
         cli::finishes_without_reader();
     }
+    let project = matches!(verb, "--" | "start" | "stop" | "__project-owner");
     // `update` takes the executable lock itself, exclusively.
-    let _executable = if matches!(
-        verb,
-        "init" | "update" | "__project-owner" | "--" | "start" | "stop"
-    ) {
+    let _executable = if project || matches!(verb, "init" | "update") {
         None
     } else {
         match update::working() {
@@ -96,16 +94,10 @@ fn main() -> ExitCode {
             Err(error) => return ExitCode::from(cli::report(verb, Err(error)) as u8),
         }
     };
-    if !matches!(verb, "--" | "start" | "stop" | "__project-owner") {
-        update::notice(verb);
-    }
     // Project admission and box up install their signal handlers first.
     match (verb, args.first().map(String::as_str)) {
-        (
-            "init" | "update" | "doctor" | "config" | "apparmor-profile" | "--" | "start" | "stop"
-            | "__project-owner" | "remote",
-            _,
-        )
+        _ if project => {}
+        ("init" | "update" | "doctor" | "config" | "apparmor-profile" | "remote", _)
         // `box prune` reports each box it removes; the pass would remove them silently.
         | ("box", Some("up" | "list" | "down" | "inspect" | "events" | "prune")) => {}
         _ => crate::core::clean::maintain(),

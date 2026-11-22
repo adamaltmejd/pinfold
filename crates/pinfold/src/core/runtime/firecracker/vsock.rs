@@ -14,12 +14,13 @@ use crate::formatting::terminal_text;
 use crate::init::exec_wire::{ENV, FAILED, read_frame, write_frame};
 use crate::init::firecracker::{CONTROL_PORT, ENV_SET, EXEC_PORT, STAT, UNMOUNT};
 
-/// A host-initiated connection to the guest's `port`.
+/// A host-initiated connection to the guest's `port`, for a caller without
+/// cancellation.
 pub fn connect(sockets: &Sockets, port: u32) -> io::Result<UnixStream> {
     let mut stream = sockets.connect()?;
     // Box work runs as the exec service's user and can stop it from
-    // answering, so every request has a deadline; `exec` lifts it after
-    // the handshake.
+    // answering, so every request has a deadline. An exec's relay makes
+    // the stream nonblocking, where it no longer applies.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.write_all(format!("CONNECT {port}\n").as_bytes())?;
     // One byte at a time: what follows the line is the guest's.
@@ -62,7 +63,8 @@ pub fn set_env(
     cancel: &AtomicBool,
 ) -> io::Result<()> {
     cancelled(Some(cancel))?;
-    let stream = exec_connection(sockets, Some(cancel))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let stream = connect_until(sockets, EXEC_PORT, deadline, Some(cancel), "exec handshake")?;
     let mut transport = Cancellable::startup(&stream, cancel);
     write_frame(&mut transport, ENV, &env_payload(vars))?;
     answer(&mut transport, ENV_SET).map(drop)
@@ -89,25 +91,11 @@ pub fn stat(sockets: &Sockets) -> io::Result<[Option<u64>; 5]> {
 /// Ask PID 1 to kill the work cgroup, sync and unmount every attachment.
 pub fn unmount(sockets: &Sockets) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(30);
-    let mut stream = sockets.connect_until(deadline)?;
-    stream.set_nonblocking(true)?;
+    let mut stream = connect_until(sockets, CONTROL_PORT, deadline, None, "box unmount")?;
     let mut transport = Bounded {
         stream: &mut stream,
         deadline,
     };
-    transport.write_all(format!("CONNECT {CONTROL_PORT}\n").as_bytes())?;
-    let mut byte = [0];
-    let mut line = Vec::new();
-    while line.len() < 64 {
-        match transport.read(&mut byte)? {
-            0 => break,
-            _ if byte[0] == b'\n' => break,
-            _ => line.push(byte[0]),
-        }
-    }
-    if !line.starts_with(b"OK ") {
-        return Err(io::Error::other("the box does not answer on control vsock"));
-    }
     write_frame(&mut transport, UNMOUNT, &[])?;
     answer(&mut transport, crate::init::firecracker::CLEAN).map(drop)
 }
@@ -133,37 +121,37 @@ impl Write for Bounded<'_> {
     }
 }
 
-fn exec_connection(sockets: &Sockets, cancel: Option<&AtomicBool>) -> io::Result<UnixStream> {
-    if cancel.is_none() {
-        return connect(sockets, EXEC_PORT);
-    }
-    let deadline = Instant::now() + Duration::from_secs(10);
+/// [`connect`] bounded by `deadline` and `cancel`; the stream it returns
+/// is nonblocking.
+fn connect_until(
+    sockets: &Sockets,
+    port: u32,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+    operation: &str,
+) -> io::Result<UnixStream> {
     let mut connection = sockets.connect_until(deadline)?;
     connection.set_nonblocking(true)?;
     crate::core::pipe::write_all(
         &mut connection,
-        format!("CONNECT {EXEC_PORT}\n").as_bytes(),
+        format!("CONNECT {port}\n").as_bytes(),
         deadline,
         cancel,
-        "exec handshake",
+        operation,
     )?;
     let mut line = Vec::new();
     let mut byte = [0];
     while line.len() < 64 {
-        match crate::core::pipe::read(
-            &mut connection,
-            &mut byte,
-            deadline,
-            cancel,
-            "exec handshake",
-        )? {
+        match crate::core::pipe::read(&mut connection, &mut byte, deadline, cancel, operation)? {
             0 => break,
             _ if byte[0] == b'\n' => break,
             _ => line.push(byte[0]),
         }
     }
     if !line.starts_with(b"OK ") {
-        return Err(io::Error::other("the box does not answer on exec vsock"));
+        return Err(io::Error::other(format!(
+            "the box does not answer on vsock port {port}"
+        )));
     }
     Ok(connection)
 }
@@ -174,7 +162,18 @@ pub fn exec(
     context: &crate::core::runtime::ExecContext<'_>,
     argv: &[String],
 ) -> io::Result<i32> {
-    let connection = exec_connection(sockets, context.cancel)?;
-    connection.set_read_timeout(None)?;
+    let connection = match context.cancel {
+        None => connect(sockets, EXEC_PORT)?,
+        Some(_) => {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            connect_until(
+                sockets,
+                EXEC_PORT,
+                deadline,
+                context.cancel,
+                "exec handshake",
+            )?
+        }
+    };
     super::super::exec_transport::exec(connection, context, argv)
 }

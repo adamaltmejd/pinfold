@@ -576,9 +576,6 @@ fn resolve_checked(
     port: u16,
     connection: &Connection,
 ) -> Option<SocketAddr> {
-    if connection.cancelled() {
-        return None;
-    }
     let resolved = lookup(host, port, true, connection);
     if connection.cancelled() {
         return None;

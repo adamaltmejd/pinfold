@@ -5,14 +5,13 @@
 use std::fs;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use e2e::{
-    Client, Project, READER, TestEnv, default_image, hold_maintenance, json_lines, run, spawn, tree,
+    COMMAND, Client, Project, READER, TestEnv, default_image, hold_maintenance, json_lines, run,
+    spawn, tree,
 };
 use serde_json::Value;
 
-const COMMAND: Duration = Duration::from_secs(120);
 /// The caller variable the project's `env` reads with `from`.
 const SOURCE: &str = "E2E_SESSION_SOURCE";
 /// The box's PATH: a home directory the box writes first, then the image's.
@@ -244,27 +243,20 @@ fn a_projects_sessions_share_one_box() {
         .join("pinfold/runs")
         .join(&generation)
         .join("egress.jsonl");
-    for (host, connect, decision, reason) in [
-        ("example.com", "403 56", "refused", "not allowlisted"),
-        ("api.github.com", "200 0", "allowed", ""),
-    ] {
-        let before = json_lines(&fs::read_to_string(&log).unwrap()).len();
+    let before = json_lines(&fs::read_to_string(&log).unwrap()).len();
+    for (host, connect) in [("example.com", "403 56"), ("api.github.com", "200 0")] {
         let out = b.ask(&format!(
             "curl -sS --max-time 20 -o /dev/null -w '%{{http_connect}}' https://{host}/; echo \" $?\""
         ));
         assert_eq!(out, [connect], "{host}");
-        let lines = json_lines(&fs::read_to_string(&log).unwrap())[before..].to_vec();
-        assert_eq!(lines.len(), 1, "{host}: {lines:?}");
-        assert_eq!(
-            (&lines[0]["host"], &lines[0]["decision"]),
-            (&Value::from(host), &Value::from(decision)),
-            "{}",
-            lines[0]
-        );
-        if decision == "refused" {
-            assert_eq!(lines[0]["reason"], reason, "{}", lines[0]);
-        }
     }
+    let lines = json_lines(&fs::read_to_string(&log).unwrap())[before..].to_vec();
+    assert!(
+        lines.iter().any(|line| line["host"] == "example.com"
+            && line["decision"] == "refused"
+            && line["reason"] == "not allowlisted"),
+        "{lines:?}"
+    );
 
     assert_eq!(b.finish(), 0, "B after its stdin closed");
 

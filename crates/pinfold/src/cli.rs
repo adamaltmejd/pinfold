@@ -14,7 +14,7 @@ use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
 use crate::core::plan::{Plan, valid_name};
 use crate::core::profile::{self, Profile};
-use crate::core::runtime::{Runtime, runtime};
+use crate::core::runtime::{BoxInfo, Runtime, runtime};
 use crate::core::{clean, disk, runs};
 use crate::dirs;
 use crate::formatting::terminal_text;
@@ -125,9 +125,7 @@ fn project_intro(unconfigured: &mut bool) -> io::Result<Option<Option<PathBuf>>>
                 }
                 None => println!("Box       running"),
             }
-            if let Some(mount) = mount {
-                println!("Box files {}", project_files(*mount, root));
-            }
+            println!("Box files {}", project_files(*mount, root));
         }
         Ok(ProjectStatus::Unavailable) | Err(_) => println!("Box       status unavailable"),
     }
@@ -136,11 +134,15 @@ fn project_intro(unconfigured: &mut bool) -> io::Result<Option<Option<PathBuf>>>
     }
     let config = if configured {
         loaded?
-    } else if cfg!(target_os = "macos") {
-        println!("\nThe first run asks you to confirm, and lets you pick a disk instead:");
-        Config::first_run_preview(root)?
     } else {
-        println!("\nThe first run asks you to confirm:");
+        println!(
+            "\nThe first run asks you to confirm{}:",
+            if cfg!(target_os = "macos") {
+                ", and lets you pick a disk instead"
+            } else {
+                ""
+            }
+        );
         Config::first_run_preview(root)?
     };
     context.check_metadata(config.mount)?;
@@ -496,7 +498,7 @@ fn exec(args: &[String]) -> io::Result<i32> {
 fn stat(args: &[String]) -> io::Result<i32> {
     let name = single_name(args, "stat")?;
     let runtime = runtime();
-    if !present(runtime, "stat", &name)? {
+    if found(runtime, "stat", &name)?.is_none() {
         return Ok(3);
     }
     let report = serde_json::to_string(&runtime.stat(&name)?).map_err(io::Error::other)?;
@@ -504,15 +506,11 @@ fn stat(args: &[String]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// Whether the runtime lists pinfold box `name`. An absent box is pinfold's
-/// own failure, which `exec` and `stat` tell apart from the command's by
-/// exit 3.
-fn present(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<bool> {
-    let found = runtime
-        .inspect(name)?
-        .as_ref()
-        .is_some_and(clean::pinfold_box);
-    if !found {
+/// The runtime's pinfold box `name`. An absent box is pinfold's own failure,
+/// which `exec` and `stat` tell apart from the command's by exit 3.
+fn found(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<Option<BoxInfo>> {
+    let found = runtime.inspect(name)?.filter(clean::pinfold_box);
+    if found.is_none() {
         eprintln!("pinfold box {verb}: no box named {name:?}");
     }
     Ok(found)
@@ -523,8 +521,7 @@ fn exec_admission(
     verb: &str,
     name: &str,
 ) -> io::Result<Option<nix::fcntl::Flock<fs::File>>> {
-    let Some(box_) = runtime.inspect(name)?.filter(clean::pinfold_box) else {
-        eprintln!("pinfold box {verb}: no box named {name:?}");
+    let Some(box_) = found(runtime, verb, name)? else {
         return Ok(None);
     };
     let lock = match box_.labels.get(crate::core::ownership::GENERATION_LABEL) {
@@ -701,7 +698,7 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
     let runtime = runtime();
     match args {
         [verb] if verb == "list" => {
-            let attached = disk::attachments(runtime, None)?;
+            let attached = disk::attachments(None)?;
             let origins = if json {
                 BTreeMap::new()
             } else {
@@ -908,7 +905,7 @@ struct CleanPlan {
     moved: Vec<PathBuf>,
     automatic_bytes: u64,
     project_state: u64,
-    build_cache_bytes: Option<u64>,
+    build_cache_bytes: u64,
     unused: Option<Duration>,
 }
 
@@ -981,7 +978,7 @@ impl CleanPlan {
             + self.run_bytes
             + self.project_state
             + self.disk_bytes
-            + self.build_cache_bytes.unwrap_or(0)
+            + self.build_cache_bytes
     }
 
     fn print(&self) {
@@ -990,17 +987,11 @@ impl CleanPlan {
             human_size(self.automatic_bytes)
         );
         println!("  run records: {}", human_size(self.run_bytes));
-        match self.build_cache_bytes {
-            Some(bytes) => println!(
-                "  build cache: {}; {}",
-                human_size(bytes),
-                image::service().build_cache()
-            ),
-            None => println!(
-                "  build cache: unmeasured; {}",
-                image::service().build_cache()
-            ),
-        }
+        println!(
+            "  build cache: {}; {}",
+            human_size(self.build_cache_bytes),
+            image::service().build_cache()
+        );
         println!("  project state: {}", human_size(self.project_state));
         println!("  disks: {}", human_size(self.disk_bytes));
         for root in &self.moved {
@@ -1192,10 +1183,10 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
                 Ok(warnings) => findings.extend(warnings),
                 Err(error) => findings.push(format!("Image: {error}")),
             }
-            image = Some(reference);
             if json {
-                configuration = Some(config_report(root, config, resolved.as_ref())?);
+                configuration = Some(config_report(root, config, &reference, resolved.as_ref())?);
             }
+            image = Some(reference);
             if config.mount == crate::config::ProjectMount::Disk {
                 findings.extend(helper_finding());
             }
@@ -1376,7 +1367,7 @@ pub fn config(args: &[String]) -> io::Result<i32> {
     };
     let reference = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(&root));
     let resolved = image::service().resolve_image(&reference);
-    let report = config_report(&root, &config, Some(&resolved))?;
+    let report = config_report(&root, &config, &reference, Some(&resolved))?;
     if json {
         println!("{report}");
         return Ok(0);
@@ -1466,15 +1457,16 @@ fn image_built(
     }
 }
 
-/// `resolved` is the lookup of the config's image, or `None` when it was skipped.
+/// `resolved` is the lookup of `image`, the config's image, or `None` when it
+/// was skipped.
 fn config_report(
     root: &Path,
     config: &Config,
+    image: &str,
     resolved: Option<&io::Result<Result<image::ImageInfo, String>>>,
 ) -> io::Result<serde_json::Value> {
     let project = crate::pi::state::project_id(root);
     let [home_disk, project_disk] = crate::pi::state::disk_names(&project);
-    let image = crate::pi::launch::resolve_image(config, &project);
     let (image_built, image_error) = resolved.map_or((None, None), image_built);
     Ok(serde_json::json!({
         "root": utf8(root, "project root")?,
@@ -1619,7 +1611,6 @@ pub fn build(args: &[String]) -> io::Result<i32> {
     }
     let images = image::service();
     let build = |label, source: &str, bytes: &[u8], base: Option<String>| {
-        image::refresh_base(images, bytes)?;
         image::build(
             images,
             Build {
@@ -1706,7 +1697,6 @@ fn image_build(args: &[String]) -> i32 {
                 "ref": built.reference,
                 "latest": built.latest,
                 "id": built.id,
-                "base": null,
                 "labels": built.labels,
             }),
             0,

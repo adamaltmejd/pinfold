@@ -92,25 +92,6 @@ pub use apple::Client as Child;
 #[cfg(target_os = "linux")]
 pub use firecracker::Vm as Child;
 
-pub(crate) fn require_version(program: &str, version: &str, minimum: [u64; 3]) -> io::Result<()> {
-    let release: Option<[u64; 3]> = version
-        .split('+')
-        .next()
-        .unwrap_or_default()
-        .split('.')
-        .map(str::parse::<u64>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()
-        .and_then(|parts| parts.try_into().ok());
-    if !release.is_some_and(|release| release >= minimum) {
-        let [major, minor, patch] = minimum;
-        return Err(io::Error::other(format!(
-            "{program} reports version {version:?}; pinfold requires stable {program} {major}.{minor}.{patch} or newer"
-        )));
-    }
-    Ok(())
-}
-
 /// Turn a failed spawn into pinfold's message. A missing binary is named as
 /// missing; any other failure names the program and keeps the OS text.
 pub(crate) fn spawn_error(program: &str, error: io::Error) -> io::Error {
@@ -277,9 +258,7 @@ pub trait Runtime: Sync {
     /// Advisory inventory. Mutation must recheck the relevant claims.
     fn list(&self) -> io::Result<Vec<BoxInfo>>;
 
-    fn inspect(&self, name: &str) -> io::Result<Option<BoxInfo>> {
-        Ok(self.list()?.into_iter().find(|box_| box_.id == name))
-    }
+    fn inspect(&self, name: &str) -> io::Result<Option<BoxInfo>>;
 
     /// Every disk the runtime stores.
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>>;
@@ -298,7 +277,7 @@ pub trait Runtime: Sync {
         generation: &str,
         directories: &[Directory],
         fills: &[Fill],
-        cancel: Option<&AtomicBool>,
+        cancel: &AtomicBool,
     ) -> io::Result<()>;
 
     /// Remove a disk no box attaches.

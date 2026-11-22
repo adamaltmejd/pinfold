@@ -17,6 +17,14 @@ pub(crate) fn nonblocking(pipe: &impl AsFd, operation: &str) -> io::Result<()> {
     Ok(())
 }
 
+pub(crate) fn check_cancel(cancel: &AtomicBool) -> io::Result<()> {
+    if cancel.load(Ordering::Acquire) {
+        Err(io::ErrorKind::Interrupted.into())
+    } else {
+        Ok(())
+    }
+}
+
 pub(super) fn remaining(
     deadline: Instant,
     cancel: Option<&AtomicBool>,

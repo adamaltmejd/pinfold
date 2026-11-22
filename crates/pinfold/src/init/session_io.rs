@@ -23,7 +23,7 @@ pub(super) fn relay(
     child: Child,
     pty: Option<File>,
     project: bool,
-    departure: Option<(BorrowedFd<'_>, bool)>,
+    departure: Option<BorrowedFd<'_>>,
 ) -> io::Result<()> {
     let mut session = Some(Session::new(child)?);
     let child = session.as_mut().expect("supervised command").child_mut();
@@ -52,7 +52,8 @@ pub(super) fn relay(
     let mut status = None;
     let mut exit = None;
     let mut drain = None;
-    let (departure, socket) = departure.unwrap_or((connection.as_fd(), true));
+    let socket = departure.is_none();
+    let departure = departure.unwrap_or(connection.as_fd());
     let lost = libc::POLLHUP | libc::POLLERR | if socket { libc::POLLRDHUP } else { 0 };
 
     loop {
@@ -205,7 +206,7 @@ pub(super) fn relay(
                         if let Some(master) = &terminal {
                             let rows = u16::from_be_bytes([payload[0], payload[1]]);
                             let cols = u16::from_be_bytes([payload[2], payload[3]]);
-                            if super::firecracker::set_window(master, rows, cols).is_err() {
+                            if super::set_window(master, rows, cols).is_err() {
                                 disconnect(&connection, &mut connected, &mut writer);
                                 break;
                             }
@@ -406,12 +407,8 @@ fn fd(fd: i32, events: i16) -> libc::pollfd {
 }
 
 fn nonblocking(fd: &OwnedFd) -> io::Result<()> {
-    // Safety: fcntl only changes this helper's pipe or PTY description.
-    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
-    if flags < 0
-        || unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
-    {
-        return Err(io::Error::last_os_error());
-    }
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+    let flags = OFlag::from_bits_truncate(fcntl(fd, FcntlArg::F_GETFL)?);
+    fcntl(fd, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
     Ok(())
 }

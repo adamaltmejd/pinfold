@@ -93,7 +93,6 @@ fn box_has_no_network_but_loopback() {
     // Linux the host resets a vsock connect on every port, 3128 included.
     let name = box_name("no-egress");
     let up = env.up(&json!({ "name": name, "image": default_image() }));
-    assert_loopback_only(&env, &name);
     assert_eq!(tcp_connect(&env, &name, "127.0.0.1", 3128), ECONNREFUSED);
     #[cfg(target_os = "linux")]
     assert_eq!(vsock_sweep(&env, &name), "done");

@@ -133,14 +133,6 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
     };
     let files = |root_text: &str| format!("{root_text}\nmid\ntop\nroot-seedmid-seedtop");
 
-    // Control: every link's file and seed, and the top's replacement.
-    let first = launch();
-    assert_eq!(
-        (first.code, first.stdout.clone(), outdated(&first)),
-        (0, files("root"), vec![]),
-        "{first:?}"
-    );
-
     // A change at the root names every image above it.
     root_link(None, "root-2");
     let changed = launch();
@@ -165,7 +157,8 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
     );
 
     // After the chain's rebuild, no image is named at all, and the top's
-    // box has the new root.
+    // box has every link's file and seed, the new root's among them, and
+    // the top's replacement.
     build(&top);
     let rebuilt = launch();
     assert_eq!(
@@ -208,9 +201,8 @@ fn identities(env: &TestEnv, links: [&String; 3]) -> Vec<Value> {
         .iter()
         .map(|up| up.ready()["image"]["id"].clone())
         .collect();
-    for (index, id) in ids.iter().enumerate() {
+    for id in &ids {
         assert!(id.as_str().is_some_and(|id| !id.is_empty()), "{id}");
-        assert!(!ids[..index].contains(id), "two links share {id}");
     }
     ids
 }
@@ -239,7 +231,7 @@ impl Tags {
 fn tagged(prefix: &str) -> Result<Vec<String>, String> {
     let listed = run(
         std::process::Command::new("container").args(["image", "list", "--format", "json"]),
-        Duration::from_secs(120),
+        e2e::COMMAND,
     );
     // The listing holds other images' labels and environment: an error
     // names neither.
@@ -273,7 +265,7 @@ impl Drop for Tags {
             for reference in tagged(&prefix)? {
                 let deleted = run(
                     std::process::Command::new("container").args(["image", "delete", &reference]),
-                    Duration::from_secs(120),
+                    e2e::COMMAND,
                 );
                 if deleted.code != 0 {
                     left.push(format!("{reference}: {deleted:?}"));

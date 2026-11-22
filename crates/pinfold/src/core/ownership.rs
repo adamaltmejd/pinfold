@@ -118,10 +118,8 @@ pub fn try_project_lock(id: &str) -> io::Result<Option<Flock<File>>> {
 pub struct Record {
     pub name: String,
     pub generation: String,
-    #[serde(default)]
     pub ready: bool,
     /// Runtime removal was confirmed before any generation tree was deleted.
-    #[serde(default)]
     pub retiring: bool,
     pub state_dir: PathBuf,
     /// The disks this generation attaches. They are released once the
@@ -300,12 +298,8 @@ impl Claim {
 
     fn prepare_inner(&mut self, state_dir: &Path, fresh: bool) -> io::Result<()> {
         let endpoint = socket(&self.name)?;
+        // The caller refused a recorded name while holding this claim.
         if fresh {
-            if record(&self.name)?.is_some() {
-                return Err(io::Error::other(
-                    "fresh project name has an ownership record",
-                ));
-            }
             for path in [state_dir, endpoint.as_path()] {
                 match fs::symlink_metadata(path) {
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -596,15 +590,7 @@ impl Drop for Claim {
 /// listener refuses the old token instead of stopping its own box.
 /// Return true only when the owner acknowledges completed teardown.
 pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
-    request_stop_until(name, observed, Instant::now() + STOP_TIMEOUT)
-}
-
-pub(crate) fn request_stop_until(
-    name: &str,
-    observed: Option<&Record>,
-    deadline: Instant,
-) -> io::Result<bool> {
-    request_stop_inner(name, observed, deadline, None)
+    request_stop_inner(name, observed, Instant::now() + STOP_TIMEOUT, None)
 }
 
 pub(crate) fn request_stop_project(

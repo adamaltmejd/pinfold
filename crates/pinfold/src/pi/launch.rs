@@ -111,7 +111,9 @@ where
                     ));
                 }
                 let image = resolve_image(&config, &id);
-                ensure_image(&config, &image)?;
+                for warning in image_warnings(&config, &image)? {
+                    eprintln!("{warning}");
+                }
                 let plan = Plan {
                     disks: vec![empty_writable_disk(disk, Path::new(state::PROJECT))],
                     ..box_plan(&config, &id, &image)?
@@ -218,16 +220,6 @@ pub(crate) fn resolve_image(config: &Config, project: &str) -> String {
             .expect("config admitted a recipe")
             .image_ref()
     }
-}
-
-/// Refuse when the image has not been built, naming its build command, and
-/// Warn when its Containerfile or its profile base changed. `doctor`
-/// reports the same warnings.
-pub(crate) fn ensure_image(config: &Config, image: &str) -> io::Result<()> {
-    for warning in image_warnings(config, image)? {
-        eprintln!("{warning}");
-    }
-    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]

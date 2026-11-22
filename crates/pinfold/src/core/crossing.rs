@@ -156,8 +156,7 @@ pub(crate) fn push_cancellable(
     cancel: &AtomicBool,
 ) -> Result<(), CrossingError> {
     check_args(repo, guest_repo, cancel)?;
-    let format = succeeded(git(repo, &["rev-parse", "--show-object-format"], cancel)?)?;
-    let format = String::from_utf8_lossy(&format.stdout).trim().to_string();
+    let format = object_format(object_width(repo, cancel)?);
     if sources.is_empty() {
         return Err(spec(format!(
             "{} has no branches",
@@ -193,7 +192,7 @@ pub(crate) fn push_cancellable(
         guest_repo,
         script(
             PUSH_SCRIPT,
-            [guest_repo, format.as_str()]
+            [guest_repo, format]
                 .into_iter()
                 .chain(refspecs.iter().map(String::as_str)),
         ),
@@ -369,7 +368,11 @@ pub(crate) fn fetch_cancellable(
             return Err(malformed_listing());
         }
         if let Some(branch) = name.strip_prefix("refs/heads/") {
-            check_branch(repo, &namespace, branch, cancel)?;
+            if !valid_ref(repo, &format!("{namespace}{branch}"), cancel)? {
+                return Err(CrossingError::Failed(format!(
+                    "the box named a malformed branch: {branch:?}"
+                )));
+            }
         } else if !host_tags.contains_key(&name) && !valid_ref(repo, &name, cancel)? {
             // Left out; a bundle head naming it fails below.
             continue;
@@ -437,6 +440,7 @@ pub(crate) fn fetch_cancellable(
             &quarantine,
             &indexed.stdout,
             bundle_len - pack_start,
+            width,
             cancel,
         )?;
         // fsck checks each object but not its links, and fetch checks only
@@ -591,18 +595,19 @@ fn sent_objects(
     quarantine: &Quarantine,
     indexed: &[u8],
     sent_len: u64,
+    width: usize,
     cancel: &AtomicBool,
 ) -> Result<HashSet<String>, CrossingError> {
     let indexed = String::from_utf8_lossy(indexed);
     let hash = indexed
         .split_once('\t')
         .map(|(_, hash)| hash.trim())
-        .filter(|hash| object_id(hash, hash.len()))
+        .filter(|hash| object_id(hash, width))
         .ok_or_else(|| CrossingError::Failed(format!("index-pack printed {indexed:?}")))?;
     let mut show = git_command(repo);
     show.args([
         "show-index",
-        &format!("--object-format={}", object_format(hash)),
+        &format!("--object-format={}", object_format(width)),
     ])
     .stdin(File::open(
         quarantine.dir.join("pack").join(format!("pack-{hash}.idx")),
@@ -622,8 +627,9 @@ fn sent_objects(
     Ok(sent)
 }
 
-fn object_format(oid: &str) -> &'static str {
-    if oid.len() == 64 { "sha256" } else { "sha1" }
+/// The object format of an id `width` hex digits long.
+fn object_format(width: usize) -> &'static str {
+    if width == 64 { "sha256" } else { "sha1" }
 }
 
 fn check_args(repo: &Path, guest_repo: &str, cancel: &AtomicBool) -> Result<(), CrossingError> {
@@ -643,32 +649,11 @@ fn check_args(repo: &Path, guest_repo: &str, cancel: &AtomicBool) -> Result<(), 
     Ok(())
 }
 
-/// Fail unless `NAMESPACE + branch` is a well-formed ref name: no `:`,
-/// space, `..`, `@{` or other text git would read as more than one name.
-fn check_branch(
-    repo: &Path,
-    namespace: &str,
-    branch: &str,
-    cancel: &AtomicBool,
-) -> Result<(), CrossingError> {
-    if valid_ref(repo, &format!("{namespace}{branch}"), cancel)? {
-        Ok(())
-    } else {
-        Err(CrossingError::Failed(format!(
-            "the box named a malformed branch: {branch:?}"
-        )))
-    }
-}
-
 /// Whether git takes NAME as one well-formed ref name.
 pub(crate) fn valid_ref(repo: &Path, name: &str, cancel: &AtomicBool) -> io::Result<bool> {
     Ok(git(repo, &["check-ref-format", name], cancel)?
         .status
         .success())
-}
-
-fn too_many() -> CrossingError {
-    CrossingError::Failed(format!("the box lists more than {REFS} refs"))
 }
 
 fn bad_tag(name: &str, oid: &str) -> CrossingError {
@@ -850,18 +835,6 @@ impl BoxChild {
         Ok(child)
     }
 
-    fn take_stdin(&mut self) -> Option<io::PipeWriter> {
-        self.stdin.take()
-    }
-
-    fn take_stdout(&mut self) -> Option<io::PipeReader> {
-        self.stdout.take()
-    }
-
-    fn take_stderr(&mut self) -> Option<io::PipeReader> {
-        self.stderr.take()
-    }
-
     /// Whether the command's status is in. The worker has then closed its
     /// ends of the pipes.
     fn exited(&self) -> bool {
@@ -944,7 +917,9 @@ impl Receiver {
                 self.listing = false;
             } else {
                 if self.listed.len() == REFS {
-                    return Err(too_many());
+                    return Err(CrossingError::Failed(format!(
+                        "the box lists more than {REFS} refs"
+                    )));
                 }
                 let line = std::str::from_utf8(line).map_err(|_| malformed_listing())?;
                 let (oid, name) = line.split_once(' ').ok_or_else(malformed_listing)?;
@@ -997,9 +972,9 @@ fn receive(
     if cancel.load(Ordering::Acquire) {
         return Err(io::Error::from(io::ErrorKind::Interrupted).into());
     }
-    let mut stdin = child.take_stdin();
-    let mut stdout = child.take_stdout();
-    let mut stderr = child.take_stderr();
+    let mut stdin = child.stdin.take();
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
     if let Some(pipe) = &stdin {
         super::pipe::nonblocking(pipe, "crossing")?;
     }
@@ -1197,15 +1172,11 @@ fn succeeded(output: Output) -> Result<Output, CrossingError> {
     if output.status.success() {
         Ok(output)
     } else {
-        Err(host_failed(&output))
+        Err(CrossingError::Failed(format!(
+            "git on the host failed: {}",
+            terminal_text(String::from_utf8_lossy(&output.stderr).trim())
+        )))
     }
-}
-
-fn host_failed(output: &Output) -> CrossingError {
-    CrossingError::Failed(format!(
-        "git on the host failed: {}",
-        terminal_text(String::from_utf8_lossy(&output.stderr).trim())
-    ))
 }
 
 /// Whether a bundle or quarantine about to be created may remove the

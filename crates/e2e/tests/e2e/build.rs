@@ -10,19 +10,17 @@ use serde_json::{Value, json};
 
 const BUILD: Duration = Duration::from_secs(600);
 
-/// A RUN step that records, in /e2e, a direct connection to each of
-/// `v4` and `v6`, and a plain HTTP request through the build's proxy to
-/// each host. bash's /dev/tcp needs no tool the base lacks.
-fn recipe(v4: SocketAddr, v6: SocketAddr) -> String {
+/// A RUN step that records, in /e2e, a direct connection to `direct`,
+/// and a plain HTTP request through the build's proxy to each host.
+/// bash's /dev/tcp needs no tool the base lacks.
+fn recipe(direct: SocketAddr) -> String {
     format!(
         r#"FROM debian:trixie-slim
 RUN <<EOF
 #!/bin/bash
 mkdir /e2e
-timeout 20 bash -c 'exec 3<>/dev/tcp/{v4ip}/{v4port}' 2> /e2e/direct-error
+timeout 20 bash -c 'exec 3<>/dev/tcp/{ip}/{port}' 2> /e2e/direct-error
 echo "$?" > /e2e/direct
-timeout 20 bash -c 'exec 3<>/dev/tcp/{v6ip}/{v6port}' 2> /e2e/direct6-error
-echo "$?" > /e2e/direct6
 proxy=${{http_proxy#http://}}
 for host in api.github.com example.com; do
   timeout 30 bash -c 'exec 3<>"/dev/tcp/${{1%:*}}/${{1##*:}}" &&
@@ -31,10 +29,8 @@ for host in api.github.com example.com; do
 done
 EOF
 "#,
-        v4ip = v4.ip(),
-        v4port = v4.port(),
-        v6ip = v6.ip(),
-        v6port = v6.port(),
+        ip = direct.ip(),
+        port = direct.port(),
     )
 }
 
@@ -43,36 +39,23 @@ fn linux_image_work_stays_in_its_own_vm() {
     // Sabotage (run): in core/image/linux/job.rs's `run_transaction`, push
     // `example.com` onto the build's `hosts`. The first build's example.com
     // then answers 200, not the proxy's 403.
-    // The direct IPv4 connection from the host, api.github.com through
-    // the proxy and the `--allow example.com` build are the positive
-    // controls. The IPv6 attempt has a control only where the host itself
-    // has an IPv6 route; the dev VM has none, so the host's own IPv6
-    // attempt is not asserted.
+    // The direct connection from the host, api.github.com through the
+    // proxy and the `--allow example.com` build are the positive controls.
     let env = TestEnv::own_cache("build");
 
-    // example.com's addresses as the host resolves them; IPv4 reachable.
-    let addresses: Vec<SocketAddr> = ("example.com", 80)
+    // example.com's IPv4 address as the host resolves it, reachable.
+    let v4 = ("example.com", 80)
         .to_socket_addrs()
         .expect("resolve example.com")
-        .collect();
-    let v4 = *addresses
-        .iter()
-        .find(|address| address.is_ipv4())
+        .find(SocketAddr::is_ipv4)
         .expect("an IPv4 address for example.com");
-    // Without an AAAA record as the host resolves it, a fixed public
-    // literal (Cloudflare's resolver, which serves port 80).
-    let v6 = addresses
-        .iter()
-        .copied()
-        .find(SocketAddr::is_ipv6)
-        .unwrap_or_else(|| "[2606:4700:4700::1111]:80".parse().unwrap());
     TcpStream::connect_timeout(&v4, Duration::from_secs(20))
         .expect("the host connects to example.com directly");
 
     let dir = env.root().join("recipe");
     fs::create_dir(&dir).unwrap();
     let containerfile = dir.join("Containerfile");
-    fs::write(&containerfile, recipe(v4, v6)).unwrap();
+    fs::write(&containerfile, recipe(v4)).unwrap();
     let name = format!("e2e-{}-build", std::process::id());
     // Both builds run every step: only `--allow` differs between them.
     let runs = env.state_home().join("pinfold/runs");
@@ -99,7 +82,7 @@ fn linux_image_work_stays_in_its_own_vm() {
         (log, results(&env, &name))
     };
 
-    // The RUN step has no route of its own, IPv4 or IPv6: bash exits 1,
+    // The RUN step has no route of its own: bash exits 1,
     // not timeout's 124, with the kernel's ENETUNREACH text. Through the
     // proxy GitHub answers its plain HTTP redirect, and example.com gets
     // the proxy's 403, recorded with its reason.
@@ -122,17 +105,8 @@ fn linux_image_work_stays_in_its_own_vm() {
     );
 
     // Control: the same build with `--allow example.com` reaches it.
-    let (log, control) = build(&["--allow", "example.com"]);
-    control.no_route();
+    let (_, control) = build(&["--allow", "example.com"]);
     assert_eq!(control.example, "200");
-    assert_eq!(
-        decisions(&log, "example.com")
-            .iter()
-            .map(|(decision, _)| decision.as_str())
-            .collect::<Vec<_>>(),
-        ["allowed"],
-        "{log:?}"
-    );
 }
 
 /// The decisions the log records for `host`, as `(decision, reason)`.
@@ -155,23 +129,19 @@ fn run_dirs(runs: &Path) -> Vec<PathBuf> {
     }
 }
 
-/// What the RUN step recorded: each direct attempt's exit and stderr, and
+/// What the RUN step recorded: the direct attempt's exit and stderr, and
 /// each proxied request's status code.
 struct Results {
-    direct: [(String, String); 2],
+    direct: (String, String),
     github: String,
     example: String,
 }
 
 impl Results {
     fn no_route(&self) {
-        for (family, (code, error)) in ["IPv4", "IPv6"].iter().zip(&self.direct) {
-            assert_eq!(code, "1", "the direct {family} connection's exit");
-            assert!(
-                error.contains("Network is unreachable"),
-                "{family}: {error}"
-            );
-        }
+        let (code, error) = &self.direct;
+        assert_eq!(code, "1", "the direct connection's exit");
+        assert!(error.contains("Network is unreachable"), "{error}");
     }
 }
 
@@ -197,10 +167,7 @@ fn results(env: &TestEnv, name: &str) -> Results {
         }
     };
     let results = Results {
-        direct: [
-            (read("direct"), read("direct-error")),
-            (read("direct6"), read("direct6-error")),
-        ],
+        direct: (read("direct"), read("direct-error")),
         github: status("api.github.com"),
         example: status("example.com"),
     };

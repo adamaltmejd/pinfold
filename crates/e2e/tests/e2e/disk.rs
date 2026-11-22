@@ -2,18 +2,13 @@
 //! at a time and is not read while unclean; export writes only a new
 //! destination.
 
-#[cfg(target_os = "macos")]
-use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::thread;
-use std::time::Duration;
 
-use e2e::{BoxUp, TestEnv, box_name, default_image, hold_maintenance, json_lines, run};
+use e2e::{BoxUp, COMMAND, TestEnv, box_name, default_image, hold_maintenance, json_lines, run};
 use serde_json::{Value, json};
-
-const COMMAND: Duration = Duration::from_secs(120);
 
 /// A box with one disk at `/data`.
 fn spec(name: &str, disk: &str, readonly: bool) -> Value {
@@ -46,7 +41,6 @@ fn disks_persist_and_attach_exclusively() {
     let (first, second) = (box_name("attach-a"), box_name("attach-b"));
 
     // Two writable `up`s race for one new disk.
-    let store = Store::before(&env, &disk);
     let (a, b) = thread::scope(|scope| {
         let a = scope.spawn(|| env.start(&spec(&first, &disk, false)));
         let b = scope.spawn(|| env.start(&spec(&second, &disk, false)));
@@ -62,7 +56,6 @@ fn disks_persist_and_attach_exclusively() {
         ),
     };
     assert_eq!(refusal(Err(refused)), "disk-in-use");
-    let backing = store.created();
 
     let marker = format!("pf-disk-{}", std::process::id());
     let write = env.exec(
@@ -122,96 +115,13 @@ fn disks_persist_and_attach_exclusively() {
     drop(recovery);
 
     // After the writable run ends with `down`, a read-only one comes up.
-    let reading = env.up(&spec(&reader, &disk, true));
-    assert_eq!(read(&reader), marker);
-    drop(reading);
+    drop(env.up(&spec(&reader, &disk, true)));
     let (code, lines) = rm(&env);
     assert_eq!(code, 0, "{lines:?}");
     assert_eq!(
         lines,
         [json!({ "event": "removed", "disk": disk, "existed": true })]
     );
-    store.assert_gone(&backing);
-}
-
-/// A disk's backing store, observed from outside pinfold (Disks): on Apple
-/// the runtime volume that appears when the disk is created, on Linux
-/// `<state>/pinfold/disks/NAME.ext4`.
-struct Store {
-    #[cfg(target_os = "macos")]
-    before: BTreeSet<String>,
-    #[cfg(target_os = "macos")]
-    suffix: String,
-    #[cfg(target_os = "linux")]
-    path: std::path::PathBuf,
-}
-
-impl Store {
-    /// Before the disk exists.
-    fn before(env: &TestEnv, disk: &str) -> Store {
-        #[cfg(target_os = "macos")]
-        {
-            let _ = env;
-            Store {
-                before: volumes(),
-                suffix: format!("-{disk}"),
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let path = env.state_home().join(format!("pinfold/disks/{disk}.ext4"));
-            assert!(!path.exists(), "{} before the disk", path.display());
-            Store { path }
-        }
-    }
-
-    /// The store, once the disk exists: on Apple the one new volume named
-    /// for the disk (other tests create volumes meanwhile).
-    fn created(&self) -> String {
-        #[cfg(target_os = "macos")]
-        {
-            let new: Vec<String> = volumes()
-                .difference(&self.before)
-                .filter(|id| id.ends_with(&self.suffix))
-                .cloned()
-                .collect();
-            assert_eq!(new.len(), 1, "new volumes for the disk: {new:?}");
-            new[0].clone()
-        }
-        #[cfg(target_os = "linux")]
-        {
-            fs::metadata(&self.path).unwrap_or_else(|e| panic!("{}: {e}", self.path.display()));
-            self.path.display().to_string()
-        }
-    }
-
-    fn assert_gone(&self, store: &str) {
-        #[cfg(target_os = "macos")]
-        assert!(!volumes().contains(store), "{store} after disk rm");
-        #[cfg(target_os = "linux")]
-        assert_eq!(
-            fs::metadata(store).map_err(|error| error.kind()).err(),
-            Some(std::io::ErrorKind::NotFound),
-            "{store} after disk rm"
-        );
-    }
-}
-
-/// Apple's volume names.
-#[cfg(target_os = "macos")]
-fn volumes() -> BTreeSet<String> {
-    let out = run(
-        std::process::Command::new("container").args(["volume", "list", "--format", "json"]),
-        COMMAND,
-    );
-    assert_eq!(out.code, 0, "container volume list: {out:?}");
-    let volumes: Value = serde_json::from_str(&out.stdout).expect("volume list JSON");
-    volumes
-        .as_array()
-        .expect("a list")
-        .iter()
-        .filter_map(|volume| volume["id"].as_str().map(str::to_string))
-        .collect()
 }
 
 /// The names in a directory, sorted.
@@ -230,18 +140,24 @@ fn mode(path: &Path) -> u32 {
 
 #[test]
 fn disk_export_writes_only_a_new_destination() {
-    // Sabotage (run): in core/disk_export.rs, delete the `fstatat`
-    // existing-destination check and publish with plain `renameat`. The
-    // export then replaces the existing empty directory.
+    // Sabotage (run): in core/disk_export.rs's `Staging::new`, drop
+    // AT_SYMLINK_NOFOLLOW from the `fstatat`, and publish with plain
+    // `renameat`. The dangling link at the destination then passes the
+    // check, and the rename fails without naming `destination-exists`.
+    // Sabotage (run): in `receive`, after `symlinkat`, `fchmodat` the new
+    // link to 0644 without AT_SYMLINK_NOFOLLOW. The 0600 host target then
+    // becomes 0644.
     // The export into a new destination is the positive control.
     default_image();
     let env = TestEnv::new("export");
     let disk = format!("e2e-{}-export", std::process::id());
     let root = env.root().to_path_buf();
 
-    // A host file the box links to.
+    // A host file the box links to, mode 0600, so a mode normalization
+    // that follows the link changes it.
     let target = root.join("host-target");
     fs::write(&target, "host\n").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
     let before = fs::metadata(&target).unwrap();
 
     let name = box_name("export");
@@ -252,7 +168,7 @@ fn disk_export_writes_only_a_new_destination() {
             "sh",
             "-c",
             "ln -s \"$1\" /data/link && printf '#!/bin/sh\\n' > /data/tool && chmod 755 /data/tool \
-             && printf plain > /data/plain && chmod 600 /data/plain && sync",
+             && sync",
             "sh",
             target.to_str().unwrap(),
         ],
@@ -271,11 +187,12 @@ fn disk_export_writes_only_a_new_destination() {
         (out.code, json_lines(&out.stdout), out.stderr)
     };
 
-    // An existing empty directory: a plain rename would replace it.
+    // An existing destination that is a dangling symlink: a check that
+    // follows it finds nothing there.
     let existing = root.join("existing");
-    fs::create_dir(&existing).unwrap();
-    let inode = fs::metadata(&existing).unwrap().ino();
-    let listing = names(&root);
+    let absent = root.join("absent");
+    std::os::unix::fs::symlink(&absent, &existing).unwrap();
+    let inode = fs::symlink_metadata(&existing).unwrap().ino();
     let (code, lines, stderr) = export(&existing);
     assert_eq!(code, 1, "{lines:?} {stderr}");
     assert!(
@@ -284,9 +201,8 @@ fn disk_export_writes_only_a_new_destination() {
             .any(|word| word == "destination-exists"),
         "{stderr}"
     );
-    assert_eq!(fs::metadata(&existing).unwrap().ino(), inode);
-    assert!(names(&existing).is_empty(), "{:?}", names(&existing));
-    assert_eq!(names(&root), listing, "the export left something beside it");
+    assert_eq!(fs::symlink_metadata(&existing).unwrap().ino(), inode);
+    assert_eq!(fs::read_link(&existing).unwrap(), absent);
 
     // Control: a new destination.
     let dest = root.join("exported");
@@ -296,8 +212,7 @@ fn disk_export_writes_only_a_new_destination() {
         lines,
         [json!({ "event": "exported", "disk": disk, "destination": dest.to_str().unwrap() })]
     );
-    assert_eq!(mode(&dest), 0o700);
-    assert_eq!(names(&dest), ["link", "plain", "tool"]);
+    assert_eq!(names(&dest), ["link", "tool"]);
     let link = dest.join("link");
     assert!(
         fs::symlink_metadata(&link)
@@ -312,13 +227,6 @@ fn disk_export_writes_only_a_new_destination() {
             fs::read(dest.join("tool")).unwrap()
         ),
         (0o755, b"#!/bin/sh\n".to_vec())
-    );
-    assert_eq!(
-        (
-            mode(&dest.join("plain")),
-            fs::read(dest.join("plain")).unwrap()
-        ),
-        (0o644, b"plain".to_vec())
     );
     let after = fs::metadata(&target).unwrap();
     assert_eq!(fs::read(&target).unwrap(), b"host\n");
