@@ -504,8 +504,9 @@ The box spec `up` reads from stdin:
   entry, an injecting header, a claude or pi login route. A reference
   starts with `op://`, holds no control character (below 0x20, or
   0x7f) and is at most 1024 bytes. `from` and
-  `op` together, or neither, are refused as `spec`, naming only the key;
-  so is a malformed reference. Only the process that starts the box
+  `op` together, or neither, are refused as `spec`, naming only the key,
+  and a configuration file holding such an entry fails to load; so is a
+  malformed reference, and an explicit null for either key. Only the process that starts the box
   reads a reference, and only after every check that needs no value:
   `box up` after the spec (an env or header `from` included), profile, mount preparation,
   runtime, image and home-seed checks, just before it resolves login

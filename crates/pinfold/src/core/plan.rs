@@ -77,9 +77,17 @@ pub struct Login {
     /// The variable the token is read from, by name only, or the 1Password
     /// reference in `op`. claude and pi need one; codex takes neither: its
     /// token comes from the host helper.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub from: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub op: Option<String>,
     /// The origin to dial instead of the harness's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -101,9 +109,17 @@ pub struct Inject {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Header {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub from: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub op: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prefix: String,
@@ -118,13 +134,45 @@ pub enum Source {
     Op(String),
 }
 
+const BOTH: &str = "takes a from variable or an op reference, not both";
+const NEITHER: &str = "needs a from variable or an op reference";
+
+/// A `from` or `op` key that is present holds a string: an explicit null
+/// is refused, never read as absent.
+fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
+/// Refuse, naming the entry, a secret source in configuration that names
+/// both `from` and `op` or neither. Configuration load calls this, so a
+/// `PINFOLD_ENV_` variable replacing the entry cannot hide it.
+pub(crate) fn check_declared(
+    env: &BTreeMap<String, Env>,
+    routes: &BTreeMap<String, Route>,
+) -> Result<(), String> {
+    let plan = Plan {
+        env: env.clone(),
+        egress: Some(Egress {
+            allow: Vec::new(),
+            routes: routes.clone(),
+        }),
+        ..Plan::default()
+    };
+    for (kind, name, source) in plan.sources() {
+        if let Err(error @ (BOTH | NEITHER)) = source {
+            return Err(format!("{kind} {name:?}: {error}"));
+        }
+    }
+    Ok(())
+}
+
 impl Source {
     /// The declared source, or why it cannot be read: exactly one of
     /// `from` and `op`, each well formed.
     fn declared(from: Option<&str>, op: Option<&str>) -> Result<Source, &'static str> {
         match (from, op) {
-            (Some(_), Some(_)) => Err("takes a from variable or an op reference, not both"),
-            (None, None) => Err("needs a from variable or an op reference"),
+            (Some(_), Some(_)) => Err(BOTH),
+            (None, None) => Err(NEITHER),
             (Some(from), None) if valid_from(from) => Ok(Source::From(from.to_string())),
             (Some(_), None) => Err("its from variable is empty or holds = or NUL"),
             (None, Some(op)) if valid_op(op) => Ok(Source::Op(op.to_string())),
@@ -701,21 +749,14 @@ impl<'de> Deserialize<'de> for Env {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct Secret {
+                    #[serde(default, deserialize_with = "present")]
                     from: Option<String>,
+                    #[serde(default, deserialize_with = "present")]
                     op: Option<String>,
                 }
                 let Secret { from, op } =
                     Secret::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                // Refused at load, so a `PINFOLD_ENV_` variable replacing
-                // the entry cannot hide it.
-                match (&from, &op) {
-                    (Some(_), Some(_)) | (None, None) => Err(serde::de::Error::custom(
-                        Source::declared(from.as_deref(), op.as_deref())
-                            .err()
-                            .unwrap_or_default(),
-                    )),
-                    _ => Ok(Env::Secret { from, op }),
-                }
+                Ok(Env::Secret { from, op })
             }
         }
         deserializer.deserialize_any(Visitor)
