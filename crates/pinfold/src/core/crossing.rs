@@ -399,10 +399,18 @@ pub(crate) fn fetch_cancellable(
                 "the box sent a filtered bundle".into(),
             ));
         }
-        succeeded(git(repo, &["bundle", "verify", "-q", path], cancel)?)?;
+        // Quarantined: in a partial clone, verify fetches a missing
+        // prerequisite from the promisor remote into the object directory.
+        succeeded(git_input(
+            repo,
+            &["bundle", "verify", "-q", path],
+            b"",
+            &quarantine.env(),
+            cancel,
+        )?)?;
         // The listing is the box's whole claim; the bundle's heads repeat a
         // subset of it exactly.
-        heads = bundle_heads(repo, path, width, cancel)?;
+        heads = bundle_heads(repo, path, width, &quarantine, cancel)?;
         if heads.iter().any(|(name, oid)| refs.get(name) != Some(oid)) {
             return Err(CrossingError::Failed(
                 "the bundle's heads differ from the box's listing".into(),
@@ -429,6 +437,27 @@ pub(crate) fn fetch_cancellable(
             bundle_len - pack_start,
             cancel,
         )?;
+        // fsck checks each object but not its links, and fetch checks only
+        // the heads' history: an unreachable object naming a missing one
+        // would migrate with the pack. Every object the box sent must be
+        // connected. Not `index-pack --strict`, which refuses a pack whose
+        // trees name objects a partial clone's promisor holds.
+        let objects: String = sent.iter().map(|oid| format!("{oid}\n")).collect();
+        succeeded(git_input(
+            repo,
+            &[
+                "rev-list",
+                "--objects",
+                "--missing=allow-promisor",
+                "--quiet",
+                "--stdin",
+                "--not",
+                "--all",
+            ],
+            objects.as_bytes(),
+            &quarantine.env(),
+            cancel,
+        )?)?;
         // A fetch that finds a head missing unbundles the pack again before
         // its connectivity check fails, so it runs quarantined too. Its auto
         // maintenance would see only the quarantine. It names no
@@ -977,13 +1006,14 @@ fn bundle_heads(
     repo: &Path,
     path: &str,
     width: usize,
+    quarantine: &Quarantine,
     cancel: &AtomicBool,
 ) -> Result<Refs, CrossingError> {
     let listed = succeeded(git_input(
         repo,
         &["bundle", "list-heads", path],
         b"",
-        &[],
+        &quarantine.env(),
         cancel,
     )?)?;
     let mut heads = Refs::new();

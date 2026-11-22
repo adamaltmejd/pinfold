@@ -36,16 +36,38 @@ const BOX_PATH: &str =
 
 /// The box's `git` on that PATH. The fetch runs whatever `git` the box
 /// runs; while `/home/pinfold/.hostile` holds an object id, this one adds a
-/// branch `stolen` at that id to the branch listing. Otherwise it is the
-/// image's git.
+/// branch `stolen` at that id to the branch listing. While `.prereq` holds
+/// one, the bundle names it as a prerequisite. While `.broken` holds one,
+/// the bundle's pack also carries a commit no head reaches whose tree is
+/// that id. Otherwise it is the image's git.
 const HOSTILE_GIT: &str = r#"#!/bin/sh
-if [ -s /home/pinfold/.hostile ] && [ "$3" = for-each-ref ] && [ "$5" = refs/heads/ ]; then
+h=/home/pinfold
+if [ -s $h/.hostile ] && [ "$3" = for-each-ref ] && [ "$5" = refs/heads/ ]; then
   case $4 in
   *objectname*)
     /usr/bin/git "$@" || exit
-    printf '%s refs/heads/stolen\n' "$(cat /home/pinfold/.hostile)"
+    printf '%s refs/heads/stolen\n' "$(cat $h/.hostile)"
     exit ;;
   esac
+fi
+if [ "$5 $6" = "bundle create" ] && { [ -s $h/.prereq ] || [ -s $h/.broken ]; }; then
+  set -e
+  revs=$(cat)
+  b=$(mktemp)
+  printf '%s\n' "$revs" | /usr/bin/git "$@" >"$b"
+  if [ -s $h/.prereq ]; then
+    head -n1 "$b"
+    printf -- '-%s\n' "$(cat $h/.prereq)"
+    tail -n +2 "$b"
+  else
+    commit=$(printf 'tree %s\nauthor b <b@b> 0 +0000\ncommitter b <b@b> 0 +0000\n\nbroken\n' "$(cat $h/.broken)" |
+      /usr/bin/git -C "$2" hash-object -t commit -w --stdin)
+    sed '/^$/q' "$b"
+    { printf '%s\n' "$revs" | /usr/bin/git -C "$2" rev-list --objects --stdin | cut -d' ' -f1; echo "$commit"; } |
+      /usr/bin/git -C "$2" pack-objects -q --stdout
+  fi
+  rm "$b"
+  exit
 fi
 exec /usr/bin/git "$@"
 "#;
@@ -58,8 +80,12 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     // Sabotage (run): in `fetch_cancellable`'s `kept_out`, drop the
     // `host_names` case-folded match. The forced tag fetch then writes the
     // box's `Light`.
-    // The legitimate fetch and the host's own hooks are the positive
-    // controls.
+    // Sabotage (run): drop `fetch_cancellable`'s `rev-list` connectivity
+    // check of the sent objects. The fetch with the broken commit exits 0.
+    // Sabotage (run): run `bundle verify` without `quarantine.env()`. The
+    // promisor's commit lands in `.git/objects`.
+    // The legitimate fetch, from the host as a partial clone, and the
+    // host's own hooks are the positive controls.
     default_image();
     let env = TestEnv::new("crossing");
     let project = Project::new(&env, "crossing");
@@ -190,6 +216,71 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     assert_eq!(refs(), refs_before);
     assert_eq!(tree(&project.root().join(".git/objects")), objects_before);
     in_box(&["rm /home/pinfold/.hostile"]);
+
+    // The box's pack also carries a commit no head reaches, whose tree
+    // exists nowhere. The fetch fails naming that tree and changes nothing.
+    let nowhere = env.root().join("nowhere");
+    fs::write(&nowhere, "no such tree\n").unwrap();
+    let missing = git(&["hash-object", nowhere.to_str().unwrap()]);
+    in_box(&[
+        "printf %s \"$1\" > /home/pinfold/.broken",
+        "sh",
+        missing.as_str(),
+    ]);
+    let broken = project.git(&["fetch", "box"]);
+    assert_ne!(broken.code, 0, "{broken:?}");
+    assert!(broken.stderr.contains(&missing), "{}", broken.stderr);
+    assert_eq!(refs(), refs_before);
+    assert_eq!(tree(&project.root().join(".git/objects")), objects_before);
+    in_box(&["rm /home/pinfold/.broken"]);
+
+    // The host becomes a partial clone whose promisor, a local repository,
+    // holds a commit the host lacks. The listing names `stolen` there and
+    // the bundle names it as a prerequisite, which `git bundle verify`
+    // fetches from the promisor. The fetch fails naming `stolen`, and
+    // `.git/objects` is unchanged. The host stays a partial clone for (b).
+    let promisor = env.root().join("promisor");
+    let promisor = promisor.to_str().unwrap();
+    git(&["clone", "-q", "--bare", ".", promisor]);
+    let promised = git(&[
+        "-C",
+        promisor,
+        "commit-tree",
+        "-m",
+        "promised",
+        "main^{tree}",
+    ]);
+    git(&[
+        "-C",
+        promisor,
+        "update-ref",
+        "refs/heads/promised",
+        &promised,
+    ]);
+    git(&["config", "remote.promisor.url", promisor]);
+    git(&["config", "remote.promisor.promisor", "true"]);
+    git(&["config", "extensions.partialClone", "promisor"]);
+    let objects_before = tree(&project.root().join(".git/objects"));
+    in_box(&[
+        "printf %s \"$1\" > /home/pinfold/.hostile; printf %s \"$1\" > /home/pinfold/.prereq",
+        "sh",
+        promised.as_str(),
+    ]);
+    let prerequisite = project.git(&["fetch", "box"]);
+    assert_ne!(prerequisite.code, 0, "{prerequisite:?}");
+    assert!(
+        prerequisite
+            .stderr
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .any(|word| word == "stolen"),
+        "{}",
+        prerequisite.stderr
+    );
+    assert_eq!(refs(), refs_before);
+    assert_eq!(tree(&project.root().join(".git/objects")), objects_before);
+    in_box(&["rm /home/pinfold/.hostile /home/pinfold/.prereq"]);
+    // The promisor is live: the host's own lookup fetches the commit.
+    git(&["cat-file", "-e", &promised]);
 
     // (b) A valid listing carries `light` and `Light` at other objects. A
     // forced, pruning tag fetch moves and deletes no host branch or tag and
