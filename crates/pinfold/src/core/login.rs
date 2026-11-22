@@ -223,7 +223,7 @@ fn ask(
 }
 
 const OP_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_OP_VALUE: usize = 64 * 1024;
+pub(crate) const MAX_OP_VALUE: usize = 64 * 1024;
 
 /// Read one 1Password secret with the first `op` on PATH, as `op read
 /// --no-newline REFERENCE` with this process's environment, stdin null and

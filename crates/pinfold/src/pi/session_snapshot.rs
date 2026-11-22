@@ -10,6 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::config::{Config, ProjectMount};
 use crate::core::image::service;
+use crate::core::login::MAX_OP_VALUE;
 use crate::core::plan::{Env, MountKind, Plan, Source, Values, memory_mib, valid_op};
 use crate::core::profile::Share;
 use crate::dirs;
@@ -209,10 +210,11 @@ pub(crate) struct Snapshot {
 
 /// The `op` values a starting client read, by reference. They travel beside
 /// its snapshot in the bootstrap request only, so no admission compares
-/// them and no joining client needs them.
+/// them and no joining client needs them. A list, not a map, so the owner
+/// sees a repeated reference rather than a decoder's choice of one.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(transparent)]
-pub(crate) struct OpValues(BTreeMap<String, Bytes>);
+pub(crate) struct OpValues(Vec<(String, Bytes)>);
 
 impl OpValues {
     pub(crate) fn new(values: &Values) -> OpValues {
@@ -282,7 +284,10 @@ impl Snapshot {
             let valid = match &source {
                 Source::From(name) => !name.is_empty() && !name.contains(['=', '\0']),
                 Source::Op(reference) => {
-                    valid_op(reference) && !value.is_empty() && std::str::from_utf8(&value).is_ok()
+                    valid_op(reference)
+                        && !value.is_empty()
+                        && value.len() <= MAX_OP_VALUE
+                        && std::str::from_utf8(&value).is_ok()
                 }
             };
             if !valid || value.contains(&0) {
@@ -305,6 +310,30 @@ impl Snapshot {
                 )),
                 EnvSource::Exact {} | EnvSource::Op { .. } => None,
             });
+        // Exactly the declared references, each once.
+        let references: std::collections::BTreeSet<&String> =
+            op.0.iter().map(|(reference, _)| reference).collect();
+        let declared_op: std::collections::BTreeSet<&String> = self
+            .routes
+            .values()
+            .flat_map(|declaration| match declaration {
+                Declaration::Inject(inject) => inject
+                    .headers
+                    .iter()
+                    .flatten()
+                    .filter_map(|(_, header)| header.op.as_ref())
+                    .collect(),
+                Declaration::Login(login) => login.op.iter().collect(),
+                Declaration::Address(_) => Vec::new(),
+            })
+            .chain(self.env_names.values().filter_map(|source| match source {
+                EnvSource::Op { reference } => Some(reference),
+                EnvSource::Exact {} | EnvSource::From { .. } => None,
+            }))
+            .collect();
+        if references.len() != op.0.len() || references != declared_op {
+            return Err(invalid());
+        }
         let op =
             op.0.iter()
                 .map(|(reference, value)| decode(Source::Op(reference.clone()), Some(value)));

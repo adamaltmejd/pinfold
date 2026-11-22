@@ -2098,7 +2098,9 @@ read refuses before any owner starts with `env "NAME" needs the
 1Password reference REFERENCE: CAUSE` or the `route` form, and exit 125.
 A joining or keeping client never runs `op`, and the owner never does.
 The value travels to the owner beside the startup snapshot, never in an
-environment or in any snapshot a joining client sends; admission
+environment or in any snapshot a joining client sends; the owner refuses
+as `session-protocol`, before recording anything, values that are not
+exactly the declared references, each once, within the read's bounds; admission
 compares an `op` source by its reference alone. `config --json` names
 the variable or the reference, never a value; elsewhere it follows the
 box spec's `env` rules (Process interface). A literal is configuration, not a secret:
