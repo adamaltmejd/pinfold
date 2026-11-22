@@ -2143,7 +2143,13 @@ executable or infrastructure install directory), `cached`, and
 downloaded. The builder asset includes `url`, `sha256` and `bytes`; its
 entry also reports the recipe identity. Without `--json`, `doctor --artifacts`
 prints a readable inventory. Plain `doctor` leads with findings and remedies.
-`doctor --json` prints the diagnostic report as structured data.
+In a configured project its `Logins` line names each effective login route
+with its agent, and Pi's provider, or says there is none. It reads
+configuration only: no value, and not whether a variable is set.
+`doctor --json` prints the diagnostic report as structured data. Its
+`config` is the `config --json` report, or null outside a configured
+project. Its `egress.routes` holds each route as configured, a login
+route with its `login` and Pi's `provider`.
 
 `pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without
 touching the runtime or the state directory. Bare `pinfold` reports the

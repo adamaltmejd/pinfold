@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
-use crate::core::plan::{Plan, valid_name};
+use crate::core::plan::{Plan, Route, valid_name};
 use crate::core::profile::{self, Profile};
 use crate::core::runtime::{BoxInfo, Runtime, runtime};
 use crate::core::{clean, disk, runs};
@@ -1258,6 +1258,9 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     if let Some(image) = image {
         println!("Image    {}", terminal_text(&image));
     }
+    if let Ok((_, config)) = &project {
+        println!("Logins   {}", logins_description(config));
+    }
     if let Some(plan) = disk {
         println!("Disk usage");
         plan.print();
@@ -1296,6 +1299,31 @@ fn profile_description(config: &Config) -> String {
             )
         }
         _ => name,
+    }
+}
+
+/// The login routes, whose credentials stay on the host, from configuration
+/// alone: no value, and not whether a variable is set.
+fn logins_description(config: &Config) -> String {
+    let logins: Vec<String> = config
+        .routes
+        .iter()
+        .filter_map(|(name, route)| match route {
+            Route::Login(login) => Some(format!(
+                "{} ({})",
+                terminal_text(name),
+                terminal_text(&match &login.provider {
+                    Some(provider) => format!("{} {provider}", login.login),
+                    None => login.login.clone(),
+                })
+            )),
+            _ => None,
+        })
+        .collect();
+    if logins.is_empty() {
+        "none; agents log in inside the box".to_string()
+    } else {
+        logins.join(", ")
     }
 }
 
