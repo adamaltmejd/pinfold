@@ -556,7 +556,8 @@ fn parse_routes(value: &str) -> io::Result<BTreeMap<String, Route>> {
         else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("PINFOLD_ROUTES entry {entry:?} is not name=host:port"),
+                // Not echoed: a pasted URL may hold a credential.
+                "a PINFOLD_ROUTES entry is not name=host:port",
             ));
         };
         routes.insert(name.to_string(), Route::Address(target.to_string()));
