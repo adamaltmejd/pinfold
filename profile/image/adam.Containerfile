@@ -17,7 +17,6 @@ RUN set -eux; \
     case "${TARGETARCH}" in \
         arm64) native=fff-bin-linux-arm64-gnu ;; \
         amd64) native=fff-bin-linux-x64-gnu ;; \
-        *) echo "unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     fff=/opt/pinfold/packages/pi-fff; \
     mkdir -p "${fff}/node_modules/@ff-labs/fff-bun" "${fff}/node_modules/@ff-labs/${native}"; \

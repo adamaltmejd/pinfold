@@ -1,4 +1,3 @@
-ARG TARGETARCH
 FROM debian:trixie-slim AS base
 
 RUN set -eux; \
@@ -125,7 +124,6 @@ RUN set -eu; \
     pi_archive="$downloads/pi.tar.gz"; \
     download pi "$pi_archive"; \
     tar -xzf "$pi_archive" -C /opt/pinfold/agents; \
-    rm -f "$pi_archive"; \
     test -x /opt/pinfold/agents/pi/pi; \
     test -f /opt/pinfold/agents/pi/package.json; \
     test -f /opt/pinfold/agents/pi/photon_rs_bg.wasm; \
@@ -134,13 +132,11 @@ RUN set -eu; \
     download claude "$claude_binary"; \
     mkdir -p /opt/pinfold/agents/claude; \
     install -m 0755 "$claude_binary" /opt/pinfold/agents/claude/claude; \
-    rm -f "$claude_binary"; \
     codex_archive="$downloads/codex.tar.gz"; \
     download codex "$codex_archive"; \
     mkdir -p /opt/pinfold/agents/codex; \
     tar -xzf "$codex_archive" -C /opt/pinfold/agents/codex; \
-    rm -f "$codex_archive"; \
-    rmdir "$downloads"; \
+    rm -rf "$downloads"; \
     jq -e --arg version "${codex_version#rust-v}" --arg target "$target" '.layoutVersion == 1 and .version == $version and .target == $target and .variant == "codex" and .entrypoint == "bin/codex" and .execServer == "bin/codex-exec-server" and .resourcesDir == "codex-resources" and .pathDir == "codex-path"' /opt/pinfold/agents/codex/codex-package.json; \
     for binary in codex codex-code-mode-host codex-exec-server; do test -x "/opt/pinfold/agents/codex/bin/$binary"; done; \
     test -x /opt/pinfold/agents/codex/codex-path/rg; \

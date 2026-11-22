@@ -221,14 +221,16 @@ Maintenance
 
 Advanced
   profile new     Copy a profile for customization
-  image           Build or remove a named image
-  disk            List, export or remove managed disks
-  box             Control boxes through the process interface"
+  disk            List, export or remove managed disks"
     );
     #[cfg(target_os = "linux")]
     println!("  apparmor-profile  Print the AppArmor policy for installation");
     println!(
         "
+Developers
+  box             Process interface for integrators
+  image           Build or remove a caller image
+
 Run pinfold COMMAND --help for options. Use --version to show the version."
     );
 }
