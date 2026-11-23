@@ -154,12 +154,16 @@ fn only_allowlisted_hosts_get_through() {
     // api.github.com's certificate (60, not 35). Sabotage (run): drop the
     // plain HTTP allowlist check; example.com over port 80 answers 200.
     // Sabotage (run): skip the proxy's `100 Continue` in `forward`; the
-    // 100-continue upload then waits past curl's bound (28). Sabotage
+    // 100-continue upload then waits past curl's bound (28); or forward a
+    // body other than the box's, and the fixture answers 400. Sabotage
     // (run): drop the 417 in `plain`; the other expectation then reaches
     // the fixture (418).
     // api.github.com and the route are the positive controls.
     let env = TestEnv::new("allowlist");
     let fixture = Fixture::start(418);
+    // Answers 200 only to a POST whose body holds this, else 400.
+    let upload = format!("pf-upload-{}", std::process::id());
+    let model = Fixture::model("", &upload);
     let host = host_address();
     let name = box_name("allowlist");
     let up = env.up(&json!({
@@ -167,7 +171,10 @@ fn only_allowlisted_hosts_get_through() {
         "image": default_image(),
         "egress": {
             "allow": ["api.github.com", "localhost", host],
-            "routes": { "fixture.internal": fixture.route() },
+            "routes": {
+                "fixture.internal": fixture.route(),
+                "model.internal": model.route(),
+            },
         },
     }));
     let connect = |args: &[&str]| {
@@ -298,7 +305,7 @@ fn only_allowlisted_hosts_get_through() {
     // A client that waits for `100 Continue` before its body gets it from
     // the proxy, inside curl's 20-second bound; any other expectation is
     // refused before the fixture is dialed.
-    let expect = |value: &str| {
+    let expect = |value: &str, host: &str| {
         curl(
             &env,
             &name,
@@ -308,27 +315,29 @@ fn only_allowlisted_hosts_get_through() {
                 "-H",
                 &format!("Expect: {value}"),
                 "--data-binary",
-                "body",
+                &upload,
                 "-o",
                 "/dev/null",
                 "-w",
                 "%{http_code}",
-                "http://fixture.internal/upload",
+                &format!("http://{host}/upload"),
             ],
         )
     };
-    let continued = expect("100-continue");
+    let continued = expect("100-continue", "model.internal");
     assert_eq!(
         (continued.code, continued.stdout.as_str()),
-        (0, "418"),
+        (0, "200"),
         "{continued:?}"
     );
-    let requests = fixture.requests();
-    assert_eq!(requests.len(), 2, "the fixture's requests: {requests:?}");
-    assert_eq!(requests[1].target, "/upload");
-    assert_eq!(requests[1].header("content-length"), ["4"]);
-    assert!(requests[1].header("expect").is_empty(), "{requests:?}");
-    let (refused, lines) = logged(&|| expect("x-pinfold-test"));
+    let requests = model.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "the model fixture's requests: {requests:?}"
+    );
+    assert!(requests[0].header("expect").is_empty(), "{requests:?}");
+    let (refused, lines) = logged(&|| expect("x-pinfold-test", "fixture.internal"));
     assert_eq!(
         (refused.code, refused.stdout.as_str()),
         (0, "417"),

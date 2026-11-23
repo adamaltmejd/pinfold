@@ -678,7 +678,7 @@ struct Plain {
     connection: Vec<Vec<u8>>,
     /// The request body length, from the one Content-Length.
     content_length: u64,
-    /// An HTTP/1.1 request's `Expect`: `Some(true)` when each is
+    /// An HTTP/1.1 request's `Expect`: `Some(true)` when every member is
     /// `100-continue`, which the proxy answers itself; `Some(false)` is
     /// refused 417.
     expect: Option<bool>,
@@ -721,11 +721,28 @@ fn parse_plain(
             return Err("ambiguous framing");
         }
         // Never forwarded: the proxy answers it. RFC 9110 has an HTTP/1.0
-        // server ignore it.
+        // server ignore it. Its fields form one comma list; a field with no
+        // member counts as an unknown expectation.
         if header.name.eq_ignore_ascii_case("expect") {
             if version == 1 {
-                let value = std::str::from_utf8(header.value).map_err(|_| "malformed request")?;
-                let known = value.trim().eq_ignore_ascii_case("100-continue");
+                let mut members = header
+                    .value
+                    .split(|byte| *byte == b',')
+                    .map(|member| {
+                        // SP and HTAB only: other bytes, U+00A0 included,
+                        // make another expectation.
+                        let blank = |byte: &u8| *byte == b' ' || *byte == b'\t';
+                        let start = member.iter().position(|b| !blank(b));
+                        let end = member.iter().rposition(|b| !blank(b));
+                        match (start, end) {
+                            (Some(start), Some(end)) => &member[start..=end],
+                            _ => &[][..],
+                        }
+                    })
+                    .filter(|member| !member.is_empty())
+                    .peekable();
+                let known = members.peek().is_some()
+                    && members.all(|member| member.eq_ignore_ascii_case(b"100-continue"));
                 expect = Some(expect.unwrap_or(true) && known);
             }
             continue;
