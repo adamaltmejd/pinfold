@@ -378,11 +378,14 @@ impl Snapshot {
 
     /// Resolve the project's configuration. A client reads each `from`
     /// value here, once, and a starting client its `op` values afterwards;
-    /// the owner passes the table its client sent.
+    /// the owner passes the table its client sent. Only a `start` touches
+    /// read-only folders on the host: a joining client compares them as
+    /// configured.
     pub(crate) fn resolve(
         root: &Path,
         expected_mount: Option<ProjectMount>,
         received: Option<Values>,
+        start: bool,
     ) -> io::Result<Resolved> {
         let roots = Roots::resolve()?;
         let context = Context::discover(root)?;
@@ -409,7 +412,9 @@ impl Snapshot {
         let image = launch::resolve_image(&config, &id);
         let mut plan = launch::build_plan(&config, &id, root, &image)?;
         for mount in &mut plan.mounts {
-            mount.host = dirs::resolve_host_path(&mount.host)?;
+            if mount.kind == MountKind::Share {
+                mount.host = dirs::resolve_host_path(&mount.host)?;
+            }
         }
         for disk in &mut plan.disks {
             if let Some(from) = disk.from.as_mut() {
@@ -421,7 +426,13 @@ impl Snapshot {
         // equal snapshot names only sources its client checked.
         let check = received.is_none();
         let values = received.unwrap_or_else(|| Values::read(&plan));
-        crate::core::r#box::validate_project(&plan, check.then_some(&values), &config.profile)
+        let mut checked = plan.clone();
+        if !start {
+            checked
+                .mounts
+                .retain(|mount| mount.kind != MountKind::Readonly);
+        }
+        crate::core::r#box::validate_project(&checked, check.then_some(&values), &config.profile)
             .map_err(io::Error::other)?;
         if !config.cpus.is_finite() {
             return Err(io::Error::other("spec-invalid: CPUs must be finite"));
@@ -525,6 +536,15 @@ impl Snapshot {
             env_names,
             env_values,
         };
+        // The box mounts the path checked here; the snapshot keeps the
+        // folders as configured.
+        if start {
+            for mount in &mut plan.mounts {
+                if mount.kind == MountKind::Readonly {
+                    mount.host = crate::config::admit_folder(root, &mount.host, &config.profile)?;
+                }
+            }
+        }
         Ok(Resolved {
             snapshot,
             config,

@@ -26,7 +26,8 @@ fn check_extra_paths_outside(
     paths: impl IntoIterator<Item = PathBuf>,
     bidirectional: bool,
 ) -> io::Result<()> {
-    // A missing read-only folder is refused later, as `spec` naming it.
+    // A read-only folder is checked before its box start, which refuses a
+    // missing one as `spec` naming it.
     let root = dirs::resolve_host_path(root)?;
     for path in paths {
         if source_beneath(&path, &root)? || (bidirectional && source_beneath(&root, &path)?) {

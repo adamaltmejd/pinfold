@@ -1,7 +1,9 @@
 //! Guarantee 48: a share reaches only its folder by path, a read-only
 //! folder is read-only, and a project holding a protected path is refused.
 
+use std::collections::hash_map::RandomState;
 use std::fs;
+use std::hash::{BuildHasher, Hasher};
 use std::os::unix::fs::symlink;
 use std::path::Path;
 
@@ -116,38 +118,53 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
     share_reaches_only_its_folder(&env, &projects[1]);
 }
 
-/// A read-only folder holding the state root is refused before a box
+/// A read-only folder linked into the state root is refused before a box
 /// exists. With a fixture folder in its place, the same project's box reads
 /// it and cannot write it.
-// Sabotage (not run): delete the read-only folder loop in
-// `Config::check_host_paths`, or pass `false` for its overlap in both
-// directions. The folder holding the state root then runs and exits 0.
+// Sabotage (not run): in config.rs, pass `false` instead of `true` in both
+// read-only folder checks (`Config::check_folders`, `admit_folder`). The
+// linked folder, which lies inside the state root and contains no
+// protected path, then runs and exits 0. This block proves only that
+// direction of the overlap check: a folder inside a protected path.
 // Sabotage (not run): in `build_plan`, push each folder with
-// `MountKind::Share` on macOS. The write then succeeds and changes the
-// host file.
+// `MountKind::Share` on macOS. The write then lands and changes the host
+// file. Dropping the folder from the plan fails the read.
 fn read_only_folder(env: &TestEnv, project: &Project) {
     // A configuration change applies only to a box not running.
     let stop = project.pinfold(&["stop"]);
     assert_eq!(stop.code, 0, "{stop:?}");
+    // A guest path and content no image holds.
+    let token = format!("{:016x}", RandomState::new().build_hasher().finish());
+    let guest = format!("/folder-{token}");
+    let content = format!("note {token}\n");
     let folder = env.root().join("folder");
     fs::create_dir(&folder).unwrap();
-    fs::write(folder.join("note"), "note\n").unwrap();
+    fs::write(folder.join("note"), &content).unwrap();
     let file = project.config_dir().join("pinfold.toml");
-    let saved = fs::read_to_string(&file).unwrap();
-    // The project entry ends the `mounts` line `config edit` wrote.
-    let with_folder = |host: &Path| {
-        let host = host.to_str().unwrap();
-        let edited = saved.replacen(
-            " }]\n",
-            &format!(" }}, {{ host = {host:?}, guest = \"/folder\" }}]\n"),
-            1,
-        );
-        assert_ne!(edited, saved);
-        fs::write(&file, edited).unwrap();
+    let kind = if cfg!(target_os = "macos") {
+        "share"
+    } else {
+        "disk"
+    };
+    // The settings `config edit` and the profile case left, and one folder.
+    let settings = |host: &Path| {
+        fs::write(
+            &file,
+            format!(
+                "profile = \"e2e-base\"\nmounts = [{{ host = \".\", kind = \"{kind}\" }}, {{ host = {:?}, guest = {guest:?} }}]\n",
+                host.to_str().unwrap()
+            ),
+        )
+        .unwrap();
     };
 
-    // XDG_STATE_HOME holds the state root: refused, with no state written.
-    with_folder(env.state_home());
+    // A link outside every protected path to a directory the earlier runs
+    // made inside the state root: refused, with no state written.
+    let inside = env.state_home().join("pinfold/projects");
+    assert!(inside.is_dir(), "{inside:?}");
+    let link = env.root().join("linked-state");
+    symlink(&inside, &link).unwrap();
+    settings(&link);
     let before = tree(env.state_home());
     let out = project.pinfold(&["--", "true"]);
     assert_eq!(out.code, 125, "{out:?}");
@@ -159,18 +176,19 @@ fn read_only_folder(env: &TestEnv, project: &Project) {
     assert_eq!(tree(env.state_home()), before);
 
     // Control: the fixture folder in its place. The read prints the file;
-    // the append prints its errno, EROFS.
-    with_folder(&folder);
+    // the write of bytes prints its errno, EROFS.
+    settings(&folder);
     let out = project.pinfold(&[
         "--",
         "perl",
         "-e",
-        "open(my $f, '<', '/folder/note') or die $!; print <$f>;
-         if (open(my $w, '>>', '/folder/note')) { print \"written\\n\" } else { print 0 + $!, \"\\n\" }",
+        "open(my $f, '<', \"$ARGV[0]/note\") or die \"read: $!\\n\"; print <$f>;
+         if (open(my $w, '>>', \"$ARGV[0]/note\") and print {$w} \"box\\n\" and close($w)) { print \"written\\n\" } else { print 0 + $!, \"\\n\" }",
+        &guest,
     ]);
     assert_eq!(out.code, 0, "{out:?}");
-    assert_eq!(out.stdout, "note\n30\n");
-    assert_eq!(fs::read_to_string(folder.join("note")).unwrap(), "note\n");
+    assert_eq!(out.stdout, format!("{content}30\n"));
+    assert_eq!(fs::read_to_string(folder.join("note")).unwrap(), content);
 }
 
 /// In a running share, an outward symlink and paths outside it reach no

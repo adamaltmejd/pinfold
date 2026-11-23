@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::plan::{Env, Mount, MountKind, Route};
+use crate::core::plan::{Env, Mount, MountKind, Route, guest_path, valid_mount_path};
 use crate::core::profile::Profile;
 use crate::dirs;
 use crate::formatting::terminal_text;
@@ -257,8 +257,9 @@ impl std::error::Error for NoConfig {}
 /// The merged configuration for one project run.
 pub struct Config {
     pub mount: ProjectMount,
-    /// Read-only host folders after the project mount, each host absolute:
-    /// `~/` is the user's home and a relative host the project root's.
+    /// Read-only host folders after the project mount, expanded lexically:
+    /// `~/` is the user's home and a relative host the project root's. The
+    /// guest is normalized. A box start resolves each host ([`admit_folder`]).
     pub folders: Vec<Mount>,
     /// Whether the project is a Git checkout to cross.
     pub repository: bool,
@@ -305,17 +306,20 @@ impl Config {
         let project = Layer::parse(&bytes, &source)?;
         let (mount, mut folders) = ProjectMount::parse(project.mounts.as_ref(), &source)?;
         for folder in &mut folders {
-            let host = match folder.host.strip_prefix("~") {
-                Ok(rest) => env::home_dir()
+            // TOML strings are UTF-8.
+            folder.host = match folder
+                .host
+                .to_str()
+                .and_then(|host| host.strip_prefix("~/"))
+            {
+                Some(rest) => env::home_dir()
                     .ok_or_else(|| {
                         io::Error::other("HOME is not set and the uid has no passwd entry")
                     })?
                     .join(rest),
-                Err(_) => root.join(&folder.host),
+                None => root.join(&folder.host),
             };
-            // Resolved as the box start resolves it; an unusable folder is
-            // refused there, so `config` still reports it.
-            folder.host = dirs::resolve_host_path(&host).unwrap_or(host);
+            folder.guest = guest_path(&folder.guest);
         }
         let mut config = Self::from_project(root, dir, project, mount)?;
         config.folders = folders;
@@ -410,16 +414,57 @@ impl Config {
     }
 
     /// Refuse a project that holds what configures its boxes (see
-    /// [`check_paths_outside`]), or a read-only folder that overlaps it:
-    /// the box could read pinfold's own state, the egress log included.
+    /// [`check_paths_outside`]).
     pub fn check_host_paths(&self, root: &Path) -> io::Result<()> {
         let share = self.mount == ProjectMount::Share;
-        check_paths_outside(root, root, Some(&self.profile), share)?;
+        check_paths_outside(root, root, Some(&self.profile), share)
+    }
+
+    /// Refuse a read-only folder that overlaps a protected path: the box
+    /// could read pinfold's own state, the egress log included. A folder
+    /// that does not resolve is left to the box start, which refuses it.
+    pub fn check_folders(&self, root: &Path) -> io::Result<()> {
         for folder in &self.folders {
-            check_paths_outside(root, &folder.host, Some(&self.profile), true)?;
+            if let Ok(host) = dirs::resolve_host_path(&folder.host) {
+                check_paths_outside(root, &host, Some(&self.profile), true)?;
+            }
         }
         Ok(())
     }
+}
+
+/// [`Config::check_folders`] before any project lock or state exists. A
+/// configuration that does not load is reported by the checks that follow.
+pub(crate) fn check_folders_outside(root: &Path) -> io::Result<()> {
+    match Config::load(root) {
+        Ok(config) => config.check_folders(root),
+        Err(_) => Ok(()),
+    }
+}
+
+/// At a box start, a folder's host after the box layer admitted it as
+/// written: resolved once, then refused unless UTF-8, free of what a mount
+/// path may not hold, and clear of every protected path. The box mounts the
+/// result.
+pub(crate) fn admit_folder(root: &Path, host: &Path, profile: &Profile) -> io::Result<PathBuf> {
+    let refused = |detail: &str| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "spec: read-only folder {} {detail}",
+                terminal_text(&host.to_string_lossy())
+            ),
+        )
+    };
+    let resolved = fs::canonicalize(host).map_err(|error| refused(&error.to_string()))?;
+    crate::pi::launch::utf8(&resolved, "read-only folder")?;
+    if !valid_mount_path(&resolved) {
+        return Err(refused(
+            "resolves to a path holding ',' or an ASCII control character",
+        ));
+    }
+    check_paths_outside(root, &resolved, Some(profile), true)?;
+    Ok(resolved)
 }
 
 /// The protected paths no configuration selects, checked before admission

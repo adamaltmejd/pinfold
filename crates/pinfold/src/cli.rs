@@ -1197,6 +1197,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     let mut findings = Vec::new();
     let project = project_config(&cwd).and_then(|(root, config)| {
         config.check_host_paths(&root)?;
+        config.check_folders(&root)?;
         Ok((root, config))
     });
     let root = project.as_ref().map_or(&cwd, |(root, _)| root);
