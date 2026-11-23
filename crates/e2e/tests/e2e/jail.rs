@@ -6,7 +6,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
 use e2e::{Below, COMMAND, Leftover, Project, TestEnv, box_name, default_image, json_lines, run};
-use serde_json::{Value, json};
+use serde_json::json;
 
 const NAMESPACES: [&str; 6] = ["user", "mnt", "pid", "net", "ipc", "uts"];
 
@@ -42,8 +42,7 @@ fn the_vmm_reaches_only_its_own_box() {
     let project = Project::new(&env, "jail");
     let started = project.pinfold(&["start"]);
     assert_eq!(started.code, 0, "start: {started:?}");
-    let config: Value =
-        serde_json::from_str(&project.pinfold(&["config", "--json"]).stdout).expect("config JSON");
+    let config = project.config();
     let id = config["project"]["id"].as_str().expect("project id");
     let b_disks: Vec<PathBuf> = ["home", "project"]
         .iter()

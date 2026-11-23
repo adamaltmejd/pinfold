@@ -40,13 +40,8 @@ pub fn pinfold() -> &'static Path {
             ]);
         // Cargo gives a test its own package's CARGO_PKG_* and
         // CARGO_MANIFEST_*; ring's build script reruns when those change.
-        for (name, _) in std::env::vars_os() {
-            if name.to_str().is_some_and(|name| {
-                name.starts_with("CARGO_PKG_") || name.starts_with("CARGO_MANIFEST_")
-            }) {
-                command.env_remove(name);
-            }
-        }
+        remove_vars(&mut command, "CARGO_PKG_");
+        remove_vars(&mut command, "CARGO_MANIFEST_");
         if cfg!(target_os = "linux") {
             let triple = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
             command.args(["--release", "--target", &triple]);
@@ -91,6 +86,14 @@ pub struct Exec {
     pub code: i32,
     pub stdout: String,
     pub stderr: String,
+}
+
+impl Exec {
+    /// Exit 0, its stdout trimmed; otherwise fail naming `what`.
+    pub fn ok(self, what: impl std::fmt::Display) -> String {
+        assert_eq!(self.code, 0, "{what}: {self:?}");
+        self.stdout.trim().to_string()
+    }
 }
 
 /// Run `command` with null stdin, capturing its output. Past `timeout` it
@@ -302,7 +305,7 @@ impl TestEnv {
         &self.roots.config
     }
 
-    /// The `XDG_CACHE_HOME` this test's commands use: the suite run's.
+    /// The `XDG_CACHE_HOME` this test's commands use.
     pub fn cache_home(&self) -> &Path {
         &self.roots.cache
     }
@@ -353,13 +356,7 @@ impl TestEnv {
             ready: Value::Null,
             failed: false,
         };
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if send.send(line).is_err() {
-                    return;
-                }
-            }
-        });
+        forward_lines(stdout, send);
         up.stdin
             .as_mut()
             .expect("box up stdin")
@@ -390,11 +387,7 @@ impl TestEnv {
 
     /// `pinfold box list` lines for the box whose generation is `run_id`.
     pub fn listed(&self, run_id: &str) -> Vec<Value> {
-        let label = format!("dev.pinfold.generation={run_id}");
-        let out = run(
-            self.command().args(["box", "list", "--label", &label]),
-            COMMAND,
-        );
+        let out = list_generation(self.command(), run_id);
         assert_eq!(out.code, 0, "box list: {out:?}");
         json_lines(&out.stdout)
     }
@@ -492,7 +485,11 @@ impl<'a> Project<'a> {
     /// run: a share on macOS, a disk on Linux.
     pub fn configure(&mut self) {
         let projects = self.env.config_home().join("pinfold/projects");
-        let before = dir_names(&projects);
+        let before = if projects.is_dir() {
+            dir_names(&projects)
+        } else {
+            Vec::new()
+        };
         let edit = self.pinfold(&["config", "edit"]);
         assert_eq!(edit.code, 0, "config edit: {edit:?}");
         let new: Vec<String> = dir_names(&projects)
@@ -521,6 +518,12 @@ impl<'a> Project<'a> {
     /// edit` exits at once.
     pub fn pinfold(&self, args: &[&str]) -> Exec {
         run(pinfold_command(self.env, &self.root).args(args), COMMAND)
+    }
+
+    /// `pinfold config --json`, parsed.
+    pub fn config(&self) -> Value {
+        let out = self.pinfold(&["config", "--json"]).ok("config --json");
+        serde_json::from_str(&out).expect("config JSON")
     }
 
     /// `pinfold ARGS` in the project's root, to spawn.
@@ -605,15 +608,8 @@ impl Client {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit()),
         );
-        let stdout = child.stdout.take().expect("client stdout");
         let (send, lines) = mpsc::channel();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if send.send(line).is_err() {
-                    return;
-                }
-            }
-        });
+        forward_lines(child.stdout.take().expect("client stdout"), send);
         Client {
             stdin: child.stdin.take(),
             child,
@@ -684,6 +680,17 @@ impl Drop for Client {
     }
 }
 
+/// Send each line `stdout` prints, from a thread of its own.
+fn forward_lines(stdout: impl Read + Send + 'static, send: mpsc::Sender<String>) {
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if send.send(line).is_err() {
+                return;
+            }
+        }
+    });
+}
+
 /// The test's throwaway Git configuration and its `git-remote-pinfold`
 /// link, made once per test.
 fn host_git_setup(env: &TestEnv) {
@@ -723,14 +730,10 @@ fn git_command(env: &TestEnv, root: &Path) -> Command {
 /// first on PATH.
 fn host_git_env(env: &TestEnv, command: &mut Command) {
     remove_vars(command, "GIT_");
-    let mut path = vec![env.root().join("bin")];
-    path.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
+    first_on_path(command, &env.root().join("bin"));
     command
         .env("GIT_CONFIG_GLOBAL", env.root().join("gitconfig"))
-        .env("GIT_CONFIG_SYSTEM", env.root().join("gitconfig-system"))
-        .env("PATH", std::env::join_paths(path).expect("a PATH"));
+        .env("GIT_CONFIG_SYSTEM", env.root().join("gitconfig-system"));
 }
 
 /// A stand-in for the 1Password CLI: `op` in a new directory `name` in the
@@ -807,14 +810,14 @@ pub fn tree(dir: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
 }
 
 /// The names in a directory; none when it is missing.
-fn dir_names(dir: &Path) -> Vec<String> {
-    match fs::read_dir(dir) {
-        Ok(entries) => entries
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(error) => panic!("read {}: {error}", dir.display()),
-    }
+/// The names in `dir`, sorted.
+pub fn dir_names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
 }
 
 /// Each line of `text` as JSON.
@@ -1075,20 +1078,9 @@ pub struct Below(Vec<(u32, String)>);
 impl Below {
     /// Every live process below `pid`, with its command name; at least one.
     pub fn of(pid: u32) -> Below {
-        let mut parents = Vec::new();
-        for entry in fs::read_dir("/proc").expect("read /proc").flatten() {
-            let Some((child, state, parent, _, name)) = entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.parse::<u32>().ok())
-                .and_then(stat)
-            else {
-                continue;
-            };
-            if state != "Z" {
-                parents.push((child, parent, name));
-            }
-        }
+        let parents: Vec<_> = live()
+            .map(|(child, _, parent, _, name)| (child, parent, name))
+            .collect();
         let mut found = Vec::new();
         let mut frontier = vec![pid];
         while let Some(parent) = frontier.pop() {
@@ -1141,16 +1133,21 @@ fn stat(pid: u32) -> Option<(u32, String, u32, u32, String)> {
 /// has yet to exec.
 #[cfg(target_os = "linux")]
 pub fn detached_children(pid: u32) -> Vec<u32> {
+    live()
+        .filter(|(child, _, parent, session, _)| *parent == pid && session == child)
+        .map(|(child, ..)| child)
+        .collect()
+}
+
+/// Every process in /proc that is not a zombie, as [`stat`] reads it.
+#[cfg(target_os = "linux")]
+fn live() -> impl Iterator<Item = (u32, String, u32, u32, String)> {
     fs::read_dir("/proc")
         .expect("read /proc")
         .flatten()
         .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
         .filter_map(stat)
-        .filter(|(child, state, parent, session, _)| {
-            state != "Z" && *parent == pid && session == child
-        })
-        .map(|(child, ..)| child)
-        .collect()
+        .filter(|(_, state, ..)| state != "Z")
 }
 
 /// Wait, bounded, until `pid` has exited (see [`exited`]).
@@ -1221,13 +1218,7 @@ impl Leftover {
     /// generation: a pid from an earlier listing may since be another
     /// process's. A short window between the check and the kill remains.
     pub fn kill(&self) -> Exec {
-        let label = format!("dev.pinfold.generation={}", self.run_id);
-        let out = run(
-            self.roots
-                .command()
-                .args(["box", "list", "--label", &label]),
-            COMMAND,
-        );
+        let out = list_generation(self.roots.command(), &self.run_id);
         let listed = json_lines(&out.stdout);
         assert!(
             out.code == 0
@@ -1245,15 +1236,17 @@ impl Leftover {
     }
 }
 
+/// `box list` for generation `run_id`, run by `command`.
+fn list_generation(mut command: Command, run_id: &str) -> Exec {
+    let label = format!("dev.pinfold.generation={run_id}");
+    run(command.args(["box", "list", "--label", &label]), COMMAND)
+}
+
 /// `box down NAME` only while the runtime lists generation `run_id`, so it
 /// never acts on another box of that name; then the generation must be gone.
 fn down_generation(roots: &Roots, name: &str, run_id: &str) -> Result<(), String> {
-    let label = format!("dev.pinfold.generation={run_id}");
     let listed = || {
-        let out = run(
-            roots.command().args(["box", "list", "--label", &label]),
-            COMMAND,
-        );
+        let out = list_generation(roots.command(), run_id);
         match out.code {
             0 => Ok(!out.stdout.trim().is_empty()),
             _ => Err(format!("box list: {out:?}")),

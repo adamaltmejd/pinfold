@@ -6,10 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use e2e::{
-    COMMAND, Client, Exec, Project, TestEnv, detached_children, hold_maintenance, run, tree,
-    wait_exited,
+    COMMAND, Client, Project, TestEnv, detached_children, hold_maintenance, run, tree, wait_exited,
 };
-use serde_json::Value;
 
 #[test]
 fn cleanup_removes_only_pinfolds_garbage() {
@@ -36,18 +34,16 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // a file to its disk and one to the box's own tmpfs /tmp, which a
     // replacement box would not have, and ended.
     let box_mark = format!("box-{}", std::process::id());
-    ok(live.pinfold(&["start"]), "start");
-    ok(
-        live.pinfold(&[
-            "--",
-            "sh",
-            "-c",
-            "echo kept > marker && echo \"$1\" > /tmp/e2e-box && sync",
-            "sh",
-            &box_mark,
-        ]),
-        "write",
-    );
+    live.pinfold(&["start"]).ok("start");
+    live.pinfold(&[
+        "--",
+        "sh",
+        "-c",
+        "echo kept > marker && echo \"$1\" > /tmp/e2e-box && sync",
+        "sh",
+        &box_mark,
+    ])
+    .ok("write");
     // An idle project: one session, ended, and a host file in its
     // checkout. Its detached owner, the client's child while the session
     // runs, has exited before `clean`.
@@ -88,7 +84,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     let read = live
         .project
         .pinfold(&["--", "cat", "marker", "/tmp/e2e-box"]);
-    assert_eq!(ok(read, "read back"), format!("kept\n{box_mark}"));
+    assert_eq!(read.ok("read back"), format!("kept\n{box_mark}"));
 }
 
 /// A caller image of the Debian base alone, built in `env`'s cache root.
@@ -131,9 +127,7 @@ struct Facts<'a> {
 
 impl<'a> Facts<'a> {
     fn of(env: &TestEnv, project: &'a Project<'a>) -> Facts<'a> {
-        let config: Value =
-            serde_json::from_str(&ok(project.pinfold(&["config", "--json"]), "config --json"))
-                .expect("config JSON");
+        let config = project.config();
         let id = config["project"]["id"].as_str().expect("project id");
         let disk = |kind: &str| {
             let name = config["project"]["disks"][kind]
@@ -154,9 +148,4 @@ impl<'a> Facts<'a> {
     fn state(&self) -> impl Iterator<Item = &PathBuf> {
         std::iter::once(&self.state_dir).chain(&self.disks)
     }
-}
-
-fn ok(out: Exec, what: &str) -> String {
-    assert_eq!(out.code, 0, "{what}: {out:?}");
-    out.stdout.trim().to_string()
 }

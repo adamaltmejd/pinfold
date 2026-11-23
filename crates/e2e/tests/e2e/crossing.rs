@@ -6,7 +6,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use e2e::{Exec, Project, TestEnv, default_image, tree};
+use e2e::{Project, TestEnv, default_image, dir_names, tree};
 
 /// Git's client-side hook names (githooks(5)).
 const HOOKS: [&str; 18] = [
@@ -103,10 +103,10 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
         ),
     )
     .unwrap();
-    let git = |args: &[&str]| ok(project.git(args), args);
+    let git = |args: &[&str]| project.git(args).ok(format!("{args:?}"));
     let in_box = |args: &[&str]| {
         let argv: Vec<&str> = ["--", "sh", "-c"].iter().chain(args).copied().collect();
-        ok(project.pinfold(&argv), args)
+        project.pinfold(&argv).ok(format!("{args:?}"))
     };
 
     // The host: main at c1 with an annotated tag v1 and a lightweight tag
@@ -126,7 +126,7 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     // project disk empty.
     let config = project.root().join(".git/config");
     let host_config = fs::read(&config).unwrap();
-    ok(project.pinfold(&["start"]), &["start"]);
+    project.pinfold(&["start"]).ok(format!("{:?}", ["start"]));
     assert_eq!(fs::read(&config).unwrap(), host_config);
     assert_eq!(in_box(&["ls -A"]), "");
 
@@ -324,7 +324,7 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     assert_eq!(named("refs/heads/"), host_heads);
     assert_eq!(git(&["rev-parse", "refs/remotes/box/main"]), box_main);
     assert_eq!(git(&["rev-parse", "refs/remotes/box/feature"]), box_feature);
-    assert_eq!(names(&host_ran), Vec::<String>::new());
+    assert_eq!(dir_names(&host_ran), Vec::<String>::new());
 
     // Twice: the host fetches the box's newest main, merges and checks
     // out. Its own hooks run; nothing the box planted does.
@@ -344,8 +344,8 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
         git(&["checkout", "-q", "main"]);
     }
     assert_eq!(git(&["rev-parse", "main"]), fetched);
-    assert_eq!(names(&host_ran), ["post-checkout", "post-merge"]);
-    assert_eq!(names(&planted), Vec::<String>::new());
+    assert_eq!(dir_names(&host_ran), ["post-checkout", "post-merge"]);
+    assert_eq!(dir_names(&planted), Vec::<String>::new());
     assert_eq!(project.git(&["config", "--get", "core.hooksPath"]).code, 1);
 
     // With push.followTags, `git push box main` lands main in the box's
@@ -402,12 +402,6 @@ fn files(dir: &Path) -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
-/// Exit 0, its stdout trimmed.
-fn ok(out: Exec, what: &[&str]) -> String {
-    assert_eq!(out.code, 0, "{what:?}: {out:?}");
-    out.stdout.trim().to_string()
-}
-
 /// Every ref in the box's repository, by name.
 fn box_refs(in_box: &dyn Fn(&[&str]) -> String) -> BTreeMap<String, String> {
     in_box(&["git for-each-ref --format='%(refname) %(objectname)'"])
@@ -417,14 +411,4 @@ fn box_refs(in_box: &dyn Fn(&[&str]) -> String) -> BTreeMap<String, String> {
             (name.to_string(), id.to_string())
         })
         .collect()
-}
-
-/// The names in a directory, sorted.
-fn names(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect();
-    names.sort();
-    names
 }
