@@ -57,9 +57,6 @@ pub(crate) fn preparation_unremoved(error: &io::Error) -> bool {
         .is_some_and(|error| error.is::<PreparationUnremoved>())
 }
 
-#[cfg(not(target_os = "linux"))]
-mod transport;
-
 /// The volume behind disk `name`. Apple's volumes are host-wide and a disk
 /// belongs to one state root, so the root's key prefixes the name.
 fn volume(name: &str) -> io::Result<String> {
@@ -725,22 +722,7 @@ impl Runtime for Apple {
         context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        #[cfg(not(target_os = "linux"))]
-        if context.project_directory.is_some() {
-            return project_exec(name, init, context, argv);
-        }
-        let size = if context.tty {
-            super::terminal::window()?
-        } else {
-            None
-        };
-        let command = exec_command(name, init, context, argv, size)?;
-        #[cfg(not(target_os = "linux"))]
-        return transport::exec(command, size, context.tty, context.cancel);
-        #[cfg(target_os = "linux")]
-        { command }
-            .status_guarded()
-            .map_err(|error| spawn_error("container", error))
+        native_exec(name, init, context, argv)
     }
 
     fn exec_command(
@@ -945,8 +927,7 @@ impl Runtime for Apple {
 }
 
 /// The native client owns only private pipes, never caller terminal fds.
-#[cfg(not(target_os = "linux"))]
-fn project_exec(
+fn native_exec(
     name: &str,
     init: &Path,
     context: &ExecContext<'_>,
@@ -1088,7 +1069,6 @@ fn project_exec(
     result.map(|code| ExitStatus::from_raw(code << 8))
 }
 
-#[cfg(not(target_os = "linux"))]
 fn bridge_read(input: &mut impl io::Read, pending: &mut VecDeque<u8>) -> io::Result<bool> {
     let mut bytes = [0; 32 * 1024];
     match input.read(&mut bytes) {
@@ -1109,7 +1089,6 @@ fn bridge_read(input: &mut impl io::Read, pending: &mut VecDeque<u8>) -> io::Res
     }
 }
 
-#[cfg(not(target_os = "linux"))]
 fn bridge_write(output: &mut impl Write, pending: &mut VecDeque<u8>) -> io::Result<bool> {
     match output.write(pending.as_slices().0) {
         Ok(0) => Ok(false),

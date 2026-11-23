@@ -789,12 +789,10 @@ process. Getting further needs a host kernel bug.
   guest terminal ioctl failure fails execution. Later host resizes reach
   the guest terminal while the command runs.
 - Each project client owns its terminal and command transport.
-  Apple project execution carries command frames over the native client's
-  private pipes and creates its PTY in the guest. Public Apple TTY exec
-  gives the native client a private host PTY, opened close-on-exec with its
-  slave raw before spawn. Only pinfold changes the caller's terminal. No native
-  Apple client holds a caller-terminal descriptor. Public non-TTY Apple exec
-  uses separate pipes. Framed execution keeps separate stdout and stderr channels.
+  Apple execution, project and public, carries command frames over the
+  native client's private pipes and creates its PTY in the guest. Only
+  pinfold changes the caller's terminal. No native Apple client holds a
+  caller-terminal descriptor. Framed execution keeps separate stdout and stderr channels.
   The box-owning native client's stderr is piped. Startup diagnostics retain
   at most 64 KiB in memory. Before ready, stdout EOF or native-client exit
   starts a one-second failure deadline even if a descendant holds stderr.
@@ -811,10 +809,9 @@ process. Getting further needs a host kernel bug.
   consumption credits. Command input cannot block window changes or status.
   Non-TTY execution preserves separate
   byte streams. Closing a non-TTY output consumer closes that guest stream's
-  pipe reader so its writer observes SIGPIPE. Public Apple exec closes the native
-  pipe so the native client observes SIGPIPE. An observed command status is kept.
-  An observed native exec status survives later relay failure or cancellation.
-  After native exec exits, remaining output drains to EOF or a one-second
+  pipe reader so its writer observes SIGPIPE. An observed command status is kept.
+  An observed exec status survives later relay failure or cancellation.
+  After the command exits, remaining output drains to EOF or a one-second
   deadline; a descendant holding an endpoint cannot retain the client.
   Both platforms restore only termios this execution changed. Restoration
   checks that its process group owns the foreground terminal before writing.
