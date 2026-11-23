@@ -333,7 +333,7 @@ fn serve(
                 }
             }
             if workers.len() >= MAX_CONNECTIONS {
-                refuse(&mut client, &log, "", 503, "connection cap");
+                refuse(&mut client, &log, "", None, 503, "connection cap");
                 continue;
             }
             let rules = Arc::clone(&rules);
@@ -371,7 +371,7 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &AuditLog, connection: &Co
         Err(_) => return,
     };
     if !head_well_formed(&head) {
-        return refuse(&mut client, log, "", 400, "ambiguous framing");
+        return refuse(&mut client, log, "", None, 400, "ambiguous framing");
     }
     // One parse for both methods; httparse rejects a folded header, a
     // fourth token on the request line and more than MAX_HEADERS headers.
@@ -383,14 +383,14 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &AuditLog, connection: &Co
         request.version,
         request.path,
     ) else {
-        return refuse(&mut client, log, "", 400, "malformed request");
+        return refuse(&mut client, log, "", None, 400, "malformed request");
     };
     if method == "CONNECT" {
         return connect(&mut client, rules, log, target, connection);
     }
     match parse_plain(method, version, target, request.headers) {
         Ok(request) => plain(&mut client, rules, log, &request, connection),
-        Err(reason) => refuse(&mut client, log, "", 400, reason),
+        Err(reason) => refuse(&mut client, log, "", None, 400, reason),
     }
 }
 
@@ -404,21 +404,22 @@ fn connect(
     connection: &Connection,
 ) {
     let Some((host, port)) = target.rsplit_once(':').filter(|(host, _)| !host.is_empty()) else {
-        return refuse(client, log, "", 400, "malformed request");
+        return refuse(client, log, "", None, 400, "malformed request");
     };
     if network::literal(host).is_some() {
-        return refuse(client, log, host, 403, "ip literal");
+        return refuse(client, log, host, Some("CONNECT"), 403, "ip literal");
     }
     if rules.routes.contains_key(&host.to_ascii_lowercase()) {
-        return refuse(client, log, host, 403, "route");
+        return refuse(client, log, host, Some("CONNECT"), 403, "route");
     }
     if !rules.allows(host) {
-        return refuse(client, log, host, 403, "not allowlisted");
+        return refuse(client, log, host, Some("CONNECT"), 403, "not allowlisted");
     }
     if port.parse::<u16>() != Ok(443) {
-        return refuse(client, log, host, 403, "port not allowed");
+        return refuse(client, log, host, Some("CONNECT"), 403, "port not allowed");
     }
-    let Some(address) = resolve_checked(client, log, host, host, 443, connection) else {
+    let Some(address) = resolve_checked(client, log, host, Some("CONNECT"), host, 443, connection)
+    else {
         return;
     };
     if respond(client, 200).is_err() {
@@ -457,13 +458,34 @@ fn plain(
     connection: &Connection,
 ) {
     if request.expect == Some(false) {
-        return refuse(client, log, &request.host, 417, "expectation unsupported");
+        return refuse(
+            client,
+            log,
+            &request.host,
+            Some(&request.method),
+            417,
+            "expectation unsupported",
+        );
     }
     if request.port != 80 {
-        return refuse(client, log, &request.host, 403, "port not allowed");
+        return refuse(
+            client,
+            log,
+            &request.host,
+            Some(&request.method),
+            403,
+            "port not allowed",
+        );
     }
     if network::literal(&request.host).is_some() {
-        return refuse(client, log, &request.host, 403, "ip literal");
+        return refuse(
+            client,
+            log,
+            &request.host,
+            Some(&request.method),
+            403,
+            "ip literal",
+        );
     }
     let host = request.host.to_ascii_lowercase();
     if let Some(upstream) = rules.routes.get(&host) {
@@ -471,9 +493,24 @@ fn plain(
         return;
     }
     if !rules.allows(&host) {
-        return refuse(client, log, &request.host, 403, "not allowlisted");
+        return refuse(
+            client,
+            log,
+            &request.host,
+            Some(&request.method),
+            403,
+            "not allowlisted",
+        );
     }
-    let Some(address) = resolve_checked(client, log, &request.host, &host, 80, connection) else {
+    let Some(address) = resolve_checked(
+        client,
+        log,
+        &request.host,
+        Some(&request.method),
+        &host,
+        80,
+        connection,
+    ) else {
         return;
     };
     if record(log, &request.host, "allowed", "allowlisted", None).is_err() {
@@ -520,7 +557,16 @@ fn route(
     let remove = if login_policy {
         match login_removals(request) {
             Ok(remove) => remove,
-            Err((status, reason)) => return refuse(client, log, &request.host, status, reason),
+            Err((status, reason)) => {
+                return refuse(
+                    client,
+                    log,
+                    &request.host,
+                    Some(&request.method),
+                    status,
+                    reason,
+                );
+            }
         }
     } else {
         Vec::new()
@@ -532,7 +578,16 @@ fn route(
         } => (target, &target.authority, Cow::Borrowed(headers.as_slice())),
         Upstream::Codex { target, login } => match login.headers(&connection.control.cancelled) {
             Some(headers) => (target, &target.authority, Cow::Owned(headers)),
-            None => return refuse(client, log, &request.host, 403, "login lapsed"),
+            None => {
+                return refuse(
+                    client,
+                    log,
+                    &request.host,
+                    Some(&request.method),
+                    403,
+                    "login lapsed",
+                );
+            }
         },
     };
     if !target.https {
@@ -555,6 +610,7 @@ fn route(
         client,
         log,
         &request.host,
+        Some(&request.method),
         &target.host,
         target.port,
         connection,
@@ -579,6 +635,7 @@ fn resolve_checked(
     client: &mut UnixStream,
     log: &AuditLog,
     log_host: &str,
+    method: Option<&str>,
     host: &str,
     port: u16,
     connection: &Connection,
@@ -590,11 +647,11 @@ fn resolve_checked(
     match resolved {
         Ok(address) => Some(address),
         Err(network::ResolveError::Forbidden(reason)) => {
-            refuse(client, log, log_host, 403, reason);
+            refuse(client, log, log_host, method, 403, reason);
             None
         }
         Err(network::ResolveError::Unresolved) => {
-            refuse(client, log, log_host, 502, "resolve failed");
+            refuse(client, log, log_host, method, 502, "resolve failed");
             None
         }
     }
@@ -1229,27 +1286,84 @@ fn tunnel(client: &UnixStream, server: TcpStream, log: &AuditLog, host: &str) {
 }
 
 fn respond(client: &mut UnixStream, code: u16) -> io::Result<()> {
-    let reason = match code {
-        200 => "Connection Established",
-        400 => "Bad Request",
-        403 => "Forbidden",
-        417 => "Expectation Failed",
-        502 => "Bad Gateway",
-        _ => "Service Unavailable",
-    };
     let framing = if code == 200 {
         ""
     } else {
         "Content-Length: 0\r\nConnection: close\r\n"
     };
     Deadline(client.as_fd(), IDLE_TIMEOUT)
-        .write_all(format!("HTTP/1.1 {code} {reason}\r\n{framing}\r\n").as_bytes())
+        .write_all(format!("HTTP/1.1 {code} {}\r\n{framing}\r\n", phrase(code)).as_bytes())
 }
 
-fn refuse(client: &mut UnixStream, log: &AuditLog, host: &str, code: u16, reason: &str) {
-    if record(log, host, "refused", reason, None).is_ok() {
-        let _ = respond(client, code);
+fn phrase(code: u16) -> &'static str {
+    match code {
+        200 => "Connection Established",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        417 => "Expectation Failed",
+        502 => "Bad Gateway",
+        _ => "Service Unavailable",
     }
+}
+
+/// Log a refusal and answer it with its reason (Egress proxy, Refusal
+/// responses). The reason is one of the spec's fixed tokens, so nothing the
+/// box sent, not even the host, reaches the header or the body.
+/// `method` is the parsed request's, `None` when the refusal comes before
+/// a request parsed. Only a parsed request other than `HEAD` gets the text
+/// body: a HEAD response ends at its head (RFC 9110, 9.3.2), and an
+/// unparsed request may have been a HEAD.
+fn refuse(
+    client: &mut UnixStream,
+    log: &AuditLog,
+    host: &str,
+    method: Option<&str>,
+    code: u16,
+    reason: &'static str,
+) {
+    if record(log, host, "refused", reason, None).is_err() {
+        return;
+    }
+    let error = match reason {
+        "not allowlisted"
+        | "route"
+        | "port not allowed"
+        | "login lapsed"
+        | "login credential query" => "http_request_denied",
+        "malformed request" | "ambiguous framing" | "expectation unsupported" => {
+            "http_request_error"
+        }
+        "resolve failed" => "dns_error",
+        "connection cap" => "proxy_internal_response",
+        // `ip literal` and a refused address's class.
+        _ => "destination_ip_prohibited",
+    };
+    let details = reason.replace('\\', "\\\\").replace('"', "\\\"");
+    // A HEAD's Content-Length must be its GET's (RFC 9110, 8.6), so a
+    // refused HEAD sends none; `Connection: close` ends it.
+    let (framing, body) = match method {
+        None => ("Content-Length: 0\r\n".to_string(), String::new()),
+        Some("HEAD") => (String::new(), String::new()),
+        Some(_) => {
+            let body = format!(
+                "The pinfold sandbox refused this request: {reason}.\n\
+                 Allowed hosts and routes are set on the host, in pinfold's \
+                 configuration; nothing inside the box can change them.\n"
+            );
+            let framing = format!(
+                "Content-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n",
+                body.len()
+            );
+            (framing, body)
+        }
+    };
+    let response = format!(
+        "HTTP/1.1 {code} {}\r\n\
+         Proxy-Status: pinfold; error={error}; details=\"{details}\"\r\n\
+         {framing}Connection: close\r\n\r\n{body}",
+        phrase(code),
+    );
+    let _ = Deadline(client.as_fd(), IDLE_TIMEOUT).write_all(response.as_bytes());
 }
 
 /// Append one decision as a JSON line. A route decision also names the
