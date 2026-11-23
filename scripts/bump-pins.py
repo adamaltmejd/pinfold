@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Repin repository dependencies and tools (ARCHITECTURE.md, Pinned artifacts)."""
 
+import argparse
 import base64
 import datetime
 import hashlib
@@ -346,7 +347,7 @@ def repin_build_tools(texts):
         print(f"{name} {current} -> {target}")
 
 
-def repin_suffix_list(texts):
+def repin_suffix_list(texts, move):
     path = ROOT / "crates" / "pinfold" / "public_suffix_list.dat"
     target = fetch("https://publicsuffix.org/list/public_suffix_list.dat").decode()
     pattern = r"^// VERSION: (\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_UTC)$"
@@ -369,12 +370,50 @@ def repin_suffix_list(texts):
         )
     ):
         raise ValueError("Public Suffix List is incomplete")
-    if new[1] > current[1]:
-        print(f"public suffix list {current[1]} -> {new[1]}")
-        texts[path] = target
+    if new[1] <= current[1]:
+        return
+    # A new list changes which allow entries the box spec refuses, a caller
+    # change the nightly's notes cannot name, so only a manual release moves it.
+    if not move:
+        print(
+            f"public suffix list {current[1]}: {new[1]} exists; --suffix-list moves it"
+        )
+        return
+    print(f"public suffix list {current[1]} -> {new[1]}")
+    old, now = refused_suffixes(texts[path]), refused_suffixes(target)
+    for entry in sorted(now - old):
+        print(f"  newly refused: .{entry}")
+    for entry in sorted(old - now):
+        print(f"  no longer refused: .{entry}")
+    texts[path] = target
+
+
+def refused_suffixes(text):
+    """The names X whose `.X` allow entry core/plan.rs's
+    on_or_above_public_suffix refuses: every rule, its marker stripped, and
+    each name above it."""
+    names = set()
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("//"):
+            continue
+        if line.startswith("*."):
+            line = line[2:]
+        elif line.startswith("!"):
+            line = line[1:]
+        labels = line.lower().split(".")
+        names.update(".".join(labels[i:]) for i in range(len(labels)))
+    return names
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--suffix-list",
+        action="store_true",
+        help="also move the Public Suffix List (a caller change; manual releases only)",
+    )
+    args = parser.parse_args()
     recipes = sorted({path for path, _ in IMAGE_TOOLS.values()})
     texts = {
         path: path.read_text()
@@ -440,7 +479,7 @@ def main():
 
     repin_firecracker(texts, cutoff)
     repin_build_tools(texts)
-    repin_suffix_list(texts)
+    repin_suffix_list(texts, args.suffix_list)
     for path, text in texts.items():
         path.write_text(text)
 
