@@ -13,7 +13,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-IMAGE = ROOT / "profile" / "image"
+PROFILE = ROOT / "profile"
 HOST_HELPER = ROOT / "crates" / "pinfold" / "host-helper.toml"
 VMM = ROOT / "crates" / "pinfold" / "vmm.toml"
 KERNEL = ROOT / "guest-kernel" / "pins"
@@ -21,9 +21,9 @@ KERNEL = ROOT / "guest-kernel" / "pins"
 # comes after one whose dependencies or optionalDependencies name it at the
 # same version.
 IMAGE_TOOLS = {
-    "bun": (IMAGE / "documents.Containerfile", ["/tmp/bun-aarch64.zip", "/tmp/bun-x64.zip"]),
+    "bun": (PROFILE / "documents/Containerfile", ["/tmp/bun-aarch64.zip", "/tmp/bun-x64.zip"]),
     "fff": (
-        IMAGE / "adam.Containerfile",
+        PROFILE / "adam/Containerfile",
         [
             "/tmp/pi-fff.tgz",
             "/tmp/fff-bun.tgz",
@@ -31,9 +31,9 @@ IMAGE_TOOLS = {
             "/tmp/fff-bin-x64.tgz",
         ],
     ),
-    "ponytail": (IMAGE / "adam.Containerfile", ["/tmp/ponytail.tgz"]),
+    "ponytail": (PROFILE / "adam/Containerfile", ["/tmp/ponytail.tgz"]),
     "anydoc": (
-        IMAGE / "documents.Containerfile",
+        PROFILE / "documents/Containerfile",
         ["/tmp/anydoc.tgz", "/tmp/anydoc-aarch64.tgz", "/tmp/anydoc-x64.tgz"],
     ),
 }

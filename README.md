@@ -290,8 +290,9 @@ Optional profiles add tools. Each builds on the one above it:
 | `documents` | `default` | Bun, AnyDoc for local document conversion, Poppler for PDFs |
 | `adam` | `documents` | gh, fff (pi extension) and ponytail; allows `github.com` and `api.github.com` |
 
-Their [image recipes](profile/image) each add only their own tools. All
-three seed these [Pi settings](profile/home/.pi/agent/settings.json).
+Each one's directory under [profile/](profile) holds only what it adds:
+its recipe adds only its own tools. All three seed these
+[Pi settings](profile/default/home/.pi/agent/settings.json).
 In a running box, `cat /opt/pinfold/agents/install.txt` shows the agent versions
 installed at build time. `cat ~/.pi/agent/settings.json` shows the current guest settings.
 

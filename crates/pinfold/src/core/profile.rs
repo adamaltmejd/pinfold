@@ -8,52 +8,46 @@ use std::path::{Path, PathBuf};
 
 use crate::dirs;
 
-const DEFAULT: &[u8] = include_bytes!("../../../../profile/image/default.Containerfile");
-const DOCUMENTS: &[u8] = include_bytes!("../../../../profile/image/documents.Containerfile");
-const ADAM: &[u8] = include_bytes!("../../../../profile/image/adam.Containerfile");
-const CONFIG: &[u8] = include_bytes!("../../../../profile/pinfold.toml");
-const DOCUMENTS_CONFIG: &[u8] = include_bytes!("../../../../profile/documents/pinfold.toml");
-const ADAM_CONFIG: &[u8] = include_bytes!("../../../../profile/adam/pinfold.toml");
-const PROJECT_GUIDANCE: &[u8] = include_bytes!("../../../../profile/project-guidance.md");
+/// A file under `profile/`, or with a directory, a `(path, bytes)` entry
+/// whose path under that directory is also its path in `home/` or `share/`.
+macro_rules! bundled {
+    ($path:literal) => {
+        include_bytes!(concat!("../../../../profile/", $path))
+    };
+    ($dir:literal, $path:literal) => {
+        (
+            $path,
+            include_bytes!(concat!("../../../../profile/", $dir, "/", $path)),
+        )
+    };
+}
+
+// The order of every table below is part of `builtin_hash`.
+const DEFAULT: &[u8] = bundled!("default/Containerfile");
+const DOCUMENTS: &[u8] = bundled!("documents/Containerfile");
+const ADAM: &[u8] = bundled!("adam/Containerfile");
+const CONFIG: &[u8] = bundled!("default/pinfold.toml");
+const DOCUMENTS_CONFIG: &[u8] = bundled!("documents/pinfold.toml");
+const ADAM_CONFIG: &[u8] = bundled!("adam/pinfold.toml");
+// The two other instruction files link to APPEND_SYSTEM.md.
 const HOME: &[(&str, &[u8])] = &[
-    (".pi/agent/APPEND_SYSTEM.md", PROJECT_GUIDANCE),
-    (".claude/CLAUDE.md", PROJECT_GUIDANCE),
-    (".codex/AGENTS.md", PROJECT_GUIDANCE),
-    (
-        ".pi/agent/settings.json",
-        include_bytes!("../../../../profile/home/.pi/agent/settings.json"),
-    ),
-    (
-        ".claude/settings.json",
-        include_bytes!("../../../../profile/home/.claude/settings.json"),
-    ),
-    (
-        ".codex/config.toml",
-        include_bytes!("../../../../profile/home/.codex/config.toml"),
-    ),
-    (
-        ".codex/app-server-daemon/settings.json",
-        include_bytes!("../../../../profile/home/.codex/app-server-daemon/settings.json"),
-    ),
+    bundled!("default/home", ".pi/agent/APPEND_SYSTEM.md"),
+    bundled!("default/home", ".claude/CLAUDE.md"),
+    bundled!("default/home", ".codex/AGENTS.md"),
+    bundled!("default/home", ".pi/agent/settings.json"),
+    bundled!("default/home", ".claude/settings.json"),
+    bundled!("default/home", ".codex/config.toml"),
+    bundled!("default/home", ".codex/app-server-daemon/settings.json"),
 ];
 const DEFAULT_SHARE: &[(&str, &[u8])] = &[
-    (
-        "pi/package.json",
-        include_bytes!("../../../../profile/share/pi/package.json"),
-    ),
-    (
-        "pi/extensions/operating-context.ts",
-        include_bytes!("../../../../profile/share/pi/extensions/operating-context.ts"),
-    ),
+    bundled!("default/share", "pi/package.json"),
+    bundled!("default/share", "pi/extensions/operating-context.ts"),
 ];
-const DOCUMENTS_SHARE: &[(&str, &[u8])] = &[(
-    "pi/skills/read-documents/SKILL.md",
-    include_bytes!("../../../../profile/share/pi/skills/read-documents/SKILL.md"),
+const DOCUMENTS_SHARE: &[(&str, &[u8])] = &[bundled!(
+    "documents/share",
+    "pi/skills/read-documents/SKILL.md"
 )];
-const ADAM_SHARE: &[(&str, &[u8])] = &[(
-    "pi/package.json",
-    include_bytes!("../../../../profile/adam/package.json"),
-)];
+const ADAM_SHARE: &[(&str, &[u8])] = &[bundled!("adam/share", "pi/package.json")];
 
 /// One shared file held in memory: its path under `share/`, its bytes and
 /// whether it is executable.
