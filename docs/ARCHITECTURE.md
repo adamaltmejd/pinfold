@@ -812,8 +812,7 @@ process. Getting further needs a host kernel bug.
   pipe reader so its writer observes SIGPIPE. An observed command status is kept.
   An observed exec status survives later relay failure or cancellation.
   After the command exits, remaining output drains to EOF or a one-second
-  deadline; a descendant holding an endpoint cannot retain the client or
-  the guest helper, and the helper's exit sends it no signal.
+  deadline; a descendant holding an endpoint cannot retain the client.
   Both platforms restore only termios this execution changed. Restoration
   checks that its process group owns the foreground terminal before writing.
   A non-raw execution leaves later terminal settings alone. Handled
@@ -836,7 +835,11 @@ process. Getting further needs a host kernel bug.
   The group comes from the helper's own child, never workload data.
   Other sessions, the helper and relay are untouched. Normal command completion
   leaves background children running, with output delivered for up to one second
-  after the command exits. A process that leaves the command's process group,
+  after the command exits. For `box exec` and project commands on both
+  platforms, the caller gets the command's status when it exits, after that
+  second. A process it leaves holding its output keeps running, its later
+  output is discarded, and its guest relay ends when it closes those
+  descriptors. A process that leaves the command's process group,
   or for a terminal session ignores hangup after leaving it, may keep running.
   `pinfold stop` ends everything. TTY Ctrl-C and Ctrl-\ remain terminal input.
   Plain stdin EOF is not departure. Public `box exec` sends no signal on departure.
