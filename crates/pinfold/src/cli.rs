@@ -198,13 +198,12 @@ pub fn print_help() {
 
 Project
   -- CMD          Run a command in the project box
-  config          Show the project folder, profile, mount and image
-  config edit     Open the project settings in your editor
+  config          Show or edit this project's settings
   build           Build or rebuild the selected image
   start           Keep the box running between commands
   stop            Shut down the project box
 
-Disk projects
+Isolated disk: the box has its own files, separate from your folder; work crosses through Git
   git push box    Send host branches (as host/*) and tags into the box
                   In the box: git switch -c BRANCH host/BRANCH
   git fetch box   Bring guest branches back as box/*, and new tags
@@ -218,15 +217,13 @@ Maintenance
   update          Check for or install a release
 
 Advanced
-  profile new     Copy a profile for customization
+  profile         List profiles, or copy one to customize
   disk            List, export or remove managed disks"
     );
     #[cfg(target_os = "linux")]
     println!("  apparmor-profile  Print the AppArmor policy for installation");
     println!(
-        "
-Developers
-  box             Process interface for integrators
+        "  box             Process interface for integrators
   image           Build or remove a caller image
 
 Run pinfold COMMAND --help for options. Use --version to show the version."
@@ -241,6 +238,8 @@ pinfold stop
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]… [--json]
 pinfold image rm NAME [--json]
+pinfold profile
+pinfold profile list
 pinfold profile new NAME [--from PROFILE]
 pinfold clean [--dry-run] [--unused AGE]
 pinfold doctor [--artifacts] [--json]
@@ -705,9 +704,20 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
                 crate::pi::state::disk_origins()?
             };
             let mut disks = runtime.list_disks()?;
+            let mut rows = vec![
+                [
+                    "NAME",
+                    "ALLOCATED",
+                    "CAPACITY",
+                    "STATE",
+                    "ATTACHED",
+                    "ORIGIN",
+                ]
+                .map(String::from)
+                .to_vec(),
+            ];
             if !json {
                 disks.sort_by(|left, right| left.name.cmp(&right.name));
-                println!("NAME\tALLOCATED\tCAPACITY\tSTATE\tATTACHED\tORIGIN");
             }
             for found in disks {
                 let clean = !disk::unclean(&found.name)?;
@@ -729,15 +739,18 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
                         .get(&found.name)
                         .map(|root| terminal_text(&root.to_string_lossy()))
                         .unwrap_or_else(|| "—".to_string());
-                    println!(
-                        "{}\t{}\t{}\t{}\t{}\t{}",
+                    rows.push(vec![
                         terminal_text(&found.name),
                         human_size(found.allocated),
                         human_size(found.size),
-                        if clean { "clean" } else { "unclean" },
-                        if holders.is_empty() { "—" } else { &holders },
-                        origin
-                    );
+                        if clean { "clean" } else { "unclean" }.to_string(),
+                        if holders.is_empty() {
+                            "—".to_string()
+                        } else {
+                            holders
+                        },
+                        origin,
+                    ]);
                     continue;
                 }
                 let boxes: Vec<_> = attached
@@ -758,6 +771,9 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
                         "clean": clean,
                     })
                 );
+            }
+            if !json {
+                print_table(&rows);
             }
             Ok(0)
         }
@@ -983,14 +999,13 @@ impl CleanPlan {
 
     fn print(&self) {
         println!(
-            "  automatic maintenance: {}",
+            "  reclaimable by daily cleanup: {}",
             human_size(self.automatic_bytes)
         );
         println!("  run records: {}", human_size(self.run_bytes));
         println!(
-            "  build cache: {}; {}",
-            human_size(self.build_cache_bytes),
-            image::service().build_cache()
+            "  build cache: {}; emptied by clean",
+            human_size(self.build_cache_bytes)
         );
         println!("  project state: {}", human_size(self.project_state));
         println!("  disks: {}", human_size(self.disk_bytes));
@@ -1168,19 +1183,27 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         .ok();
     let mut image = None;
     let mut configuration = None;
+    // Plain output names an outdated chain once, as its lowest image.
+    let mut outdated = None;
     match &project {
         Ok((root, config)) => {
             let reference =
                 crate::pi::launch::resolve_image(config, &crate::pi::state::project_id(root));
             let resolved = (ready || cfg!(target_os = "linux"))
                 .then(|| image::service().resolve_image(&reference));
-            let warnings = match &resolved {
-                Some(Ok(found)) => crate::pi::launch::image_warnings_for(config, &reference, found),
+            let found = match &resolved {
+                Some(Ok(found)) => crate::pi::launch::outdated_images(config, &reference, found),
                 Some(Err(error)) => Err(io::Error::other(error.to_string())),
-                None => Ok(Vec::new()),
+                None => Ok(Default::default()),
             };
-            match warnings {
-                Ok(warnings) => findings.extend(warnings),
+            match found {
+                Ok(found) => {
+                    let warnings = found.warnings();
+                    outdated = found
+                        .summary()
+                        .map(|line| (findings.len()..findings.len() + warnings.len(), line));
+                    findings.extend(warnings);
+                }
                 Err(error) => findings.push(format!("Image: {error}")),
             }
             if json {
@@ -1236,6 +1259,9 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         return Ok(0);
     }
 
+    if let Some((chain, line)) = outdated {
+        findings.splice(chain, [line]);
+    }
     if findings.is_empty() {
         println!("No issues found.");
     } else {
@@ -1243,23 +1269,23 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
             println!("- {}", terminal_text(&finding));
         }
     }
-    println!("\nProject  {}", terminal_text(&root.to_string_lossy()));
+    println!("\nProject   {}", terminal_text(&root.to_string_lossy()));
     println!(
-        "Runtime  {} ({})",
+        "Runtime   {} ({})",
         runtime.describe(),
         terminal_text(version.as_deref().unwrap_or("version unknown"))
     );
     if let Some(kernel) = kernel {
-        println!("Kernel   {}", terminal_text(&kernel));
+        println!("Kernel    {}", terminal_text(&kernel));
     }
     if let Ok((_, config)) = &project {
-        println!("Profile  {}", profile_description(config));
+        print_profile(config, 10)?;
     }
     if let Some(image) = image {
-        println!("Image    {}", terminal_text(&image));
+        println!("Image     {}", terminal_text(&image));
     }
     if let Ok((_, config)) = &project {
-        println!("Logins   {}", logins_description(config));
+        println!("Logins    {}", logins_description(config));
     }
     if let Some(plan) = disk {
         println!("Disk usage");
@@ -1288,17 +1314,82 @@ fn helper_finding() -> Option<String> {
 }
 
 fn profile_description(config: &Config) -> String {
-    let name = terminal_text(&config.profile.name);
+    terminal_text(&config.profile.name) + &profile_override(config)
+}
+
+fn profile_override(config: &Config) -> String {
     match config.project_profile.as_deref() {
         Some(saved)
             if std::env::var_os("PINFOLD_PROFILE").is_some() && saved != config.profile.name =>
         {
-            format!(
-                "{name} (PINFOLD_PROFILE overrides {})",
-                terminal_text(saved)
-            )
+            format!(" (PINFOLD_PROFILE overrides {})", terminal_text(saved))
         }
-        _ => name,
+        _ => String::new(),
+    }
+}
+
+/// The selected profile's chain, top first, where the profile lives, and
+/// the settings file over it; labels padded to `width`.
+fn print_profile(config: &Config, width: usize) -> io::Result<()> {
+    let profile = &config.profile;
+    let chain: Vec<String> = profile
+        .links()
+        .iter()
+        .rev()
+        .map(|link| terminal_text(&link.name))
+        .collect();
+    println!(
+        "{:width$}{}{}",
+        "Profile",
+        chain.join(" → "),
+        profile_override(config)
+    );
+    let place = match profile.dir()? {
+        Some(dir) => {
+            let files: Vec<&str> = ["pinfold.toml", "Containerfile", "home", "share"]
+                .into_iter()
+                .filter(|file| dir.join(file).exists())
+                .collect();
+            let dir = terminal_text(&dir.to_string_lossy());
+            if files.is_empty() {
+                format!("{dir} (editable)")
+            } else {
+                format!("{dir} (editable: {})", files.join(", "))
+            }
+        }
+        None => format!(
+            "built in; copy it with `pinfold profile new NAME --from {}` to change it",
+            terminal_text(&profile.name)
+        ),
+    };
+    println!("{:width$}{place}", "");
+    println!(
+        "{:width$}{} (this project only; overrides the profile)",
+        "Settings",
+        terminal_text(&config.path.to_string_lossy())
+    );
+    Ok(())
+}
+
+/// `rows` with each column but the last padded to its widest cell.
+fn print_table(rows: &[Vec<String>]) {
+    let mut widths = Vec::new();
+    for row in rows {
+        widths.resize(widths.len().max(row.len()), 0);
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    for row in rows {
+        let mut line = String::new();
+        for (index, cell) in row.iter().enumerate() {
+            line.push_str(cell);
+            if index + 1 < row.len() {
+                let pad = widths[index] - cell.chars().count() + 2;
+                line.extend(std::iter::repeat_n(' ', pad));
+            }
+        }
+        println!("{line}");
     }
 }
 
@@ -1402,7 +1493,7 @@ pub fn config(args: &[String]) -> io::Result<i32> {
     }
     println!("Project   {}", terminal_text(&root.to_string_lossy()));
     println!("Files     {}", project_files(config.mount, &root));
-    println!("Profile   {}", profile_description(&config));
+    print_profile(&config, 10)?;
     let availability = match report["image_built"].as_bool() {
         Some(true) => "available locally",
         Some(false) => "missing",
@@ -1415,10 +1506,6 @@ pub fn config(args: &[String]) -> io::Result<i32> {
     if let Some(error) = report["image_error"].as_str() {
         println!("          {}", terminal_text(error));
     }
-    println!(
-        "Settings  {}",
-        terminal_text(&config.path.to_string_lossy())
-    );
     if path.is_none() {
         println!("\nEdit these settings with `pinfold config edit`.");
     }
@@ -1496,10 +1583,20 @@ fn config_report(
     let project = crate::pi::state::project_id(root);
     let [home_disk, project_disk] = crate::pi::state::disk_names(&project);
     let (image_built, image_error) = resolved.map_or((None, None), image_built);
+    let mut chain = Vec::new();
+    for link in config.profile.links().into_iter().rev() {
+        let path = link.dir()?;
+        let path = path
+            .as_deref()
+            .map(|dir| utf8(dir, "profile directory"))
+            .transpose()?;
+        chain.push(serde_json::json!({ "name": &link.name, "path": path }));
+    }
     Ok(serde_json::json!({
         "root": utf8(root, "project root")?,
         "config": utf8(&config.path, "configuration file")?,
         "profile": &config.profile.name,
+        "profile_chain": chain,
         "image": image,
         "image_source": config.image_source(),
         "image_built": image_built,
@@ -1898,16 +1995,69 @@ fn parse_image_build(name: Option<&str>, args: &[String]) -> (bool, Result<Image
 pub fn profile(args: &[String]) -> io::Result<i32> {
     match args.first().map(String::as_str) {
         Some("new") => profile_new(&args[1..]).map(|()| 0),
+        None => profile_list(),
+        Some("list") if args.len() == 1 => profile_list(),
+        Some("list") => Err(usage("profile", "list takes no arguments")),
         Some(verb) => Err(usage("profile", &format!("unknown profile verb {verb:?}"))),
-        None => Err(usage("profile", "a profile verb is required")),
     }
+}
+
+/// Every profile, built in or the user's, with its base and where it
+/// lives. Inside a configured project, `*` marks the selected one.
+fn profile_list() -> io::Result<i32> {
+    let mut names: BTreeSet<String> = profile::BUILT_IN.map(String::from).into();
+    for entry in dirs::entries(&profile::user_dir()?)? {
+        if let Some(name) = entry.file_name().to_str()
+            && entry.path().is_dir()
+            && profile::check_name("profile", name).is_ok()
+        {
+            names.insert(name.to_string());
+        }
+    }
+    let selected = std::env::current_dir()
+        .and_then(|cwd| project_config(&cwd))
+        .ok()
+        .map(|(_, config)| config.profile.name);
+    let mut rows = vec![
+        ["", "PROFILE", "BUILDS ON", "WHERE"]
+            .map(String::from)
+            .to_vec(),
+    ];
+    for name in names {
+        let mark = if selected.as_ref() == Some(&name) {
+            "*"
+        } else {
+            ""
+        };
+        // A user directory wins whole, as `Profile::link` decides, so a
+        // profile that fails to load still shows where to fix it.
+        let dir = profile::user_dir()?.join(&name);
+        let mut place = if dir.is_dir() {
+            format!("{} (editable)", terminal_text(&dir.to_string_lossy()))
+        } else {
+            "built in".to_string()
+        };
+        let base = match Profile::link(&name).and_then(|link| profile::base_name(&link)) {
+            Ok(base) => base.map_or("—".to_string(), |base| terminal_text(&base)),
+            Err(error) => {
+                // A TOML error spans lines; its first names the place.
+                let error = error.to_string();
+                let error = error.lines().next().unwrap_or_default();
+                place = format!("{place}; {}", terminal_text(error));
+                "?".to_string()
+            }
+        };
+        rows.push(vec![mark.to_string(), terminal_text(&name), base, place]);
+    }
+    print_table(&rows);
+    Ok(0)
 }
 
 fn profile_new(args: &[String]) -> io::Result<()> {
     let (name, from) = parse_profile_new(args)?;
     profile::check_name("profile", &name)?;
     let source = Profile::link(&from);
-    let profiles = dirs::config_dir()?.join("profiles");
+    let profiles = profile::user_dir()?;
     fs::create_dir_all(&profiles)?;
     let target = profiles.join(&name);
     fs::create_dir(&target).map_err(|error| {

@@ -1145,7 +1145,7 @@ A project recipe typically `FROM`s the profile image.
   image as its build starts; those named before the failed one are the
   ones left published.
 - After each completed Apple build, pinfold attempts to prune the shared
-  builder's unused cache to 4 GB, then return unused builder blocks;
+  builder's unused cache to 16 GB, then return unused builder blocks;
   failure only warns and preserves the build result.
 - A build's identity is its unique tag, never an image label. Every
   build is tagged `<repo>:<build>` and moves the stable `<repo>:latest` to
@@ -1418,6 +1418,9 @@ with or without a TTY.
   its nearest base's image. The box spec's `profile` applies the whole chain.
 - `pinfold profile new` writes a copy of `default`, or of the profile named
   by `--from`: that profile's own files and `base`, not its base's files.
+- `pinfold profile` (or `profile list`) lists every profile: its base, and
+  its directory, editable, or that it is built in. In a configured project
+  it marks the selected one.
 - A profile whose chain has no recipe needs an explicit image or, for project commands, a project recipe.
   Without either, core refuses as `profile`, with `image-source-missing`.
 - `home/` needs `$HOME` on a writable disk; seeds (Terms) are copied in at
@@ -1682,7 +1685,7 @@ Automatic, never prompting:
   in the last hour stays, so the ref its `built` line named still comes
   up; past the hour the newest two rule applies.
 - At most once a day, at the start of a working command (except the deferred
-  cases below, and not `--version`, `--help`, `doctor`, `config`, `update`, `box list`, `box down`, `box inspect`, `box events`, `box prune`, `--`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
+  cases below, and not `--version`, `--help`, `doctor`, `config`, `profile`, `profile list`, `update`, `box list`, `box down`, `box inspect`, `box events`, `box prune`, `--`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
   is gone (nothing owns its generation's lifetime lock), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
   builds beyond each source's newest two (the after-build rule, applied
@@ -2162,17 +2165,21 @@ An unknown key in the project's file or a profile's `pinfold.toml` is
 refused, naming the file and the key. `mounts` in a profile's file and
 `base` in the project's file are refused.
 
-`pinfold config` summarizes the project folder, mount, selected profile (with
-the profile the project's file names when `PINFOLD_PROFILE` overrides it),
-image and its availability, and settings path. It reads configuration
-without changing state, even when the runtime is unavailable.
+`pinfold config` summarizes the project folder, mount, selected profile and
+its base chain (with the profile the project's file names when
+`PINFOLD_PROFILE` overrides it), the selected profile's directory or that
+it is built in, the settings path, and the image and its availability.
+It reads configuration without changing state, even when the runtime is
+unavailable. `doctor` shows the same profile and settings lines.
 `pinfold config --json` prints the effective configuration. `env` maps each
 configured box variable to its literal or its `{"from": VAR}`, a `PINFOLD_ENV_<NAME>`
 as `{"from": "PINFOLD_ENV_<NAME>"}`; the box's default `PINFOLD_PROJECT` is not listed. Its `project` reports its id, home path
 and `mount`, containing `kind`, canonical `host` and `guest` (Project mount).
 `project.disks.home` names the persistent home disk. `project.disks.project`
 names the disk for a disk project and is null for a share. `config` is the
-project’s configuration file. `image_built` reports local presence, not
+project’s configuration file. `profile_chain` lists the selected profile,
+then each base, as `{name, path}`: the profile's directory, or null for a
+built-in. `image_built` reports local presence, not
 managed provenance or recipe freshness: true or false when
 the runtime image inventory succeeds, and null when it cannot be observed;
 `image_error` names that failure. On Linux it reads only the local
@@ -2191,6 +2198,7 @@ pinfold -- CMD [args…]           start or join a project session
 pinfold start                   keep this project's box
 pinfold stop                    stop its observed box
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this project's image, or a profile's; prints the ref
+pinfold profile [list]           list profiles: base, and editable directory or built in
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
 pinfold disk list|rm|export … [--json]   list, remove or export managed disks (Disks)
 pinfold clean [--dry-run] [--unused AGE]   reclaim unused disk space
@@ -2214,7 +2222,9 @@ executable or infrastructure install directory), `cached`, and
 `assets`, a list of `{url, sha256}` for this host's `os-arch`. Nothing is
 downloaded. The builder asset includes `url`, `sha256` and `bytes`; its
 entry also reports the recipe identity. Without `--json`, `doctor --artifacts`
-prints a readable inventory. Plain `doctor` leads with findings and remedies.
+prints a readable inventory. Plain `doctor` leads with findings and remedies;
+it names an outdated chain once, as its lowest outdated image, the count of
+images built on it and the build, where `--json` lists each image.
 In a configured project its `Logins` line names each effective login route
 with its agent, and Pi's provider, or says there is none. It reads
 configuration only: no value, and not whether a variable is set.
@@ -2231,7 +2241,8 @@ profile and the default mount the first run asks to confirm. It ends with
 next steps and succeeds. It reads project and owner information and image
 availability without creating state or starting a box.
 Explicit help groups the command inventory
-by task, with the developer interface last. Report commands use human output unless `--json` is requested,
+by task, one line per top-level command, with advanced commands, the
+developer interface among them, last. Report commands use human output unless `--json` is requested,
 including when stdout is redirected. When the reader of stdout closes early,
 `box`, `disk`, `image`, `clean`, `build` and `update` finish their work
 quietly with their own exit status; other commands, and every command's

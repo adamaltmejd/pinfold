@@ -319,7 +319,8 @@ image, `pinfold build` reports that there is no selected recipe to build.
 
 ### Your own profile
 
-A profile lives in `~/.config/pinfold/profiles/NAME/`. To add to a
+A profile lives in `~/.config/pinfold/profiles/NAME/`. `pinfold profile`
+lists every profile, its base, and its folder or that it is built in. To add to a
 published one without copying it, give it a `base`. This profile adds one
 tool to `adam`:
 

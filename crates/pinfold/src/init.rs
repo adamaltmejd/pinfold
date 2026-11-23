@@ -351,7 +351,7 @@ fn exec(args: &[String]) -> ! {
                 let remedy = if error.kind() == io::ErrorKind::NotFound {
                     ". If this is a disk project, run from the project root, or push \
                      the branch into the box through a pinfold Git remote (`pinfold \
-                     --help`, Disk projects) and check it out there"
+                     --help`, Isolated disk) and check it out there"
                 } else {
                     ""
                 };
