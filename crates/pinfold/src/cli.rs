@@ -149,7 +149,7 @@ fn project_intro(unconfigured: &mut bool) -> io::Result<Option<Option<PathBuf>>>
     config.check_host_paths(root)?;
     // A preview has no saved profile for PINFOLD_PROFILE to override.
     let profile = if configured {
-        profile_description(&config)
+        terminal_text(&config.profile.name) + &profile_override(&config)
     } else {
         terminal_text(&config.profile.name)
     };
@@ -1354,10 +1354,6 @@ fn helper_finding() -> Option<String> {
     })
 }
 
-fn profile_description(config: &Config) -> String {
-    terminal_text(&config.profile.name) + &profile_override(config)
-}
-
 fn profile_override(config: &Config) -> String {
     match config.project_profile.as_deref() {
         Some(saved)
@@ -1569,7 +1565,7 @@ pub fn config(args: &[String]) -> io::Result<i32> {
 /// missing, then open it in the user's editor and return its exit code.
 fn config_edit() -> io::Result<i32> {
     let project = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
-    if project.is_worktree() {
+    if project.worktree.is_some() {
         let mount = crate::config::project_mount(&project.root)
             .ok()
             .flatten()

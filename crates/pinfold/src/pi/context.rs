@@ -15,7 +15,7 @@ use crate::pi::state::canonical;
 pub struct Context {
     pub root: PathBuf,
     pub repository: bool,
-    worktree: Option<PathBuf>,
+    pub(crate) worktree: Option<PathBuf>,
 }
 
 impl Context {
@@ -92,10 +92,6 @@ impl Context {
         let context = Self::candidate(cwd)?;
         context.check_worktree(ProjectMount::Share)?;
         Ok(context)
-    }
-
-    pub(crate) fn is_worktree(&self) -> bool {
-        self.worktree.is_some()
     }
 
     pub(crate) fn check_worktree(&self, mount: ProjectMount) -> io::Result<()> {
