@@ -114,6 +114,16 @@ pub(crate) enum Reply {
     },
 }
 
+impl Reply {
+    /// An error reply that names only its reason token.
+    pub(crate) fn error(reason: impl Into<String>) -> Self {
+        Self::Error {
+            reason: reason.into(),
+            fields: vec![],
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RequestFrame {

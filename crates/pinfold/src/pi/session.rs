@@ -33,6 +33,13 @@ use crate::pi::{launch, rex, state};
 
 const CONTROL: Duration = Duration::from_secs(10);
 
+fn ended_line(reason: &str, generation: &str) -> String {
+    format!(
+        "{} ({generation}); pinfold box inspect {generation}",
+        terminal_text(reason)
+    )
+}
+
 fn unavailable_at(source: &str) -> io::Error {
     io::Error::other(format!("owner-unavailable: {source}"))
 }
@@ -130,8 +137,8 @@ fn reply_error(reply: Reply) -> io::Error {
             reason,
             teardown_ok,
         } => io::Error::other(format!(
-            "{} ({generation}); pinfold box inspect {generation}{}",
-            terminal_text(&reason),
+            "{}{}",
+            ended_line(&reason, &generation),
             if teardown_ok { "" } else { "; teardown-failed" }
         )),
         _ => unavailable(),
@@ -306,6 +313,26 @@ fn matching_claims(root: &Path) -> io::Result<Vec<ownership::Record>> {
 
 /// Under launch ownership, retire dead claims before allowing a replacement.
 /// Also returns whether it removed an orphan box.
+/// Take the launch lock and discover the owner within one control deadline.
+async fn locked_discovery(
+    root: &Path,
+    signals: &mut Signals,
+    noticed: &mut bool,
+) -> io::Result<(File, Instant, Option<Locator>)> {
+    loop {
+        let launch = launch_lock(root, signals, noticed).await?;
+        let deadline = Instant::now() + CONTROL;
+        let discovery_root = root.to_path_buf();
+        match control_work(signals, deadline, move || Ok(discover(&discovery_root)?.0)).await {
+            Ok(discovered) => return Ok((launch, deadline, discovered)),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                wait_tick(signals, deadline).await?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn discover(root: &Path) -> io::Result<(Option<Locator>, bool)> {
     let locator = read_locator(root)?;
     let claims = matching_claims(root)?;
@@ -527,7 +554,7 @@ fn check_linux_mount(root: &Path) -> io::Result<()> {
 struct Lease {
     name: String,
     generation: String,
-    share: bool,
+    mount: ProjectMount,
     writer: OwnedWriteHalf,
     replies: mpsc::Receiver<io::Result<Reply>>,
     reader: tokio::task::JoinHandle<()>,
@@ -542,7 +569,7 @@ impl Lease {
         name: String,
         generation: String,
         child: Option<Child>,
-        share: bool,
+        mount: ProjectMount,
     ) -> Self {
         let (mut read, writer) = stream.into_split();
         let (send, replies) = mpsc::channel(2);
@@ -559,7 +586,7 @@ impl Lease {
         Self {
             name,
             generation,
-            share,
+            mount,
             writer,
             replies,
             reader,
@@ -597,12 +624,7 @@ impl Lease {
     }
     async fn report_end(&mut self, signals: &mut Signals) -> io::Result<()> {
         if let Some(reason) = self.reason.take() {
-            let message = format!(
-                "pinfold: {} ({}); pinfold box inspect {}",
-                terminal_text(&reason),
-                self.generation,
-                self.generation
-            );
+            let message = format!("pinfold: {}", ended_line(&reason, &self.generation));
             forward_diagnostics(message.into_bytes(), signals).await?;
         }
         Ok(())
@@ -673,18 +695,7 @@ async fn admit(
     let _maintenance = maintenance(root, signals).await?;
     let mut noticed = false;
     loop {
-        let launch = launch_lock(root, signals, &mut noticed).await?;
-        let deadline = Instant::now() + CONTROL;
-        let discovery_root = root.to_path_buf();
-        let discovered =
-            match control_work(signals, deadline, move || Ok(discover(&discovery_root)?.0)).await {
-                Ok(value) => value,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    wait_tick(signals, deadline).await?;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
+        let (launch, deadline, discovered) = locked_discovery(root, signals, &mut noticed).await?;
         if let Some(locator) = discovered {
             let mount = match probe(root, &locator, signals, deadline).await {
                 Ok(Some(mount)) => mount,
@@ -733,8 +744,13 @@ async fn admit(
                 Reply::Admitted { name, generation }
                     if name == locator.name && Some(&generation) == locator.generation.as_ref() =>
                 {
-                    let share = config.mount == crate::config::ProjectMount::Share;
-                    return Ok(Some(Lease::new(stream, name, generation, None, share)));
+                    return Ok(Some(Lease::new(
+                        stream,
+                        name,
+                        generation,
+                        None,
+                        config.mount,
+                    )));
                 }
                 Reply::Kept {
                     name,
@@ -767,7 +783,7 @@ async fn admit(
             .map_err(|error| io::Error::new(error.kind(), error.to_string()))?
             .check_worktree(resolved.config.mount)?;
         let resolved = read_op(resolved, signals).await?;
-        let share = resolved.config.mount == crate::config::ProjectMount::Share;
+        let mount = resolved.config.mount;
         let mut child = spawn_owner(
             &resolved.snapshot,
             &resolved.values,
@@ -843,7 +859,7 @@ async fn admit(
                     name,
                     generation,
                     Some(child.1),
-                    share,
+                    mount,
                 )));
             }
             Reply::Kept { rex, .. } => {
@@ -992,17 +1008,7 @@ fn spawn_owner(
             let mut ready = tokio::select! {
                 ready = reader.readable() => ready?,
                 _ = stopping.changed() => {
-                    use std::io::Read;
-                    let mut bytes = [0u8; 8192];
-                    for _ in 0..8 {
-                        match reader.get_ref().read(&mut bytes) {
-                            Ok(0) => break,
-                            Ok(n) => kept.extend_from_slice(&bytes[..n.min(65536usize.saturating_sub(kept.len()))]),
-                            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                            Err(error) => return Err(error),
-                        }
-                    }
+                    crate::core::process::drain(&mut Some(reader.get_ref()), &mut kept, Some(65536))?;
                     break;
                 },
             };
@@ -1439,7 +1445,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             },
         };
         crate::update::notice();
-        if lease.share && std::env::var_os("GIT_OPTIONAL_LOCKS").is_none_or(|value| value != "0") {
+        if lease.mount == ProjectMount::Share && std::env::var_os("GIT_OPTIONAL_LOCKS").is_none_or(|value| value != "0") {
             // A failed write is not fatal, but a signal received during it is.
             let _ = forward_diagnostics(OPTIONAL_LOCKS_WARNING.as_bytes().to_vec(), &mut signals).await;
             if signals.last().is_some() {
@@ -1447,8 +1453,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             }
         }
         let argv = args.expect("join has a command").to_vec();
-        let mount = if lease.share { ProjectMount::Share } else { ProjectMount::Disk };
-        let guest = state::guest_root(mount, &root).to_path_buf();
+        let guest = state::guest_root(lease.mount, &root).to_path_buf();
         let name = lease.name.clone();
         let init = artifacts::init()?;
         let tty = io::stdin().is_terminal() && io::stdout().is_terminal();
@@ -1593,10 +1598,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
             _ = heartbeat.tick() => { let _ = wire::write_reply(&mut writer, Reply::Starting {}).await; },
             resolved = &mut resolving => break resolved.map_err(|_| io::Error::other("configuration worker failed")).and_then(|r| r),
         }};
-        let resolved = match setup {
-            Ok(resolved) => resolved,
-            Err(error) => return Err(error),
-        };
+        let resolved = setup?;
         let fields = snapshot.differences(&resolved.snapshot);
         if !fields.is_empty() {
             wire::write_reply(&mut writer, Reply::Error { reason: "config-changed".into(), fields }).await?;
@@ -1636,9 +1638,9 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
                 // output, as its token alone.
                 let reply = match &error {
                     UpError::Refused(refusal) if refusal.reason.authored() => Reply::Refused { reason: refusal.reason.token(), detail: refusal.detail.clone() },
-                    UpError::Refused(refusal) => Reply::Error { reason: refusal.reason.token(), fields: vec![] },
-                    UpError::Control | UpError::Signal => Reply::Error { reason: "stopped".into(), fields: vec![] },
-                    UpError::Other(_) => Reply::Error { reason: "owner-unavailable".into(), fields: vec![] },
+                    UpError::Refused(refusal) => Reply::error(refusal.reason.token()),
+                    UpError::Control | UpError::Signal => Reply::error("stopped"),
+                    UpError::Other(_) => Reply::error("owner-unavailable"),
                 };
                 let _ = wire::write_reply(&mut writer, reply).await;
                 // The client may still drain this owner's stderr, so the
@@ -1781,7 +1783,7 @@ async fn serve(
             Some(event) = received.recv() => match event {
                 Event::Depart { id, leave, bad } => {
                     if let Some(mut writer) = leases.remove(&id) {
-                        if bad { let _ = wire::write_reply(&mut writer, Reply::Error { reason: "session-protocol".into(), fields: vec![] }).await; }
+                        if bad { let _ = wire::write_reply(&mut writer, Reply::error("session-protocol")).await; }
                         if leave {
                             if leases.is_empty() && !keep { final_leave = Some(writer); }
                             else { let _ = wire::write_reply(&mut writer, Reply::Left {}).await; }
@@ -1790,11 +1792,8 @@ async fn serve(
                 }
                 Event::Request { mut stream, request } => {
                     let request = *request;
-                    let Some((candidate_root, candidate_generation)) = request.target() else {
-                        let _ = wire::write_reply(&mut stream, Reply::Error { reason: "session-protocol".into(), fields: vec![] }).await; continue;
-                    };
-                    if candidate_root != root || candidate_generation != generation {
-                        let _ = wire::write_reply(&mut stream, Reply::Error { reason: "session-protocol".into(), fields: vec![] }).await; continue;
+                    if !request.target().is_some_and(|(candidate_root, candidate_generation)| candidate_root == root && candidate_generation == generation) {
+                        let _ = wire::write_reply(&mut stream, Reply::error("session-protocol")).await; continue;
                     }
                     if matches!(request, Request::Borrow { share_only: true, .. }) && !snapshot.is_share() {
                         let _ = wire::write_reply(&mut stream, Reply::Compatible { mount: snapshot.project_mount() }).await;
@@ -1808,7 +1807,7 @@ async fn serve(
                     if fields.is_empty() && snapshot.is_share()
                         && matches!(request, Request::Borrow { .. })
                     {
-                        let _ = wire::write_reply(&mut stream, Reply::Error { reason: "share-no-crossing".into(), fields: vec![] }).await;
+                        let _ = wire::write_reply(&mut stream, Reply::error("share-no-crossing")).await;
                         continue;
                     }
                     if fields.is_empty() && matches!(request, Request::Probe { .. } | Request::Join { .. } | Request::Keep { .. }) {
@@ -1888,16 +1887,7 @@ async fn serve(
         }
     });
     let finish = async {
-        if let Some(writer) = final_leave.as_mut() {
-            let _ = wire::write_reply(
-                writer,
-                Reply::Draining {
-                    generation: generation.clone(),
-                },
-            )
-            .await;
-        }
-        for writer in leases.values_mut() {
+        for writer in final_leave.iter_mut().chain(leases.values_mut()) {
             let _ = wire::write_reply(
                 writer,
                 Reply::Draining {
@@ -1982,14 +1972,7 @@ async fn read_first(mut stream: UnixStream, events: mpsc::Sender<Event>) {
                 .await;
         }
         Err(_) => {
-            let _ = wire::write_reply(
-                &mut stream,
-                Reply::Error {
-                    reason: "session-protocol".into(),
-                    fields: vec![],
-                },
-            )
-            .await;
+            let _ = wire::write_reply(&mut stream, Reply::error("session-protocol")).await;
         }
     }
 }
@@ -2025,10 +2008,7 @@ async fn draining_reply(event: Event, root: &Path, generation: &str) {
             generation: generation.into(),
         }
     } else {
-        Reply::Error {
-            reason: "session-protocol".into(),
-            fields: vec![],
-        }
+        Reply::error("session-protocol")
     };
     let _ = wire::write_reply(&mut stream, reply).await;
 }
@@ -2406,18 +2386,7 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
     let maintenance = maintenance(root, signals).await?;
     let mut noticed = false;
     loop {
-        let launch = launch_lock(root, signals, &mut noticed).await?;
-        let deadline = Instant::now() + CONTROL;
-        let discovery_root = root.to_path_buf();
-        let discovered =
-            match control_work(signals, deadline, move || Ok(discover(&discovery_root)?.0)).await {
-                Ok(value) => value,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    wait_tick(signals, deadline).await?;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
+        let (launch, deadline, discovered) = locked_discovery(root, signals, &mut noticed).await?;
         let lease = if let Some(locator) = discovered {
             let generation = locator.generation.clone().ok_or_else(unavailable)?;
             let (stream, reply) = match exchange(
@@ -2445,7 +2414,13 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
                 Reply::Admitted { name, generation }
                     if name == locator.name && Some(&generation) == locator.generation.as_ref() =>
                 {
-                    Some(Lease::new(stream, name, generation, None, false))
+                    Some(Lease::new(
+                        stream,
+                        name,
+                        generation,
+                        None,
+                        ProjectMount::Disk,
+                    ))
                 }
                 Reply::Draining { generation }
                     if Some(&generation) == locator.generation.as_ref() =>
@@ -2459,10 +2434,7 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
             if cfg!(target_os = "macos")
                 && crate::config::project_mount(root)? == Some(crate::config::ProjectMount::Share)
             {
-                return Err(reply_error(Reply::Error {
-                    reason: "share-no-crossing".into(),
-                    fields: vec![],
-                }));
+                return Err(reply_error(Reply::error("share-no-crossing")));
             }
             None
         };
