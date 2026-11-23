@@ -2280,7 +2280,8 @@ lives in `cli.rs`.
 | `x86_64-unknown-linux-musl` | Linux x64 CLI and init |
 
 Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `toml`, `nix`
-(with `socket` for vsock, `sched` and `mount` for the VMM jail; Landlock
+(with `socket` for vsock, `net` for the proxy's upstream addresses,
+`sched` and `mount` for the VMM jail; Landlock
 through nix's `libc` syscalls),
 `ring` for host SHA-256, `sha2` only in the guest builder init, and the TLS client for
 injecting routes: `rustls` (ring) with `rustls-native-certs` for the host's roots.
