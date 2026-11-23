@@ -1857,8 +1857,8 @@ its project.
   same acknowledgement and wait. Teardown failure is reported as
   `teardown-failed` on stderr and in the run record.
 - **Rex (macOS):** `pinfold start` asks its owner for a Rex relay when
-  `REX_SESSION` is set and stdin, stdout and stderr are terminals; an owner
-  off macOS answers as if `rex` were absent. The owner checks, in order:
+  `REX_SESSION` is set and stdin, stdout and stderr are terminals. The
+  owner checks, in order:
   `rex --autostart=false version` succeeds in the box (exit status only);
   `defaults read com.superlogical.rex rex.client.remoteControl` prints `0`.
   It then runs `rex server run --listen

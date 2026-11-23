@@ -34,7 +34,7 @@ pub(crate) const REPLY_DEADLINE: Duration = Duration::from_secs(30);
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Status {
-    /// No runnable `rex` in the box, or not macOS.
+    /// No runnable `rex` in the box.
     Absent,
     RemoteControl,
     Failed,
@@ -138,9 +138,6 @@ impl Rex {
 
     /// `None` once shutdown began: pending setup is dropped before it binds.
     pub(crate) async fn request(&self) -> Option<Status> {
-        if !cfg!(target_os = "macos") {
-            return Some(Status::Absent);
-        }
         let mut closing = self.closing.subscribe();
         let work = async {
             let mut state = self.state.lock().await;
