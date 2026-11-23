@@ -758,6 +758,8 @@ pub struct Signals {
     terminate: Signal,
     interrupt: Signal,
     hangup: Option<Signal>,
+    /// An input whose writer closing is received once, as SIGHUP.
+    closed: Option<tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>>,
     last: Option<nix::sys::signal::Signal>,
 }
 
@@ -767,6 +769,7 @@ impl Signals {
             terminate: signal(SignalKind::terminate())?,
             interrupt: signal(SignalKind::interrupt())?,
             hangup: None,
+            closed: None,
             last: None,
         })
     }
@@ -775,6 +778,20 @@ impl Signals {
         let mut signals = Self::new()?;
         signals.hangup = Some(signal(SignalKind::hangup())?);
         Ok(signals)
+    }
+
+    /// Also receive SIGHUP, once, when INPUT's writers have all closed it:
+    /// readable with nothing to read. Input that does arrive ends the
+    /// watch, since only a closed writer is a hangup.
+    pub fn with_closing(mut self, input: std::os::fd::BorrowedFd<'_>) -> io::Result<Signals> {
+        // SAFETY: the owned duplicate keeps the registered descriptor stable.
+        self.closed = Some(unsafe {
+            tokio::io::unix::AsyncFd::register_with_interest(
+                input.try_clone_to_owned()?,
+                tokio::io::Interest::READABLE,
+            )
+        }?);
+        Ok(self)
     }
 
     pub fn last(&self) -> Option<nix::sys::signal::Signal> {
@@ -786,10 +803,31 @@ impl Signals {
             _ = self.terminate.recv() => nix::sys::signal::SIGTERM,
             _ = self.interrupt.recv() => nix::sys::signal::SIGINT,
             _ = async { match self.hangup.as_mut() { Some(hangup) => { hangup.recv().await; }, None => std::future::pending().await } } => nix::sys::signal::SIGHUP,
+            _ = closed(self.closed.as_ref()) => {
+                self.closed = None;
+                nix::sys::signal::SIGHUP
+            },
         };
         self.last = Some(received);
         received
     }
+}
+
+/// Resolve once INPUT is readable with nothing to read; never otherwise.
+async fn closed(input: Option<&tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>>) {
+    use std::os::fd::AsRawFd;
+    if let Some(input) = input
+        && input.readable().await.is_ok()
+    {
+        let mut pending: nix::libc::c_int = 0;
+        // SAFETY: FIONREAD writes one int.
+        if unsafe { nix::libc::ioctl(input.as_raw_fd(), nix::libc::FIONREAD, &mut pending) } == 0
+            && pending == 0
+        {
+            return;
+        }
+    }
+    std::future::pending().await
 }
 
 /// Why a start ended before ready.

@@ -834,8 +834,9 @@ process. Getting further needs a host kernel bug.
   Client signals, Leave after a signal, lease EOF and control connection loss
   are departures. A crossing's box command is a project command whose
   client is the crossing process itself, so it ends however the crossing
-  ends: `git-remote-pinfold` cancels its crossing when Git closes the
-  helper's input, so a killed Git ends it. The guest helper watches connection loss independently of command
+  ends: `git-remote-pinfold` treats Git closing the helper's input as
+  SIGHUP, from before it waits for the project through box startup and
+  the crossing, so a killed Git ends it. The guest helper watches connection loss independently of command
   I/O. Helper setup or relay failure also ends the command group and reaps its
   leader.
   The group comes from the helper's own child, never workload data.

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::os::fd::BorrowedFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -66,7 +66,12 @@ where
 {
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async {
-        let mut signals = Signals::new()?;
+        // Git sends nothing while it waits on the helper, so its input
+        // closing means Git is gone: every wait below, the crossing
+        // included, ends as on SIGHUP. Cancelling the crossing closes the
+        // box command's connection, so the box stops it as a departed
+        // client's.
+        let mut signals = Signals::new()?.with_closing(git)?;
         let interrupted = |signal: nix::sys::signal::Signal| {
             io::Error::new(io::ErrorKind::Interrupted, format!("interrupted by {signal}"))
         };
@@ -187,16 +192,6 @@ where
                     let _ = worker.await;
                     (Err(interrupted(signal)), Some(Shutdown::Signal.terminal()))
                 },
-                // Cancelling closes the box command's connection, so the
-                // box stops it as a departed client's.
-                Ok(()) = git_gone(git) => {
-                    cancel.store(true, Ordering::Release);
-                    let _ = worker.await;
-                    (
-                        Err(io::Error::new(io::ErrorKind::Interrupted, "Git ended")),
-                        Some(Shutdown::Signal.terminal()),
-                    )
-                },
             };
             let down = match box_.as_mut() {
                 Some(box_) => box_.down(terminal).await,
@@ -217,29 +212,6 @@ where
             }
         }
     })
-}
-
-/// Resolve once Git has closed GIT: readable with nothing to read. Git
-/// sends nothing while it waits on a crossing, so input that does arrive
-/// ends the watch unresolved.
-async fn git_gone(git: BorrowedFd<'_>) -> io::Result<()> {
-    // SAFETY: the owned duplicate keeps the registered descriptor stable.
-    let git = unsafe {
-        tokio::io::unix::AsyncFd::register_with_interest(
-            git.try_clone_to_owned()?,
-            tokio::io::Interest::READABLE,
-        )
-    }?;
-    let _ready = git.readable().await?;
-    let mut pending: nix::libc::c_int = 0;
-    // SAFETY: FIONREAD writes one int.
-    if unsafe { nix::libc::ioctl(git.as_raw_fd(), nix::libc::FIONREAD, &mut pending) } < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if pending == 0 {
-        return Ok(());
-    }
-    std::future::pending().await
 }
 
 /// The admitted image source, also reported without resolving the runtime.

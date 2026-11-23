@@ -31,7 +31,7 @@ fn a_projects_sessions_share_one_box() {
     // Sabotage (run): in core/crossing.rs's `BoxChild::spawn`, set
     // `project_directory` to None; or in init/session.rs's `status`, drop
     // the SIGKILL sent once the departure deadline passes; or in
-    // pi/launch.rs's `cross`, drop the `git_gone` branch. The box's hung
+    // core/box.rs's `Signals::recv`, drop the `closed` branch. The box's hung
     // `git` then outlives the killed Git and `tail --pid` times out with
     // 124.
     // The same value joining, and the refused invocation running after
