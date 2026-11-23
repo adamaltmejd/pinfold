@@ -1516,7 +1516,8 @@ so a disk whose box came ready holds its whole `from` after a host power
 loss; on macOS what a volume keeps through one is the runtime's. A disk has no
 labels and no owner beyond its attachments. A disk, its file or volume, its attachments and
 its records belong to one state root; another root naming the same disk
-gets its own.
+gets its own. On Linux, deleting files in a box does not return a disk's
+allocated host blocks; removing the disk does.
 
 - **Attachment:** at `up`, after the claim. One box may attach a disk writable; while it does,
   another `up` naming that disk is refused as `disk-in-use`. Boxes may
@@ -2418,5 +2419,3 @@ data, `crates/pinfold/public_suffix_list.dat`, embedded with `include_str!`.
 - Linux arm64 returns once a KVM host can run its suite; GitHub's arm64
   runners have none.
 - Where herdr reads `HERDR_AGENT`.
-- Freed blocks inside a disk: whether they return to the host, or a
-  disk's allocation only grows.
