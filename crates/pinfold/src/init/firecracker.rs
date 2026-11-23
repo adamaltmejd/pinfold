@@ -237,40 +237,6 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
         return Err(io::Error::other(format!("expected BOOT, got frame {kind}")));
     }
     let request = parse_request(&payload)?;
-    if builder
-        && (request.uid != 0
-            || request.gid != 0
-            || request.root != "/dev/vdb"
-            || !request.fills.is_empty()
-            || !request.directories.is_empty()
-            || request
-                .attachments
-                .iter()
-                .any(|attachment| attachment.deferred)
-            || request
-                .attachments
-                .iter()
-                .any(|attachment| attachment.fresh)
-            || request.attachments.len() != if request.relay { 3 } else { 2 }
-            || !request.attachments.iter().any(|attachment| {
-                attachment.device == "/dev/vdc"
-                    && attachment.guest == Path::new("/work")
-                    && attachment.writable
-            })
-            || !request.attachments.iter().any(|attachment| {
-                attachment.device == "/dev/vdd"
-                    && attachment.guest == Path::new("/input")
-                    && !attachment.writable
-            })
-            || (request.relay
-                && !request.attachments.iter().any(|attachment| {
-                    attachment.device == "/dev/vde"
-                        && attachment.guest == Path::new("/selected")
-                        && !attachment.writable
-                })))
-    {
-        return Err(io::Error::other("invalid builder devices"));
-    }
 
     let nodev = MsFlags::MS_NOSUID | MsFlags::MS_NODEV;
     let stage = Path::new(STAGE);
