@@ -13,6 +13,10 @@ use std::time::{Duration, Instant};
 
 use nix::libc;
 
+/// A generation directory's sockets, and those in its `v` directory.
+const SOCKETS: [&str; 2] = ["c.sock", "p.sock"];
+const VSOCKETS: [&str; 3] = ["v.sock", "v.sock_1000", "v.sock_3128"];
+
 #[derive(Clone)]
 pub struct Sockets {
     host: Arc<File>,
@@ -230,10 +234,10 @@ impl Sockets {
             &self.directory,
             &[b"generation", b"c.sock", b"p.sock", b"v"],
         )?;
-        check_entries(&self.vsock, &[b"v.sock", b"v.sock_1000", b"v.sock_3128"])?;
+        check_entries(&self.vsock, &VSOCKETS.map(str::as_bytes))?;
         for (directory, leaves) in [
-            (&self.directory, &["c.sock", "p.sock"][..]),
-            (&self.vsock, &["v.sock", "v.sock_1000", "v.sock_3128"][..]),
+            (&self.directory, &SOCKETS[..]),
+            (&self.vsock, &VSOCKETS[..]),
         ] {
             for leaf in leaves {
                 check_socket(directory, OsStr::new(leaf), true, true)?;
@@ -243,14 +247,11 @@ impl Sockets {
     }
 
     fn check_lengths(&self) -> io::Result<()> {
-        for leaf in [
-            "c.sock",
-            "p.sock",
-            "v/v.sock",
-            "v/v.sock_1000",
-            "v/v.sock_3128",
-        ] {
+        for leaf in SOCKETS {
             check_length(&self.path.join(leaf))?;
+        }
+        for leaf in VSOCKETS {
+            check_length(&self.path.join("v").join(leaf))?;
         }
         Ok(())
     }
@@ -463,10 +464,8 @@ fn socket_identity(parent: &File, leaf: &OsStr) -> io::Result<(u64, u64)> {
 fn check_identity(parent: &File, leaf: &OsStr, expected: &File) -> io::Result<()> {
     let metadata = stat_at(parent, &name(leaf)?).map_err(failure)?;
     let expected = expected.metadata().map_err(failure)?;
-    #[cfg(target_os = "macos")]
+    #[allow(clippy::unnecessary_cast)]
     let device = metadata.st_dev as u64;
-    #[cfg(target_os = "linux")]
-    let device = metadata.st_dev;
     if metadata.st_mode & libc::S_IFMT != libc::S_IFDIR
         || device != expected.dev()
         || metadata.st_ino != expected.ino()
@@ -523,11 +522,12 @@ fn recoverable(
         _ => return Err(failure("socket generation is unverifiable")),
     }
     check_entries(&directory, &[b"generation", b"c.sock", b"p.sock", b"v"])?;
-    check_socket(&directory, OsStr::new("c.sock"), true, false)?;
-    check_socket(&directory, OsStr::new("p.sock"), true, false)?;
+    for socket in SOCKETS {
+        check_socket(&directory, OsStr::new(socket), true, false)?;
+    }
     if let Some(vsock) = recovery_vsock(&directory)? {
-        check_entries(&vsock, &[b"v.sock", b"v.sock_1000", b"v.sock_3128"])?;
-        for socket in ["v.sock", "v.sock_1000", "v.sock_3128"] {
+        check_entries(&vsock, &VSOCKETS.map(str::as_bytes))?;
+        for socket in VSOCKETS {
             check_socket(&vsock, OsStr::new(socket), true, false)?;
         }
     }
@@ -555,13 +555,14 @@ fn remove_directory(
         return Ok(());
     };
     if let Some(vsock) = recovery_vsock(&directory)? {
-        for socket in ["v.sock", "v.sock_1000", "v.sock_3128"] {
+        for socket in VSOCKETS {
             unlink_at(&vsock, OsStr::new(socket), 0)?;
         }
         unlink_at(&directory, OsStr::new("v"), libc::AT_REMOVEDIR)?;
     }
-    unlink_at(&directory, OsStr::new("c.sock"), 0)?;
-    unlink_at(&directory, OsStr::new("p.sock"), 0)?;
+    for socket in SOCKETS {
+        unlink_at(&directory, OsStr::new(socket), 0)?;
+    }
     unlink_at(&directory, OsStr::new("generation"), 0)?;
     unlink_at(host, leaf, libc::AT_REMOVEDIR)
 }
