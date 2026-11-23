@@ -6,7 +6,7 @@
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
@@ -32,6 +32,8 @@ pub fn run(args: &[String]) -> io::Result<i32> {
         )));
     }
     let (input, mut output) = protocol()?;
+    let watched = input.try_clone()?;
+    let git = watched.as_fd();
     let mut input = BufReader::new(input);
     let guard = |root: &Path| check(root, remote, address);
     let mut fetched: Option<Fetched> = None;
@@ -50,13 +52,16 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                 }
                 listed = true;
                 let remote = remote.clone();
-                let landing =
-                    launch::cross(guard, move |runtime, init, name, root, guest, cancel| {
+                let landing = launch::cross(
+                    guard,
+                    git,
+                    move |runtime, init, name, root, guest, cancel| {
                         crossing::fetch_cancellable(
                             runtime, init, name, guest, root, &remote, cancel,
                         )
-                    })?
-                    .map_err(|error| io::Error::other(describe(&error)))?;
+                    },
+                )?
+                .map_err(|error| io::Error::other(describe(&error)))?;
                 // Git reads a listing's object ids as SHA-1 unless told.
                 let mut listing = format!(":object-format {}\n", object_format()?);
                 for (name, oid) in &landing.refs {
@@ -78,7 +83,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                 // sees only the tags: it would move the host's `box/BRANCH`
                 // for a branch it calls up to date.
                 let pushed =
-                    match launch::cross(guard, |runtime, init, name, root, guest, cancel| {
+                    match launch::cross(guard, git, |runtime, init, name, root, guest, cancel| {
                         crossing::pushed_cancellable(runtime, init, name, root, guest, cancel)
                     }) {
                         Err(error) if error.kind() == io::ErrorKind::Interrupted => {
@@ -113,7 +118,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                     }
                     batch.push(line);
                 }
-                let report = push(&batch, &held, guard)?;
+                let report = push(&batch, &held, guard, git)?;
                 send(&mut output, &report)?;
             }
             line => {
@@ -136,6 +141,7 @@ fn push(
     batch: &[String],
     held: &Refs,
     check: impl FnOnce(&Path) -> io::Result<()>,
+    git: BorrowedFd<'_>,
 ) -> io::Result<String> {
     let cancel = AtomicBool::new(false);
     let repo = Path::new(".");
@@ -187,11 +193,15 @@ fn push(
         let pushed = if refspecs.is_empty() {
             Ok(())
         } else {
-            launch::cross(check, move |runtime, init, name, root, guest, cancel| {
-                crossing::push_cancellable(
-                    runtime, init, name, root, guest, &sources, &refspecs, cancel,
-                )
-            })?
+            launch::cross(
+                check,
+                git,
+                move |runtime, init, name, root, guest, cancel| {
+                    crossing::push_cancellable(
+                        runtime, init, name, root, guest, &sources, &refspecs, cancel,
+                    )
+                },
+            )?
         };
         if let Err(error) = &pushed {
             eprintln!("pinfold: {}", describe(error));

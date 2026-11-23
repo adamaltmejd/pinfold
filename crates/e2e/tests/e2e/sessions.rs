@@ -30,9 +30,10 @@ fn a_projects_sessions_share_one_box() {
     // and `true` exits 0, not 125.
     // Sabotage (run): in core/crossing.rs's `BoxChild::spawn`, set
     // `project_directory` to None; or in init/session.rs's `status`, drop
-    // the SIGKILL sent once the departure deadline passes. The box's hung
-    // `git` then outlives the killed helper and `tail --pid` times out
-    // with 124.
+    // the SIGKILL sent once the departure deadline passes; or in
+    // pi/launch.rs's `cross`, drop the `git_gone` branch. The box's hung
+    // `git` then outlives the killed Git and `tail --pid` times out with
+    // 124.
     // The same value joining, and the refused invocation running after
     // `config edit`, are the positive controls.
     default_image();
@@ -309,11 +310,11 @@ fn a_projects_sessions_share_one_box() {
 
     assert_eq!(b.finish(), 0, "B after its stdin closed");
 
-    // A crossing's box command ends with its helper, even one that ignores
+    // A crossing's box command ends when Git does, even one that ignores
     // TERM. In the disk project's box, kept by session C, the box's `git`
     // reports its pid through a FIFO and hangs in the fetch's first git
-    // call. It is alive before SIGKILL reaches `git fetch box`'s process
-    // group, Git and the remote helper with it, and gone after.
+    // call. It is alive before SIGKILL reaches `git fetch box` alone, not
+    // the remote helper, and gone after: the helper sees Git's pipe close.
     let mut c = Client::spawn(disk.command(&["--", "sh", "-c", READER]));
     assert_eq!(c.line(), "started");
     c.ask(
@@ -332,16 +333,7 @@ fn a_projects_sessions_share_one_box() {
     let hung = c.ask("timeout 60 cat /tmp/e2e-git");
     let [hung] = <[String; 1]>::try_from(hung).expect("the box's git pid");
     assert_eq!(c.ask(&format!("kill -0 {hung}; echo $?")), ["0"]);
-    let killed = run(
-        Command::new("sh").args([
-            "-c",
-            "kill -s KILL -- \"-$1\"",
-            "sh",
-            &fetch.id().to_string(),
-        ]),
-        COMMAND,
-    );
-    assert_eq!(killed.code, 0, "{killed:?}");
+    fetch.kill().expect("SIGKILL git fetch");
     fetch.wait().expect("reap git fetch");
     assert_eq!(
         c.ask(&format!(
