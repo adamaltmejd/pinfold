@@ -909,7 +909,10 @@ async fn run_job(
         let accepted = tokio::select! {
             accepted = listener.accept() => accepted.map(|(stream,_)|stream),
             _ = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)) => Err(io::Error::other("resource: builder job deadline")),
-            _ = child.wait() => Err(io::Error::other("builder exited before handshake")),
+            status = child.wait() => Err(io::Error::other(match status {
+                Ok(code) => format!("builder exited before handshake: exit code {code}"),
+                Err(error) => format!("builder exited before handshake: {error}"),
+            })),
             _ = cancelled(cancel) => Err(io::ErrorKind::Interrupted.into()),
             _ = claim.stop_requested() => { cancel.store(true, Ordering::Release); Err(io::ErrorKind::Interrupted.into()) },
             _ = &mut audit.failure => { cancel.store(true, Ordering::Release); Err(io::Error::other("audit-log: builder audit failed")) },
