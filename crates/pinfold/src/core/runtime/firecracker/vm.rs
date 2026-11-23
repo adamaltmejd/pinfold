@@ -17,7 +17,7 @@ use super::jail;
 use super::vsock;
 use crate::core::artifacts;
 use crate::core::disk::{self, Directory, Fill, Seeding};
-use crate::core::image::{ImageService, linux};
+use crate::core::image::linux;
 use crate::core::plan::{Plan, Values};
 use crate::core::runtime::output;
 use crate::core::runtime::sockets::Sockets;
@@ -56,8 +56,8 @@ pub struct Prepared {
     generated: Vec<PathBuf>,
 }
 
-/// Install the VMM, check that the image tag still names `image_id`, and
-/// make the root disk, this start's init disk and the mounts' images.
+/// Install the VMM and make the root disk from `image_id`, this start's
+/// init disk and the mounts' images.
 pub fn prepare(
     plan: &Plan,
     state_dir: &Path,
@@ -68,18 +68,6 @@ pub fn prepare(
 ) -> io::Result<Prepared> {
     sockets.validate()?;
     let vmm = artifacts::vmm(Some(cancel))?;
-    let reference = plan
-        .image
-        .as_deref()
-        .expect("box up resolves the profile's image before the runtime runs");
-    if !linux::Linux
-        .resolve_image(reference)?
-        .is_ok_and(|image| image.id == image_id)
-    {
-        return Err(io::Error::other(
-            "image-changed: box started a different image",
-        ));
-    }
     cancelled(Some(cancel))?;
     let (root_disk, image_env) = linux::catalog::root(image_id)?;
     cancelled(Some(cancel))?;

@@ -41,8 +41,7 @@ pub struct Prepared;
 
 /// The slow, cancellable part of a start, run on a blocking thread before
 /// [`start`]: on Linux the VMM's install, the root and init disks and the
-/// mounts' images. `image_id` is the image `up` resolved; a tag that moved
-/// since fails as `image-changed`.
+/// mounts' images. `image_id` is the image `up` resolved and leased.
 pub fn prepare(
     plan: &Plan,
     state_dir: &Path,

@@ -513,6 +513,8 @@ impl Box {
                 &mut progress,
             )
             .await?;
+            // Apple runs the reference; Linux boots `identity.id` itself.
+            #[cfg(not(target_os = "linux"))]
             if observed.image_id != identity.id {
                 return Err(Stop::Failed(io::Error::other(
                     "image-changed: box started a different image",

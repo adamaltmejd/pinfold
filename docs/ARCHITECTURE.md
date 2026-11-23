@@ -412,8 +412,15 @@ When `up` fails after it began creating, it removes what it made, prints one
 
 Every `up` ends its stdout with exactly one of `refused`, `failed` or
 `down`.
-A tag resolving to a different image during startup fails with
-`image-changed` in `detail` before `ready`.
+On Linux the box boots the image id `up` resolved, under a lease taken at
+resolution, so a moved tag cannot change what runs. On macOS the runtime is
+given the reference; when it reports a different image than the one
+resolved, `up` fails with `image-changed` in `detail` before `ready`. A
+project start whose tag moves between the client's and the owner's
+configuration check gets `config-changed` naming `image.id`; one whose tag
+moves after the owner's check gets `owner-unavailable`, on either platform.
+No test covers these checks: each window lies inside one start, a timing
+race.
 
 `down` of an absent, empty or flag-like name other than `--help` and `-h`,
 which print help, exits 0, prints nothing and
