@@ -138,7 +138,6 @@ jobs:
             container system start --enable-kernel-install
           fi
       - name: Install the pinned Rust toolchain
-        if: needs.prepare.outputs.ref != '' || inputs.install_tools
         run: |
           toolchain=$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)
           rustup toolchain install "$toolchain" \

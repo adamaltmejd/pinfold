@@ -1025,7 +1025,7 @@ impl CleanPlan {
         );
         println!("  run records: {}", human_size(self.run_bytes));
         println!(
-            "  build cache: {}; emptied by clean",
+            "  build cache: {} allocated; clean frees its unused part",
             human_size(self.build_cache_bytes)
         );
         println!("  project state: {}", human_size(self.project_state));
