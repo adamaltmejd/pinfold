@@ -17,6 +17,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Dropping only the live test passes: the owner's project lock still
     // keeps the project.
     // The idle project's state and disks going is the positive control.
+    // Sabotage (run): in main.rs, drop the `clean --dry-run` exemption
+    // from the automatic pass. A dry run from a state root whose daily
+    // pass is due then removes the unpinned artifact version; `clean`
+    // removing it is the control.
     // Its own cache root, so its `clean` empties only its own builder
     // cache, and a small image of its own: the default image's tools are
     // not needed.
@@ -65,12 +69,32 @@ fn cleanup_removes_only_pinfolds_garbage() {
         }
     }
     let live_record = contents(&live.state_dir);
+    // An artifact version no pin names, which automatic maintenance
+    // removes, and a state root whose daily pass is due.
+    let unpinned = env.cache_home().join("pinfold/artifacts/e2e-unpinned/0");
+    fs::create_dir_all(&unpinned).unwrap();
+    fs::write(unpinned.join("file"), "unpinned\n").unwrap();
+    let fresh = env.root().join("fresh-state");
+    fs::create_dir(&fresh).unwrap();
 
     // Dead boxes are every root's to prune; hold them for this pass.
     let hold = hold_maintenance();
+    let listed = run(
+        env.command()
+            .env("XDG_STATE_HOME", &fresh)
+            .args(["clean", "--dry-run"]),
+        COMMAND,
+    );
+    assert_eq!(listed.code, 0, "{listed:?}");
+    assert!(
+        unpinned.exists(),
+        "clean --dry-run removed {}",
+        unpinned.display()
+    );
     let cleaned = run(env.command().args(["clean", "--idle", "0s"]), COMMAND);
     drop(hold);
     assert_eq!(cleaned.code, 0, "{cleaned:?}");
+    assert!(!unpinned.exists(), "clean kept {}", unpinned.display());
 
     for path in idle.state() {
         assert!(!path.exists(), "{} after clean", path.display());

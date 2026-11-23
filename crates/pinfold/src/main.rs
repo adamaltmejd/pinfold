@@ -102,6 +102,8 @@ fn main() -> ExitCode {
         | ("profile", None | Some("list"))
         // `box prune` reports each box it removes; the pass would remove them silently.
         | ("box", Some("up" | "list" | "down" | "inspect" | "events" | "prune")) => {}
+        // `--dry-run` only lists.
+        ("clean", _) if args.iter().any(|arg| arg == "--dry-run") => {}
         _ => crate::core::clean::maintain(),
     }
     let result = run(args);

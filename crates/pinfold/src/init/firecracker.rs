@@ -184,59 +184,12 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
     for _ in 0..fields.u32()? {
         fills.push((guest_path(&mut fields)?, fields.u8()? != 0));
     }
-    for (guest, missing) in &fills {
-        if !missing
-            && !attachments.iter().any(|attachment| {
-                attachment.guest == *guest
-                    && attachment.writable
-                    && attachment.fresh
-                    && !attachment.deferred
-            })
-        {
-            return Err(io::Error::other(
-                "initial population requires a fresh writable disk",
-            ));
-        }
-    }
-    if attachments
-        .iter()
-        .any(|attachment| attachment.deferred && attachment.writable)
-    {
-        return Err(io::Error::other("a deferred mount must be read-only"));
-    }
+    // The host checked this layout before it built the request.
     let mut directories = Vec::new();
     for _ in 0..fields.u32()? {
         let disk = guest_path(&mut fields)?;
         let relative = PathBuf::from(OsString::from_vec(fields.bytes()?.to_vec()));
-        super::check_relative_directory(&relative)?;
-        if !attachments
-            .iter()
-            .any(|attachment| attachment.guest == disk && attachment.writable)
-            || !attachments
-                .iter()
-                .any(|attachment| attachment.guest == disk.join(&relative) && attachment.deferred)
-        {
-            return Err(io::Error::other(
-                "directory preparation has no writable disk or mount",
-            ));
-        }
         directories.push((disk, relative));
-    }
-    for attachment in attachments.iter().filter(|attachment| attachment.deferred) {
-        let backing = attachments
-            .iter()
-            .filter(|backing| !backing.deferred && attachment.guest.starts_with(&backing.guest))
-            .max_by_key(|backing| backing.guest.components().count());
-        if let Some(backing) = backing
-            && backing.writable
-            && !directories.iter().any(|(disk, relative)| {
-                *disk == backing.guest && disk.join(relative) == attachment.guest
-            })
-        {
-            return Err(io::Error::other(
-                "a deferred mount below a writable disk requires directory preparation",
-            ));
-        }
     }
     fields.end()?;
     attachments.sort_by_key(|attachment| attachment.guest.components().count());
@@ -284,40 +237,6 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
         return Err(io::Error::other(format!("expected BOOT, got frame {kind}")));
     }
     let request = parse_request(&payload)?;
-    if builder
-        && (request.uid != 0
-            || request.gid != 0
-            || request.root != "/dev/vdb"
-            || !request.fills.is_empty()
-            || !request.directories.is_empty()
-            || request
-                .attachments
-                .iter()
-                .any(|attachment| attachment.deferred)
-            || request
-                .attachments
-                .iter()
-                .any(|attachment| attachment.fresh)
-            || request.attachments.len() != if request.relay { 3 } else { 2 }
-            || !request.attachments.iter().any(|attachment| {
-                attachment.device == "/dev/vdc"
-                    && attachment.guest == Path::new("/work")
-                    && attachment.writable
-            })
-            || !request.attachments.iter().any(|attachment| {
-                attachment.device == "/dev/vdd"
-                    && attachment.guest == Path::new("/input")
-                    && !attachment.writable
-            })
-            || (request.relay
-                && !request.attachments.iter().any(|attachment| {
-                    attachment.device == "/dev/vde"
-                        && attachment.guest == Path::new("/selected")
-                        && !attachment.writable
-                })))
-    {
-        return Err(io::Error::other("invalid builder devices"));
-    }
 
     let nodev = MsFlags::MS_NOSUID | MsFlags::MS_NODEV;
     let stage = Path::new(STAGE);

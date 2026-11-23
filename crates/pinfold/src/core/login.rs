@@ -3,7 +3,7 @@
 //! sources, and the files a login route's agents read in the box.
 //! Renderers never receive resolved credentials.
 
-use crate::core::process::{CommandGuard, GroupChild};
+use crate::core::process::GroupChild;
 
 use std::fs::{File, TryLockError};
 use std::io::{self, Write};
@@ -129,35 +129,26 @@ fn lock(deadline: Instant, cancel: Option<&AtomicBool>) -> io::Result<File> {
     }
 }
 
-/// A helper always dies and is reaped before the login lock is released.
-struct Helper(std::process::Child);
-
-impl Drop for Helper {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
 /// Run the pinned helper with `up`'s environment and the built-in provider.
-/// Revisit when the pin removes getAuthStatus, which is deprecated upstream.
+/// Its process group always dies and the helper is reaped before the login
+/// lock is released. Revisit when the pin removes getAuthStatus, which is
+/// deprecated upstream.
 fn ask(
     helper: &std::path::Path,
     deadline: Instant,
     cancel: Option<&AtomicBool>,
 ) -> io::Result<serde_json::Value> {
     remaining(deadline, cancel, "helper")?;
-    let mut child = Helper(
+    let mut child = GroupChild::spawn(
         Command::new(helper)
             .args(["-c", "model_provider=\"openai\""])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn_guarded()
-            .map_err(|_| io::Error::other("helper launch failed"))?,
-    );
-    let mut stdin = child.0.stdin.take().expect("piped stdin");
-    let mut stdout = child.0.stdout.take().expect("piped stdout");
+            .stderr(Stdio::null()),
+    )
+    .map_err(|_| io::Error::other("helper launch failed"))?;
+    let mut stdin = child.take_stdin().expect("piped stdin");
+    let mut stdout = child.take_stdout().expect("piped stdout");
     nonblocking(&stdin, "helper")?;
     nonblocking(&stdout, "helper")?;
     let requests = [
