@@ -18,6 +18,7 @@ PROFILE = ROOT / "profile"
 HOST_HELPER = ROOT / "crates" / "pinfold" / "host-helper.toml"
 VMM = ROOT / "crates" / "pinfold" / "vmm.toml"
 KERNEL = ROOT / "guest-kernel" / "pins"
+SUFFIX_LIST = ROOT / "crates" / "pinfold" / "public_suffix_list.dat"
 # Containerfile pins that move together, by ADD destination. An npm package
 # comes after one whose dependencies or optionalDependencies name it at the
 # same version.
@@ -348,7 +349,7 @@ def repin_build_tools(texts):
 
 
 def repin_suffix_list(texts, move):
-    path = ROOT / "crates" / "pinfold" / "public_suffix_list.dat"
+    path = SUFFIX_LIST
     target = fetch("https://publicsuffix.org/list/public_suffix_list.dat").decode()
     pattern = r"^// VERSION: (\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_UTC)$"
     current = re.search(pattern, texts[path], re.MULTILINE)
@@ -407,7 +408,7 @@ def refused_suffixes(text):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument(
         "--suffix-list",
         action="store_true",
@@ -424,7 +425,7 @@ def main():
             KERNEL,
             ROOT / "rust-toolchain.toml",
             ROOT / "Cargo.toml",
-            ROOT / "crates" / "pinfold" / "public_suffix_list.dat",
+            SUFFIX_LIST,
         ]
     }
     pins = {}
@@ -481,7 +482,8 @@ def main():
     repin_build_tools(texts)
     repin_suffix_list(texts, args.suffix_list)
     for path, text in texts.items():
-        path.write_text(text)
+        if path != SUFFIX_LIST or args.suffix_list:
+            path.write_text(text)
 
 
 if __name__ == "__main__":
