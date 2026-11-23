@@ -401,7 +401,8 @@ files, and later fetches can move `box/*` refs.
 
 `pinfold clean [--dry-run] [--idle AGE]` reclaims disk space: it runs the
 automatic maintenance now and removes the unused build cache. `--dry-run`
-lists what `clean` would remove. `--idle AGE` also removes the state and disks of projects not run
+shows the measured storage per category without cleaning. `--idle AGE`
+also removes the state and disks of projects not run
 for that long, except a project with a live box; AGE is a whole number and a
 unit, `s`, `m`, `h` or `d`, such as `30d`. That is never automatic, because a
 project disk holds unfetched work.
