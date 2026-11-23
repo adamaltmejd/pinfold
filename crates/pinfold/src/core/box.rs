@@ -758,7 +758,8 @@ pub struct Signals {
     terminate: Signal,
     interrupt: Signal,
     hangup: Option<Signal>,
-    /// An input whose writer closing is received once, as SIGHUP.
+    /// An input whose writer closing is received as SIGHUP, by every
+    /// `recv` from then on.
     closed: Option<tokio::io::unix::AsyncFd<std::os::fd::OwnedFd>>,
     last: Option<nix::sys::signal::Signal>,
 }
@@ -780,8 +781,9 @@ impl Signals {
         Ok(signals)
     }
 
-    /// Also receive SIGHUP, once, when INPUT's writers have all closed it:
-    /// readable with nothing to read. Input that does arrive ends the
+    /// Also receive SIGHUP once INPUT's writers have all closed it:
+    /// readable with nothing to read. It stays received, so no retry
+    /// outlives it. Input that does arrive ends the
     /// watch, since only a closed writer is a hangup.
     pub fn with_closing(mut self, input: std::os::fd::BorrowedFd<'_>) -> io::Result<Signals> {
         // SAFETY: the owned duplicate keeps the registered descriptor stable.
@@ -803,10 +805,8 @@ impl Signals {
             _ = self.terminate.recv() => nix::sys::signal::SIGTERM,
             _ = self.interrupt.recv() => nix::sys::signal::SIGINT,
             _ = async { match self.hangup.as_mut() { Some(hangup) => { hangup.recv().await; }, None => std::future::pending().await } } => nix::sys::signal::SIGHUP,
-            _ = closed(self.closed.as_ref()) => {
-                self.closed = None;
-                nix::sys::signal::SIGHUP
-            },
+            // The readiness is never cleared, so this resolves again.
+            _ = closed(self.closed.as_ref()) => nix::sys::signal::SIGHUP,
         };
         self.last = Some(received);
         received
