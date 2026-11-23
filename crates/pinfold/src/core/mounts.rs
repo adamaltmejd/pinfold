@@ -167,7 +167,7 @@ pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -
 }
 
 // realpath retains alternate-case spellings on some host filesystems.
-fn source_beneath(path: &Path, root: &Path) -> io::Result<bool> {
+pub(crate) fn source_beneath(path: &Path, root: &Path) -> io::Result<bool> {
     if path.starts_with(root) {
         return Ok(true);
     }

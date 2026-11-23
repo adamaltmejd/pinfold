@@ -2106,36 +2106,36 @@ The project mount is required. `config edit` creates
 `mounts = [{ host = ".", kind = "disk" }]` on Linux. macOS accepts either
 kind; Linux accepts only `disk`. Further entries are read-only folders,
 `{ host = "PATH", guest = "/ABS/PATH" }`, with `kind = "readonly"` the
-default and the only kind accepted. `host` is absolute or `~/…` under
-the invoking user's home (further leading slashes after `~/` are
-dropped); a relative host, or one that lies inside the project root as
-given or canonical, refuses as `spec`: a box can write the project, so
-it could choose a folder reached through it. `guest` must be canonical:
-no `.` or `..` component and no repeated or trailing slash, else `spec`.
-Each folder becomes a read-only mount of the project box (Mounts). Its
-startup configuration is its canonical host, or the host as written when
-that does not resolve, and its guest. At each box start the box layer
-checks the host as written; the canonical host, which the box mounts,
-must exist, be UTF-8 (`path-not-utf8`), hold no `,` or ASCII control
-character and lie outside the canonical project root (`spec`), and must
-not overlap a protected path (below). On a macOS share project box
-preparation resolves it again, which leaves a canonical path unchanged.
-A destination at, inside or containing the project's guest root,
-`/home/pinfold`, the profile's `/opt/pinfold/profile` or another
-folder's refuses as `spec` at a start. Other mount shapes refuse as
-`spec`. A change applies at the next box start; a joining client never
-checks a folder's existence or contents, and a different folder list or
-canonical host refuses as `config-changed` (`mounts`). `build` and the
-Git remote attach no folders; a malformed `mounts` list still refuses
-as `spec`. On Linux each start copies each folder into an image in the
-box's state, taking time and host disk space in proportion to its size.
+default and the only kind accepted. `host` is absolute or `~/…`, which
+expands under the canonical home; a relative host refuses as `spec`.
+`host` and `guest` must be canonical in form: no `.` or `..` component
+and no repeated or trailing slash, else `spec`. Each folder becomes a
+read-only mount of the project box (Mounts) at its host as written,
+which is its startup configuration. At each box start, before its
+contents are read, the host must be its own real path, with no link in
+it (`spec`, naming the real path), UTF-8 (`path-not-utf8`), not at or
+inside the project root by device and inode (`spec`: a box can write
+the project, so a link there could choose the folder), and must not
+overlap a protected path (below); the box layer then checks it as a
+mount host. A link swapped into a folder's path after a start is refused
+at the next start; a joining client does not touch folders on the host.
+On a macOS share project box preparation resolves the host again, which
+leaves a real path unchanged. A destination at, inside or containing
+the project's guest root, `/home/pinfold`, the profile's
+`/opt/pinfold/profile` or another folder's refuses as `spec` at a
+start. Other mount shapes refuse as `spec`. A change applies at the next
+box start; a different folder list refuses a joining client as
+`config-changed` (`mounts`). `build` and the Git remote attach no
+folders; a malformed `mounts` list still refuses as `spec`. On Linux
+each start copies each folder into an image in the box's state, taking
+time and host disk space in proportion to its size.
 
 A project is refused as `host-path-in-project` when any of the protected
 paths listed below resolves inside it, or when a read-only folder of it
 resolves to, inside or above one. This check applies before project
 state or configuration is created, whether or not the project is a Git
-checkout. A read-only folder is checked at each box start, on its
-canonical host, before a box or disk is created.
+checkout. A read-only folder is checked at each box start, before a
+box or disk is created.
 
 Protected paths are pinfold's configuration, state or cache root, the
 project's configuration directory, file or Containerfile, the directory of
@@ -2349,7 +2349,7 @@ cut rows.
 | 44 | **Linux image work stays in its own VM.** Linux only. A build's RUN steps have no network but the production proxy, which lets out only allowed hosts and audits each decision. | In one build, a RUN step's direct connection to a public address, bypassing the proxy, fails; through the proxy `api.github.com` answers while `example.com` gets a 403, with the denial in the build's egress log. Control: the same build with `--allow example.com` reaches it. |
 | 45 | **Disk export writes only a new destination.** Export copies a stopped disk's files into a new directory, never over an existing one, and follows no box-planted link. | A stopped disk holding a symlink to a host path and an executable file is exported. The link is copied as a link and its target is untouched; the file stays executable. Export to an existing destination, a dangling symlink, is refused `destination-exists` and leaves the link unchanged. Control: export into a new destination succeeds. |
 | 47 | **A project's sessions share one box.** All of a project's sessions use one box under its startup configuration. One session ending does not end another, and a client with different configuration is refused. Only the launch that starts the box runs `op`. | Two simultaneous first launches, each with a stand-in `op` first on PATH that gives the reference's value, share one owner and generation, and that stand-in is asked once; the box has its value. Killing one client ends its command group while the other keeps working, and SIGKILL of a fetch's Git alone ends the box command it hung, even one that ignores TERM. A client whose `from` variable holds another value is refused `config-changed` naming `env.values`, and one whose `op` reference differs naming `env.names`. Every later client of the project (the same-value join, the two refused ones, and the exit-code and executable-lookup runs) has instead a stand-in `op` that refuses every read first on PATH, and none asks it. After the configuration file's allowlist changes mid-run, the started allowlist still decides. Commands get literal argv, empty arguments and `--help` included; exits 0, 23, 126 and 127 pass through, and a setup failure exits 125. With no configuration and no terminal, `-- CMD` is refused `no-config` and creates no project state, and `git fetch box` from an unused state root is refused `no-config` and leaves that root empty. Control: the same `from` value joins, after `config edit` the refused invocation runs, and a configured disk project's `git fetch box` from that root passes admission and runs the daily pass. |
-| 48 | **A share reaches only its folder by path, a read-only folder is read-only, and a project holding a protected path is refused.** Through a share the box reaches no host path outside its declared directory; a hard link inside the share to an outside file is not covered (threat model). A project's read-only folder is readable in the box and not writable through it. A project holding a protected path, or with a read-only folder overlapping one, is refused. On Linux, which has no shares, the refusal runs for a disk project. | With the project's configuration directory symlinked into the checkout, `-- CMD` and `config edit` are refused `host-path-in-project` and create no state. Separately, with only the selected profile's directory symlinked in, and on Apple with only the supplied init's own directory under `artifacts/init` symlinked into a project with no configuration, the same two commands are refused the same way. A project whose read-only folder is a link from outside every protected path to a directory inside the state root is refused `host-path-in-project` by `-- CMD` at the box start, with the state tree unchanged; with that folder replaced by a host fixture folder at a fresh guest path, the box reads the fixture's unique file there, a write of bytes to it fails `EROFS` and the host file is unchanged. In a running share, the box follows an outward symlink and cannot read an unmounted host fixture. Control: with each symlink removed the same project runs, and on Apple shared edits and a box `git commit` land on the host's branch. |
+| 48 | **A share reaches only its folder by path, a read-only folder is read-only, and a project holding a protected path is refused.** Through a share the box reaches no host path outside its declared directory; a hard link inside the share to an outside file is not covered (threat model). A project's read-only folder is readable in the box and not writable through it. A project holding a protected path, or with a read-only folder overlapping one, is refused. On Linux, which has no shares, the refusal runs for a disk project. | With the project's configuration directory symlinked into the checkout, `-- CMD` and `config edit` are refused `host-path-in-project` and create no state. Separately, with only the selected profile's directory symlinked in, and on Apple with only the supplied init's own directory under `artifacts/init` symlinked into a project with no configuration, the same two commands are refused the same way. A project whose read-only folder is a real directory inside the state root is refused `host-path-in-project` by `-- CMD` at the box start, with the state tree unchanged; with that folder replaced by a host fixture folder at a fresh guest path, the box reads the fixture's unique file there, a write of bytes to it fails `EROFS` and the host file is unchanged. In a running share, the box follows an outward symlink and cannot read an unmounted host fixture. Control: with each symlink removed the same project runs, and on Apple shared edits and a box `git commit` land on the host's branch. |
 | 50 | **A profile with a base applies the base beneath it and is outdated when the base changes.** | A three-link user chain of tiny recipes, none with `base = "default"`: the root is on a public base on Linux and on the already-built default image on macOS. After a change to the root's recipe, a launch names `image-outdated` for the root and every image above it; after rebuilding only the root, for the two above it; after the chain's rebuild, none, and a second unchanged rebuild keeps every image identity in the chain. Control: a box from the top link has every link's file and seed and a top-level replacement seed. With the chain built, a cycle is refused as `profile`, and correcting it runs. |
 
 ## Code

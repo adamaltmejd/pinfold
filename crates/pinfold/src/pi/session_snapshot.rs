@@ -431,37 +431,21 @@ impl Snapshot {
         // equal snapshot names only sources its client checked.
         let check = received.is_none();
         let values = received.unwrap_or_else(|| Values::read(&plan));
+        // Only a start touches a folder on the host, and admits it before
+        // the box layer reads its contents. The snapshot holds each host as
+        // written, which a start requires to be its real path.
         let mut checked = plan.clone();
-        if !start {
+        if start {
+            for folder in &config.folders {
+                crate::config::admit_folder(root, &folder.host, &config.profile)?;
+            }
+        } else {
             checked
                 .mounts
                 .retain(|mount| mount.kind != MountKind::Readonly);
         }
         crate::core::r#box::validate_project(&checked, check.then_some(&values), &config.profile)
             .map_err(io::Error::other)?;
-        // Each folder's canonical host is startup configuration and what the
-        // box mounts. Only a start checks it; a join keeps an unresolvable
-        // host as written, so it differs from a running box's.
-        for mount in &mut plan.mounts {
-            if mount.kind != MountKind::Readonly {
-                continue;
-            }
-            match std::fs::canonicalize(&mount.host) {
-                Ok(canonical) => {
-                    if start {
-                        crate::config::admit_folder(root, &canonical, &config.profile)?;
-                    }
-                    mount.host = canonical;
-                }
-                Err(error) if start => {
-                    return Err(io::Error::other(format!(
-                        "spec: read-only folder {}: {error}",
-                        crate::formatting::terminal_text(&mount.host.to_string_lossy())
-                    )));
-                }
-                Err(_) => {}
-            }
-        }
         if !config.cpus.is_finite() {
             return Err(io::Error::other("spec-invalid: CPUs must be finite"));
         }

@@ -118,17 +118,17 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
     share_reaches_only_its_folder(&env, &projects[1]);
 }
 
-/// A read-only folder linked into the state root is refused at the box
-/// start, before a box exists. With a fixture folder in its place, the same
+/// A read-only folder inside the state root is refused at the box start,
+/// before a box exists. With a fixture folder in its place, the same
 /// project's box reads it and cannot write it.
-// Sabotage (not run): in config.rs `admit_folder`, pass `false` instead of
-// `true` to `check_paths_outside`. The linked folder, whose canonical path
-// lies inside the state root and contains no protected path, then runs and
-// exits 0. This block proves only the start check, and only that direction
-// of the overlap: a folder inside a protected path.
-// Sabotage (not run): in `build_plan`, push each folder with
-// `MountKind::Share` on macOS. The write then lands and changes the host
-// file. Dropping the folder from the plan fails the read.
+// Sabotage (not run), refusal: in config.rs `admit_folder`, pass `false`
+// instead of `true` to `check_paths_outside`. The folder, a real directory
+// inside the state root that contains no protected path, then runs and
+// exits 0. This proves only the start check's direction "folder inside a
+// protected path".
+// Sabotage (not run), control: in `build_plan` only, push each folder
+// with `MountKind::Share`. On macOS the write then lands and the host
+// bytes differ; the read fails if the folder is dropped from the plan.
 fn read_only_folder(env: &TestEnv, project: &Project) {
     // A configuration change applies only to a box not running.
     let stop = project.pinfold(&["stop"]);
@@ -139,6 +139,8 @@ fn read_only_folder(env: &TestEnv, project: &Project) {
     let content = format!("note {token}\n");
     let folder = env.root().join("folder");
     fs::create_dir(&folder).unwrap();
+    // A host must be its real path; on macOS the temporary root is not.
+    let folder = fs::canonicalize(&folder).unwrap();
     fs::write(folder.join("note"), &content).unwrap();
     let file = project.config_dir().join("pinfold.toml");
     let kind = if cfg!(target_os = "macos") {
@@ -158,13 +160,11 @@ fn read_only_folder(env: &TestEnv, project: &Project) {
         .unwrap();
     };
 
-    // A link outside every protected path to a directory the earlier runs
-    // made inside the state root: refused, with no state written.
-    let inside = env.state_home().join("pinfold/projects");
+    // A real directory the earlier runs made inside the state root:
+    // refused, with no state written.
+    let inside = fs::canonicalize(env.state_home().join("pinfold/projects")).unwrap();
     assert!(inside.is_dir(), "{inside:?}");
-    let link = env.root().join("linked-state");
-    symlink(&inside, &link).unwrap();
-    settings(&link);
+    settings(&inside);
     let before = tree(env.state_home());
     let out = project.pinfold(&["--", "true"]);
     assert_eq!(out.code, 125, "{out:?}");
@@ -188,9 +188,9 @@ fn read_only_folder(env: &TestEnv, project: &Project) {
          if (open($w, '>>', \"$ARGV[0]/note\") and print {$w} \"box\\n\" and close($w)) { print \"written\\n\" } else { print 0 + $!, \"\\n\" }",
         &guest,
     ]);
+    assert_eq!(fs::read_to_string(folder.join("note")).unwrap(), content);
     assert_eq!(out.code, 0, "{out:?}");
     assert_eq!(out.stdout, format!("{content}30\n"));
-    assert_eq!(fs::read_to_string(folder.join("note")).unwrap(), content);
 }
 
 /// In a running share, an outward symlink and paths outside it reach no
