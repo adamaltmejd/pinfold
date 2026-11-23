@@ -206,9 +206,10 @@ Project reports use readable text, including when piped. Add `--json` to
 
 Managed builds of a chain that contains the bundled `default` recipe
 re-resolve stable agent releases through it every time; installation
-reruns only when a resolved version changes, and other steps use the layer
-cache. Use `pinfold build` or `pinfold build --profile NAME` to update, and
-`--no-cache` to force the full recipe to run. Launch never installs agents.
+reruns when a resolved version changes or with `--no-cache`, and other
+steps use the layer cache. Use `pinfold build` or
+`pinfold build --profile NAME` to update, and `--no-cache` to force the full
+recipe to run. Launch never installs agents.
 A build first rebuilds the profiles beneath it, root first. Other projects
 and profiles on a rebuilt image report `image-outdated` at their next
 launch if its identity changed.
@@ -400,7 +401,7 @@ files, and later fetches can move `box/*` refs.
 
 `pinfold clean [--dry-run] [--idle AGE]` reclaims disk space: it runs the
 automatic maintenance now and removes the unused build cache. `--dry-run`
-only lists. `--idle AGE` also removes the state and disks of projects not run
+lists what `clean` would remove. `--idle AGE` also removes the state and disks of projects not run
 for that long, except a project with a live box; AGE is a whole number and a
 unit, `s`, `m`, `h` or `d`, such as `30d`. That is never automatic, because a
 project disk holds unfetched work.

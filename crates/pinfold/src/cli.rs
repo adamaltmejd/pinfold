@@ -204,7 +204,7 @@ Project
   stop            Shut down the project box
 
 Isolated disk: the box has its own files, separate from your folder; work crosses through Git
-  git push|fetch box  Move branches and tags; first: git remote add box pinfold::ROOT
+  git push|fetch  Move branches and tags with remote box; first: git remote add box pinfold::ROOT
 
 Maintenance
   doctor          Check the runtime, project setup and disk use
