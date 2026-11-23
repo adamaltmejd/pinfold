@@ -22,7 +22,7 @@ pub mod runtime;
 pub mod tls;
 
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
@@ -105,6 +105,13 @@ pub(crate) fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
 }
 
 pub(crate) use crate::init::hex;
+
+/// A fresh random hex token: SHA-256 of 16 bytes from /dev/urandom.
+pub(crate) fn random_hex() -> io::Result<String> {
+    let mut bytes = [0; 16];
+    fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(sha256_hex(bytes))
+}
 
 /// Seconds since the Unix epoch; 0 for a clock before it.
 pub(crate) fn now() -> u64 {

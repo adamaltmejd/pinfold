@@ -192,9 +192,13 @@ pub fn entries(dir: &Path) -> io::Result<Vec<fs::DirEntry>> {
 fn xdg(variable: &str, fallback: &str) -> io::Result<PathBuf> {
     let base = match std::env::var_os(variable) {
         Some(value) if Path::new(&value).is_absolute() => PathBuf::from(value),
-        _ => std::env::home_dir()
-            .ok_or_else(|| io::Error::other("HOME is not set and the uid has no passwd entry"))?
-            .join(fallback),
+        _ => home()?.join(fallback),
     };
     Ok(base.join("pinfold"))
+}
+
+/// The user's home directory.
+pub(crate) fn home() -> io::Result<PathBuf> {
+    std::env::home_dir()
+        .ok_or_else(|| io::Error::other("HOME is not set and the uid has no passwd entry"))
 }

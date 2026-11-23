@@ -766,11 +766,8 @@ pub fn complete_root(id: &str, recipe: &str) -> io::Result<Option<(PathBuf, Stri
 
 /// Once the catalog rename succeeds, the build is visible. Later cancellation,
 /// audit failure or directory-sync failure cannot report an unchanged failure.
-pub enum Publication {
-    Committed { durability_error: Option<String> },
-}
-
-fn commit(catalog: &Catalog, cancel: Option<&AtomicBool>) -> io::Result<Publication> {
+/// The result holds the directory-sync error, if any.
+fn commit(catalog: &Catalog, cancel: Option<&AtomicBool>) -> io::Result<Option<String>> {
     let directory = store()?;
     let bytes = serde_json::to_vec(catalog)?;
     check_cancel(cancel)?;
@@ -799,7 +796,7 @@ fn commit(catalog: &Catalog, cancel: Option<&AtomicBool>) -> io::Result<Publicat
         .and_then(|directory| directory.sync_all())
         .err()
         .map(|error| error.to_string());
-    Ok(Publication::Committed { durability_error })
+    Ok(durability_error)
 }
 
 fn verify_layout(
@@ -867,7 +864,7 @@ pub fn publish(
     recipe: &str,
     tags: &[String],
     cancel: &AtomicBool,
-) -> io::Result<Publication> {
+) -> io::Result<Option<String>> {
     check_cancel(Some(cancel))?;
     digest_hex(&verified.id)?;
     digest_hex(root_sha)?;
@@ -1084,8 +1081,7 @@ pub fn remove(reference: &str) -> io::Result<()> {
     if last {
         catalog.images.remove(&id);
     }
-    let Publication::Committed { durability_error } = commit(&catalog, None)?;
-    if let Some(error) = durability_error {
+    if let Some(error) = commit(&catalog, None)? {
         eprintln!("pinfold: image-store: committed removal durability: {error}");
     }
     if last {

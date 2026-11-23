@@ -730,15 +730,25 @@ impl Runtime for Apple {
         &self,
         name: &str,
         init: &Path,
-        context: &ExecContext<'_>,
+        _context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<std::process::Command> {
-        let size = if context.tty {
-            super::terminal::window()?
-        } else {
-            None
-        };
-        exec_command(name, init, context, argv, size)
+        let mut command = std::process::Command::new("container");
+        command.args(["exec", "-i"]);
+        // Without a TTY the runtime's exec gets its own process group, so
+        // a terminal signal reaches pinfold and not the exec.
+        command.process_group(0);
+        command.args(["--env", crate::init::EXEC_METADATA]);
+        command.env(
+            crate::init::EXEC_METADATA,
+            crate::init::ExecMetadata::default().encode(),
+        );
+        command
+            .arg(name)
+            .arg(init)
+            .args(["init", "exec", "--box-env", "--"])
+            .args(argv);
+        Ok(command)
     }
 
     /// A networkless helper owns fresh roots, then drops privileges to
@@ -761,16 +771,6 @@ impl Runtime for Apple {
         }
         let name = &plan.name;
         let image = plan.image.as_deref().expect("up resolved the image");
-        let labels = BTreeMap::from([
-            (
-                clean::OWNER_LABEL.to_string(),
-                plan.labels[clean::OWNER_LABEL].clone(),
-            ),
-            (
-                ownership::GENERATION_LABEL.to_string(),
-                generation.to_string(),
-            ),
-        ]);
         let owner = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
         let mut command = std::process::Command::new("container");
         command
@@ -783,9 +783,15 @@ impl Runtime for Apple {
         if !directories.is_empty() || !fills.is_empty() {
             command.args(["--cap-add", "CAP_SETUID", "--cap-add", "CAP_SETGID"]);
         }
-        for (key, value) in &labels {
-            command.arg("--label").arg(format!("{key}={value}"));
-        }
+        command
+            .arg("--label")
+            .arg(format!("{}={generation}", ownership::GENERATION_LABEL))
+            .arg("--label")
+            .arg(format!(
+                "{}={}",
+                clean::OWNER_LABEL,
+                plan.labels[clean::OWNER_LABEL]
+            ));
         let mut setup: Vec<OsString> = vec!["init".into(), "setup".into()];
         let disks: Vec<_> = plan
             .disks
@@ -1111,38 +1117,6 @@ fn bridge_write(output: &mut impl Write, pending: &mut VecDeque<u8>) -> io::Resu
 }
 
 /// `container exec` of `argv` through init, preserving terminal identity on a TTY.
-fn exec_command(
-    name: &str,
-    init: &Path,
-    context: &ExecContext<'_>,
-    argv: &[String],
-    size: Option<(u16, u16)>,
-) -> io::Result<std::process::Command> {
-    let mut command = std::process::Command::new("container");
-    command.args(["exec", "-i"]);
-    let mut metadata = crate::init::ExecMetadata {
-        agent: context.agent.map(str::to_string),
-        ..Default::default()
-    };
-    if context.tty {
-        command.arg("-t");
-        // Init applies a known initial size before a fast command starts.
-        super::exec_transport::tty_metadata(&mut metadata, size);
-    } else {
-        // Without a TTY the runtime's exec gets its own process group, so
-        // a terminal signal reaches pinfold and not the exec.
-        command.process_group(0);
-    }
-    command.args(["--env", crate::init::EXEC_METADATA]);
-    command.env(crate::init::EXEC_METADATA, metadata.encode());
-    command
-        .arg(name)
-        .arg(init)
-        .args(["init", "exec", "--box-env", "--"])
-        .args(argv);
-    Ok(command)
-}
-
 /// Wait, bounded, until inspection reports box `name` running. Apple records
 /// `.running` only after the box's first process starts, so `ready` can
 /// arrive first; an exec is refused in that gap.

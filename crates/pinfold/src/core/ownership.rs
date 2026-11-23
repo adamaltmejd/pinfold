@@ -28,10 +28,6 @@ pub fn host_dir() -> io::Result<PathBuf> {
     Ok(fs::canonicalize("/tmp")?.join(format!("pinfold-{}", nix::unistd::getuid())))
 }
 
-fn root() -> io::Result<PathBuf> {
-    sockets::host().map(|(path, _)| path)
-}
-
 /// Refuse a host ownership `what` of the wrong kind, another user's, or
 /// open to group or others.
 fn check_private(metadata: &fs::Metadata, kind: bool, what: &str) -> io::Result<()> {
@@ -48,7 +44,7 @@ fn path(key: &str, suffix: &str) -> io::Result<PathBuf> {
 
 /// Return an unlocked stable file. Callers may impose their own deadline.
 pub fn open_lock(key: &str) -> io::Result<File> {
-    root()?;
+    sockets::host()?;
     let file = File::options()
         .read(true)
         .write(true)
@@ -160,7 +156,12 @@ pub(crate) fn try_disk_lock(name: &str) -> io::Result<Option<Flock<File>>> {
 }
 
 pub fn record(name: &str) -> io::Result<Option<Record>> {
-    match fs::read(path(&format!("box:{name}"), "owner")?) {
+    read_owner(&path(&format!("box:{name}"), "owner")?)
+}
+
+/// An owner file's record; `None` when there is no such file.
+fn read_owner(path: &Path) -> io::Result<Option<Record>> {
+    match fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map(Some)
             .map_err(io::Error::other),
@@ -170,6 +171,22 @@ pub fn record(name: &str) -> io::Result<Option<Record>> {
 }
 
 /// Hold public dispatch against name reuse; startup publishes ready last.
+/// Try `attempt` every 10 ms until it takes its lock; `None` past `deadline`.
+async fn poll_lock(
+    deadline: tokio::time::Instant,
+    attempt: impl Fn() -> io::Result<Option<Flock<File>>>,
+) -> io::Result<Option<Flock<File>>> {
+    loop {
+        if let Some(lock) = attempt()? {
+            return Ok(Some(lock));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 pub(crate) fn exec_lock(name: &str, generation: &str) -> io::Result<Option<Flock<File>>> {
     let ready = |record: Option<Record>| {
         record.is_some_and(|record| {
@@ -255,24 +272,12 @@ impl Claim {
         // Liveness probes and orphan pruning hold the same lock briefly.
         // A conflict proves only contention; never trust a pid to bypass it.
         let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
-        let lock = loop {
-            if let Some(lock) = try_name_lock(name)? {
-                break lock;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Ok(None);
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        let Some(lock) = poll_lock(deadline, || try_name_lock(name)).await? else {
+            return Ok(None);
         };
-        let startup_gate = loop {
-            if let Some(gate) = try_lock(&format!("exec:{name}"), FlockArg::LockExclusiveNonblock)?
-            {
-                break gate;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Ok(None);
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        let gate = || try_lock(&format!("exec:{name}"), FlockArg::LockExclusiveNonblock);
+        let Some(startup_gate) = poll_lock(deadline, gate).await? else {
+            return Ok(None);
         };
         Ok(Some(Claim {
             name: name.to_string(),
@@ -287,16 +292,9 @@ impl Claim {
         }))
     }
 
-    pub fn prepare(&mut self, state_dir: &Path) -> io::Result<()> {
-        self.prepare_inner(state_dir, false)
-    }
-
-    /// A random project name never authorizes replacing prior evidence.
-    pub(crate) fn prepare_fresh(&mut self, state_dir: &Path) -> io::Result<()> {
-        self.prepare_inner(state_dir, true)
-    }
-
-    fn prepare_inner(&mut self, state_dir: &Path, fresh: bool) -> io::Result<()> {
+    /// With `fresh`: a random project name never authorizes replacing prior
+    /// evidence.
+    pub(crate) fn prepare(&mut self, state_dir: &Path, fresh: bool) -> io::Result<()> {
         let endpoint = socket(&self.name)?;
         // The caller refused a recorded name while holding this claim.
         if fresh {
@@ -320,11 +318,10 @@ impl Claim {
         if !fresh {
             absent_ok(fs::remove_dir_all(state_dir))?;
         }
-        let mut random = [0; 16];
-        File::open("/dev/urandom")?.read_exact(&mut random)?;
+        let generation = super::random_hex()?;
         self.record = Some(Record {
             name: self.name.clone(),
-            generation: sha256_hex(random),
+            generation,
             ready: false,
             retiring: false,
             state_dir: state_dir.to_path_buf(),
@@ -767,11 +764,9 @@ pub fn record_results() -> io::Result<Vec<io::Result<Record>>> {
         {
             continue;
         }
-        let decoded = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other),
-            // A record removed since the listing belongs to a box that ended.
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => Err(error),
+        // A record removed since the listing belongs to a box that ended.
+        let Some(decoded) = read_owner(&path).transpose() else {
+            continue;
         };
         records.push(decoded.map_err(|error| {
             io::Error::new(

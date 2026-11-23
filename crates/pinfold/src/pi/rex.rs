@@ -168,10 +168,8 @@ impl Rex {
 }
 
 async fn closed(closing: &mut watch::Receiver<bool>) {
-    while !*closing.borrow_and_update() {
-        if closing.changed().await.is_err() {
-            std::future::pending::<()>().await;
-        }
+    if closing.wait_for(|closing| *closing).await.is_err() {
+        std::future::pending::<()>().await;
     }
 }
 
@@ -247,28 +245,11 @@ impl State {
         else {
             return Status::Failed;
         };
-        if !self.ready().await {
-            let _ = server.kill().await;
-            return Status::Failed;
-        }
-        if !remote_control_off().await {
-            let _ = server.kill().await;
-            return Status::RemoteControl;
-        }
-        let Ok(dial) = self.dial() else {
-            let _ = server.kill().await;
-            return Status::Failed;
-        };
-        let Ok((socket, listener)) = HostSocket::bind(&self.leaf) else {
-            let _ = server.kill().await;
-            return Status::Failed;
-        };
-        let listener = match Listener::from_std(listener) {
-            Ok(listener) => listener,
-            Err(_) => {
-                let _ = socket.remove();
+        let (socket, listener, dial) = match self.bind().await {
+            Ok(bound) => bound,
+            Err(status) => {
                 let _ = server.kill().await;
-                return Status::Failed;
+                return status;
             }
         };
         let (stop, stopped) = watch::channel(false);
@@ -279,6 +260,23 @@ impl State {
             accept,
         });
         Status::Relayed
+    }
+
+    /// Wait for the started server, then bind the host socket.
+    async fn bind(&self) -> Result<(HostSocket, Listener, Command), Status> {
+        if !self.ready().await {
+            return Err(Status::Failed);
+        }
+        if !remote_control_off().await {
+            return Err(Status::RemoteControl);
+        }
+        let dial = self.dial().map_err(|_| Status::Failed)?;
+        let (socket, listener) = HostSocket::bind(&self.leaf).map_err(|_| Status::Failed)?;
+        let listener = Listener::from_std(listener).map_err(|_| {
+            let _ = socket.remove();
+            Status::Failed
+        })?;
+        Ok((socket, listener, dial))
     }
 
     /// A dial with closed stdin exits 0 only after connecting.

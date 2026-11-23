@@ -476,7 +476,6 @@ impl Listener {
 pub(crate) trait CommandGuard {
     fn spawn_guarded(&mut self) -> io::Result<Child>;
     fn output_guarded(&mut self) -> io::Result<Output>;
-    fn status_guarded(&mut self) -> io::Result<ExitStatus>;
 }
 
 pub(crate) trait AsyncCommandGuard {
@@ -503,10 +502,6 @@ impl CommandGuard for Command {
         self.stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         self.spawn_guarded()?.wait_with_output()
-    }
-
-    fn status_guarded(&mut self) -> io::Result<ExitStatus> {
-        self.spawn_guarded()?.wait()
     }
 }
 

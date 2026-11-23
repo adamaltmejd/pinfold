@@ -402,16 +402,11 @@ fn in_use_images(runtime: &dyn Runtime) -> io::Result<BTreeSet<String>> {
         }
     }
     #[cfg(target_os = "linux")]
-    {
-        let mut ids = ids;
-        for image in crate::core::image::linux::catalog::list()? {
-            if crate::core::image::linux::catalog::leased(&image.id)? {
-                ids.insert(image.id);
-            }
+    for image in crate::core::image::linux::catalog::list()? {
+        if crate::core::image::linux::catalog::leased(&image.id)? {
+            ids.insert(image.id);
         }
-        Ok(ids)
     }
-    #[cfg(not(target_os = "linux"))]
     Ok(ids)
 }
 

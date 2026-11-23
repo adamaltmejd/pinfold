@@ -15,7 +15,7 @@ use crate::pi::state::canonical;
 pub struct Context {
     pub root: PathBuf,
     pub repository: bool,
-    worktree: Option<PathBuf>,
+    pub(crate) worktree: Option<PathBuf>,
 }
 
 impl Context {
@@ -94,10 +94,6 @@ impl Context {
         Ok(context)
     }
 
-    pub(crate) fn is_worktree(&self) -> bool {
-        self.worktree.is_some()
-    }
-
     pub(crate) fn check_worktree(&self, mount: ProjectMount) -> io::Result<()> {
         let Some(worktree) = self.worktree.as_deref() else {
             return Ok(());
@@ -158,13 +154,9 @@ impl Context {
     /// `verify` without host Git: the worktree, and a share's Git metadata.
     pub(crate) fn check_metadata(&self, mount: ProjectMount) -> io::Result<()> {
         self.check_worktree(mount)?;
-        if mount == ProjectMount::Share {
-            return self.verify_share();
+        if mount != ProjectMount::Share {
+            return Ok(());
         }
-        Ok(())
-    }
-
-    fn verify_share(&self) -> io::Result<()> {
         if share_repository(&self.root)? != self.repository {
             return Err(worktree_error());
         }

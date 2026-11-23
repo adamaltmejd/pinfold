@@ -127,13 +127,6 @@ impl Share {
     }
 }
 
-fn embedded(files: &[(&str, &[u8])]) -> Vec<ShareFile> {
-    files
-        .iter()
-        .map(|(path, contents)| (path.to_string(), contents.to_vec(), false))
-        .collect()
-}
-
 fn write_share(files: &[ShareFile], root: &Path) -> io::Result<()> {
     write_files(files.iter().map(|(path, bytes, _)| (path, bytes)), root)?;
     for (path, _, executable) in files {
@@ -243,7 +236,7 @@ impl Profile {
         if root.is_dir() {
             return load_dir(name, &root);
         }
-        Self::builtin(name).map_err(|_| {
+        Self::builtin(name).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
@@ -262,19 +255,14 @@ impl Profile {
     }
 
     /// A named built-in alone, even when a user's profile overrides it.
-    fn builtin(name: &str) -> io::Result<Profile> {
+    fn builtin(name: &str) -> Option<Profile> {
         let (containerfile, config, home, share): (_, _, &[(&str, &[u8])], _) = match name {
             "default" => (DEFAULT, CONFIG, HOME, DEFAULT_SHARE),
             "documents" => (DOCUMENTS, DOCUMENTS_CONFIG, &[], DOCUMENTS_SHARE),
             "adam" => (ADAM, ADAM_CONFIG, &[], ADAM_SHARE),
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("no built-in profile {name:?}; expected default, documents or adam"),
-                ));
-            }
+            _ => return None,
         };
-        Ok(Profile {
+        Some(Profile {
             name: name.to_string(),
             built_in: true,
             containerfile: Some(containerfile.to_vec()),
@@ -286,7 +274,12 @@ impl Profile {
                     contents: contents.to_vec(),
                 })
                 .collect(),
-            share: Some(Share::Files(embedded(share))),
+            share: Some(Share::Files(
+                share
+                    .iter()
+                    .map(|(path, contents)| (path.to_string(), contents.to_vec(), false))
+                    .collect(),
+            )),
             base: None,
         })
     }

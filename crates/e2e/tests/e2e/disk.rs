@@ -7,7 +7,9 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 use std::thread;
 
-use e2e::{BoxUp, COMMAND, TestEnv, box_name, default_image, hold_maintenance, json_lines, run};
+use e2e::{
+    BoxUp, COMMAND, TestEnv, box_name, default_image, dir_names, hold_maintenance, json_lines, run,
+};
 use serde_json::{Value, json};
 
 /// A box with one disk at `/data`.
@@ -124,16 +126,6 @@ fn disks_persist_and_attach_exclusively() {
     );
 }
 
-/// The names in a directory, sorted.
-fn names(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect();
-    names.sort();
-    names
-}
-
 fn mode(path: &Path) -> u32 {
     fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
 }
@@ -212,7 +204,7 @@ fn disk_export_writes_only_a_new_destination() {
         lines,
         [json!({ "event": "exported", "disk": disk, "destination": dest.to_str().unwrap() })]
     );
-    assert_eq!(names(&dest), ["link", "tool"]);
+    assert_eq!(dir_names(&dest), ["link", "tool"]);
     let link = dest.join("link");
     assert!(
         fs::symlink_metadata(&link)

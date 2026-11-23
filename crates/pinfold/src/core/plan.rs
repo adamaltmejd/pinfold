@@ -173,10 +173,9 @@ fn env_entries<'de, D: serde::Deserializer<'de>>(
 }
 
 /// Refuse, naming the entry, an env entry or injecting header in
-/// configuration that names both `from` and `op` or neither: main refused
-/// such a header at load too. Configuration load calls this, so a
-/// `PINFOLD_ENV_` variable replacing the entry cannot hide it. Login
-/// routes are checked at launch, as before `op`.
+/// configuration that names both `from` and `op` or neither. Configuration
+/// load calls this, so a `PINFOLD_ENV_` variable replacing the entry cannot
+/// hide it. Login routes are checked at launch, as before `op`.
 pub(crate) fn check_declared(
     env: &BTreeMap<String, Env>,
     routes: &BTreeMap<String, Route>,
@@ -779,10 +778,6 @@ impl<'de> Deserialize<'de> for Env {
                 Ok(Env::Exact(value.to_string()))
             }
 
-            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Env, E> {
-                Ok(Env::Exact(value))
-            }
-
             fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Env, A::Error> {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
@@ -826,15 +821,6 @@ impl Plan {
             .map_err(|error| refusal(name.clone(), invalid(error)))?;
         check_reserved_labels(&plan.labels).map_err(|detail| refusal(name, detail))?;
         Ok(plan)
-    }
-
-    /// Check a parsed spec against the values its `from` entries name.
-    pub fn validate(&self, values: &Values) -> Result<(), String> {
-        self.validate_inputs(Some(values))
-    }
-
-    pub(crate) fn validate_structure(&self) -> Result<(), String> {
-        self.validate_inputs(None)
     }
 
     /// Refuse, naming the first one, when a source the spec reads is an
@@ -888,7 +874,9 @@ impl Plan {
             .any(|(_, _, source)| matches!(source, Ok(Source::Op(_))))
     }
 
-    fn validate_inputs(&self, values: Option<&Values>) -> Result<(), String> {
+    /// Check a parsed spec, and against the values its `from` entries name
+    /// when given.
+    pub fn validate(&self, values: Option<&Values>) -> Result<(), String> {
         if cfg!(target_os = "linux") && self.mounts.iter().any(|m| m.kind == MountKind::Share) {
             return Err(invalid("share mounts are unsupported on Linux"));
         }
@@ -1236,8 +1224,6 @@ pub fn check_reserved_labels(labels: &BTreeMap<String, String>) -> Result<(), St
     }
 }
 
-/// A POSIX environment name: `[A-Za-z_][A-Za-z0-9_]*`. Anything else
-/// would leak or fail unpredictably in a runtime CLI's `--env`.
 /// A host variable name: no environment holds one that is empty or holds
 /// `=` or NUL, and macOS `getenv` reads `A=B` as `A`.
 fn valid_from(name: &str) -> bool {
@@ -1251,6 +1237,8 @@ pub(crate) fn valid_op(reference: &str) -> bool {
         && reference.len() <= 1024
 }
 
+/// A POSIX environment name: `[A-Za-z_][A-Za-z0-9_]*`. Anything else
+/// would leak or fail unpredictably in a runtime CLI's `--env`.
 fn valid_env_name(name: &str) -> bool {
     name.bytes()
         .next()

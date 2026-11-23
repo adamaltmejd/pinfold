@@ -149,20 +149,11 @@ pub(super) fn relay(
         ];
         let timeout = match (
             session.as_ref().map_or(-1, Session::timeout),
-            drain.filter(|_| connected),
+            super::session::millis(drain.filter(|_| connected)),
         ) {
-            (timeout, Some(deadline)) => {
-                let drain = deadline
-                    .saturating_duration_since(Instant::now())
-                    .as_millis()
-                    .min(i32::MAX as u128) as i32;
-                if timeout < 0 {
-                    drain
-                } else {
-                    timeout.min(drain)
-                }
-            }
-            (timeout, None) => timeout,
+            (-1, drain) => drain,
+            (timeout, -1) => timeout,
+            (timeout, drain) => timeout.min(drain),
         };
         // Safety: poll only updates this array of live descriptors.
         if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) } < 0 {

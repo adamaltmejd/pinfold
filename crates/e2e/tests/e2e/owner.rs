@@ -10,7 +10,7 @@ use e2e::{
     COMMAND, Client, Leftover, Project, TestEnv, box_name, default_image, hold_maintenance,
     json_lines, run,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 #[test]
 fn losing_the_owner_fails_closed() {
@@ -146,7 +146,7 @@ fn apple_lists(name: &str) -> bool {
         COMMAND,
     );
     assert_eq!(out.code, 0, "container list: {out:?}");
-    let listed: Value = serde_json::from_str(&out.stdout).expect("container list JSON");
+    let listed: serde_json::Value = serde_json::from_str(&out.stdout).expect("container list JSON");
     listed
         .as_array()
         .expect("a list")
@@ -158,9 +158,7 @@ fn apple_lists(name: &str) -> bool {
 /// exits 125.
 fn project_client_exits_125(env: &TestEnv) {
     let project = Project::new(env, "project");
-    let config = project.pinfold(&["config", "--json"]);
-    assert_eq!(config.code, 0, "config --json: {config:?}");
-    let config: Value = serde_json::from_str(&config.stdout).expect("config JSON");
+    let config = project.config();
     let id = config["project"]["id"].as_str().expect("project id");
 
     let client =

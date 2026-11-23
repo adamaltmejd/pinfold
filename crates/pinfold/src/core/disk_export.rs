@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -14,7 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use super::r#box::{Box, Shutdown, Signals, UpError};
 use super::plan::{Disk, Plan, valid_name};
-use super::{artifacts, runtime, sha256_hex};
+use super::{artifacts, runtime};
 use crate::init::export::{ABORT, CONTENT_BYTES, ENTRIES, METADATA_BYTES, PATH_BYTES};
 use crate::init::{STREAM_DIR, STREAM_END, STREAM_EXECUTABLE, STREAM_FILE, STREAM_SYMLINK};
 
@@ -27,7 +27,7 @@ pub fn run(name: &str, destination: &Path, image: Option<&str>) -> io::Result<i3
         .to_str()
         .ok_or_else(|| io::Error::other("path-not-utf8: export destination"))?;
     let staging = Staging::new(destination)?;
-    let nonce = nonce()?;
+    let nonce = super::random_hex()?;
     let plan = Plan {
         name: format!("export-{}", &nonce[..24]),
         labels: std::collections::BTreeMap::from([(
@@ -123,12 +123,6 @@ pub fn run(name: &str, destination: &Path, image: Option<&str>) -> io::Result<i3
     result
 }
 
-fn nonce() -> io::Result<String> {
-    let mut bytes = [0; 16];
-    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(sha256_hex(bytes))
-}
-
 struct Staging {
     parent: File,
     root: File,
@@ -171,7 +165,7 @@ impl Staging {
         if error.kind() != io::ErrorKind::NotFound {
             return Err(error);
         }
-        let name = format!(".pinfold-export-{}", nonce()?);
+        let name = format!(".pinfold-export-{}", super::random_hex()?);
         let staging_name = cstring(name.as_bytes())?;
         checked(unsafe { nix::libc::mkdirat(parent.as_raw_fd(), staging_name.as_ptr(), 0o700) })?;
         let path = parent_path.join(&name);

@@ -21,7 +21,7 @@ use nix::sys::stat::Mode;
 use serde::{Deserialize, Serialize};
 use tokio::signal::unix::{SignalKind, signal};
 
-use super::catalog::{self, Publication, Verified};
+use super::catalog::{self, Verified};
 use super::{LOCAL_BASE_BYTES, OCI_BYTES};
 use crate::core::image::BuildRequest;
 use crate::core::ownership::{self, Claim};
@@ -241,7 +241,7 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
         _ = interrupt.recv() => { let _ = restoring.await; return Err(io::ErrorKind::Interrupted.into()); },
         _ = terminate.recv() => { let _ = restoring.await; return Err(io::ErrorKind::Interrupted.into()); },
     }
-    claim.prepare(&state)?;
+    claim.prepare(&state, false)?;
     let request = Request {
         context: request.context.to_path_buf(),
         containerfile: request.containerfile.to_path_buf(),
@@ -297,7 +297,7 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
         eprintln!("pinfold: build cleanup: {error}");
     }
     match result {
-        Ok(Publication::Committed { durability_error }) => {
+        Ok(durability_error) => {
             if let Some(error) = durability_error {
                 eprintln!(
                     "pinfold: image-store: build committed; crash durability not confirmed: {error}"
@@ -315,7 +315,7 @@ async fn run_transaction(
     cancel: Arc<AtomicBool>,
     claim: &mut Claim,
     proxy: &mut Option<proxy::Server>,
-) -> io::Result<Publication> {
+) -> io::Result<Option<String>> {
     let preparing = {
         let state = state.clone();
         let cancel = cancel.clone();
@@ -1115,11 +1115,11 @@ async fn watch_worker<T>(
 }
 
 async fn watch_publication(
-    mut worker: tokio::task::JoinHandle<io::Result<Publication>>,
+    mut worker: tokio::task::JoinHandle<io::Result<Option<String>>>,
     cancel: &AtomicBool,
     claim: &mut Claim,
     audit: &mut tokio::sync::oneshot::Receiver<()>,
-) -> io::Result<Publication> {
+) -> io::Result<Option<String>> {
     let stopped = tokio::select! {
         result = &mut worker => return result.map_err(io::Error::other)?,
         _ = claim.stop_requested() => io::Error::from(io::ErrorKind::Interrupted),

@@ -342,9 +342,7 @@ impl Config {
             }
             if written != folder.host {
                 // HOME canonicalized as the project's startup roots hold it.
-                let home = env::home_dir().ok_or_else(|| {
-                    io::Error::other("HOME is not set and the uid has no passwd entry")
-                })?;
+                let home = dirs::home()?;
                 folder.host = dirs::resolve_host_path(&home)?.join(written);
             }
         }

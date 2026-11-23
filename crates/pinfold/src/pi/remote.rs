@@ -14,6 +14,7 @@ use nix::fcntl::{FcntlArg, FdFlag, fcntl};
 
 use crate::core::crossing::{self, CrossingError, Fetched, Refs};
 use crate::core::plan::valid_name;
+use crate::core::process::output_cancellable;
 use crate::formatting::terminal_text;
 use crate::pi::launch;
 
@@ -329,7 +330,7 @@ fn check(root: &Path, remote: &str, address: &str) -> io::Result<()> {
     command
         .args(["for-each-ref", "--format=%(refname) %(symref)", &namespace])
         .stdin(std::process::Stdio::null());
-    let refs = crossing::output_cancellable(&mut command, None, &AtomicBool::new(false))?;
+    let refs = output_cancellable(&mut command, None, &AtomicBool::new(false))?;
     if !refs.status.success() {
         return Err(refused(
             "remote-repository: Git could not list the remote's refs",
@@ -377,7 +378,7 @@ fn rev_parse(arg: &str, what: &str) -> io::Result<String> {
     command
         .args(["rev-parse", arg])
         .stdin(std::process::Stdio::null());
-    let output = crossing::output_cancellable(&mut command, None, &AtomicBool::new(false))?;
+    let output = output_cancellable(&mut command, None, &AtomicBool::new(false))?;
     let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if !output.status.success() || line.is_empty() {
         return Err(refused(&format!(
@@ -395,7 +396,7 @@ fn config(root: &Path, args: &[&str]) -> io::Result<Option<String>> {
         .arg("config")
         .args(args)
         .stdin(std::process::Stdio::null());
-    let output = crossing::output_cancellable(&mut command, None, &AtomicBool::new(false))?;
+    let output = output_cancellable(&mut command, None, &AtomicBool::new(false))?;
     match output.status.code() {
         Some(0) => Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned())),
         Some(1) => Ok(None),

@@ -51,7 +51,9 @@ pub fn exec(
         ..Default::default()
     };
     if tty {
-        tty_metadata(&mut metadata, window()?);
+        metadata.window = window()?;
+        metadata.term = std::env::var_os("TERM").map(|value| value.as_bytes().to_vec());
+        metadata.colorterm = std::env::var_os("COLORTERM").map(|value| value.as_bytes().to_vec());
     }
     let mut payload = Vec::new();
     payload.extend((argv.len() as u32).to_be_bytes());
@@ -352,13 +354,6 @@ pub(super) fn cancelled(cancel: Option<&AtomicBool>) -> io::Result<()> {
     } else {
         Ok(())
     }
-}
-
-/// The terminal identity an exec carries on a TTY.
-pub(super) fn tty_metadata(metadata: &mut crate::init::ExecMetadata, window: Option<(u16, u16)>) {
-    metadata.window = window;
-    metadata.term = std::env::var_os("TERM").map(|value| value.as_bytes().to_vec());
-    metadata.colorterm = std::env::var_os("COLORTERM").map(|value| value.as_bytes().to_vec());
 }
 
 fn wait(fd: libc::c_int, events: libc::c_short, cancel: Option<&AtomicBool>) -> io::Result<()> {
