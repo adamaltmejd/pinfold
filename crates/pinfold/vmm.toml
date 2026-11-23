@@ -7,20 +7,20 @@
 # scripts/bump-pins.py moves Firecracker and the kernel release together.
 
 name = "vmm"
-version = "1.17.0+6.18.57"
+version = "1.18.0+6.18.57"
 
 # The release archive's one directory holds firecracker-v<version>-x86_64.
 [[asset]]
 os-arch = "linux-x64"
-url = "https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz"
-sha256 = "06094a1108ae9e82aa4c23a775aa92758f53f1175d422270d9d6162cb9ade558"
+url = "https://github.com/firecracker-microvm/firecracker/releases/download/v1.18.0/firecracker-v1.18.0-x86_64.tgz"
+sha256 = "1ac8eec866dd5eea14efecf6323e22b23eea24054545338a5b34bc5bca6623cd"
 install = "tar.gz"
 as = "firecracker"
 
 # guest-kernel/'s build, published by the guest-kernel workflow.
 [[asset]]
 os-arch = "linux-x64"
-url = "https://github.com/adamaltmejd/pinfold/releases/download/guest-kernel-6.18.57-firecracker-v1.17.0/vmlinux-6.18.57"
-sha256 = "1a1b28b34f89a8e49d90c72997f1b89bfd236ff44669dda9e91486c89adafc99"
+url = "https://github.com/adamaltmejd/pinfold/releases/download/guest-kernel-6.18.57-firecracker-v1.18.0/vmlinux-6.18.57"
+sha256 = "e245d8da3adebeb508cd1c31288f72f24e50bacbb1f2c3c8b91b2fe5491c687a"
 install = "executable"
 as = "vmlinux"
