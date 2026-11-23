@@ -59,30 +59,33 @@ pub fn host_requirements() -> Vec<String> {
 
 /// Whether an ELF64 little-endian executable has a `PT_INTERP` program
 /// header. The executable is also the guest init, and the init disk holds
-/// no dynamic loader.
+/// no dynamic loader. A file whose header or whole program-header table
+/// cannot be read is an error, never "no interpreter".
 fn has_interpreter(path: &std::path::Path) -> io::Result<bool> {
     use std::os::unix::fs::FileExt;
     const PT_INTERP: u32 = 3;
+    const ENTRY: usize = 56;
+    let not_elf = || io::Error::other("it could not be read as an ELF64 little-endian executable");
     let file = fs::File::open(path)?;
     let mut header = [0u8; 64];
-    file.read_exact_at(&mut header, 0)?;
+    file.read_exact_at(&mut header, 0).map_err(|_| not_elf())?;
     if header[..4] != *b"\x7fELF" || header[4] != 2 || header[5] != 1 {
-        return Err(io::Error::other("not an ELF64 little-endian file"));
+        return Err(not_elf());
     }
     let offset = u64::from_le_bytes(header[0x20..0x28].try_into().expect("8 bytes"));
-    let size = u16::from_le_bytes([header[0x36], header[0x37]]);
-    let count = u16::from_le_bytes([header[0x38], header[0x39]]);
-    if size < 4 {
-        return Err(io::Error::other("ELF program header size below 4"));
+    let size = usize::from(u16::from_le_bytes([header[0x36], header[0x37]]));
+    let count = usize::from(u16::from_le_bytes([header[0x38], header[0x39]]));
+    let length = file.metadata()?.len();
+    let end = offset.checked_add((size * count) as u64);
+    if size < ENTRY || end.is_none_or(|end| end > length) {
+        return Err(not_elf());
     }
-    for index in 0..u64::from(count) {
-        let mut kind = [0u8; 4];
-        file.read_exact_at(&mut kind, offset + index * u64::from(size))?;
-        if u32::from_le_bytes(kind) == PT_INTERP {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let mut table = vec![0u8; size * count];
+    file.read_exact_at(&mut table, offset)
+        .map_err(|_| not_elf())?;
+    Ok(table
+        .chunks_exact(size)
+        .any(|entry| u32::from_le_bytes(entry[..4].try_into().expect("4 bytes")) == PT_INTERP))
 }
 
 /// Open `/dev/kvm` and use it: access, not group membership.
