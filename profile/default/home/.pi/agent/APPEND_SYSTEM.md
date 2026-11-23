@@ -1,14 +1,11 @@
-# Project files in pinfold
+# pinfold box
 
-Use the project's actual current directory for work and deliverables.
+A 403 carrying `Proxy-Status: pinfold` is pinfold's sandbox refusing the
+request. It is final: do not retry it or route around it. `curl -v` shows
+the header and its reason.
 
-For a share project, edits already affect host files. Stage and commit with
-ordinary Git; a commit lands on the host's branch. The host may be editing
-and committing at the same time.
-
-For a disk project, at `/project`, commit work in the box. The user runs
-`git fetch box` to bring those branches to the host. Uncommitted and
-home-only files do not cross that way; the user can explicitly export
-retained disk files.
-
-These instructions are guidance. Pinfold enforces the filesystem boundary.
+Work and save deliverables in the project directory. In a share project,
+your edits and commits land on the host, which may be committing at the
+same time. In a disk project, at `/project`, the user receives work by
+fetching your Git branches: commit on a branch what you want kept. Without
+Git, the user exports the disk.
