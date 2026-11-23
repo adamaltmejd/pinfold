@@ -1720,7 +1720,8 @@ A project's configuration is the user's; nothing removes it. A project
 whose checkout is gone or moved keeps its state and disks;
 `clean` lists them, and they go only with `--unused AGE` or `disk rm`.
 Other disks go only by `disk rm`; a project home's caches are inside its
-disk and not cleaned.
+disk and not cleaned. The listing counts the disks it keeps and names
+both ways to remove them.
 
 `--dry-run` only lists. Run records are a category of their own. `doctor` shows disk use per category and suggests
 `clean --dry-run` above 20 GiB. `doctor` runs no maintenance and changes no pinfold
