@@ -791,12 +791,10 @@ process. Getting further needs a host kernel bug.
   guest terminal ioctl failure fails execution. Later host resizes reach
   the guest terminal while the command runs.
 - Each project client owns its terminal and command transport.
-  Apple project execution carries command frames over the native client's
-  private pipes and creates its PTY in the guest. Public Apple TTY exec
-  gives the native client a private host PTY, opened close-on-exec with its
-  slave raw before spawn. Only pinfold changes the caller's terminal. No native
-  Apple client holds a caller-terminal descriptor. Public non-TTY Apple exec
-  uses separate pipes. Framed execution keeps separate stdout and stderr channels.
+  Apple execution, project and public, carries command frames over the
+  native client's private pipes and creates its PTY in the guest. Only
+  pinfold changes the caller's terminal. No native Apple client holds a
+  caller-terminal descriptor. Framed execution keeps separate stdout and stderr channels.
   The box-owning native client's stderr is piped. Startup diagnostics retain
   at most 64 KiB in memory. Before ready, stdout EOF or native-client exit
   starts a one-second failure deadline even if a descendant holds stderr.
@@ -813,10 +811,9 @@ process. Getting further needs a host kernel bug.
   consumption credits. Command input cannot block window changes or status.
   Non-TTY execution preserves separate
   byte streams. Closing a non-TTY output consumer closes that guest stream's
-  pipe reader so its writer observes SIGPIPE. Public Apple exec closes the native
-  pipe so the native client observes SIGPIPE. An observed command status is kept.
-  An observed native exec status survives later relay failure or cancellation.
-  After native exec exits, remaining output drains to EOF or a one-second
+  pipe reader so its writer observes SIGPIPE. An observed command status is kept.
+  An observed exec status survives later relay failure or cancellation.
+  After the command exits, remaining output drains to EOF or a one-second
   deadline; a descendant holding an endpoint cannot retain the client.
   Both platforms restore only termios this execution changed. Restoration
   checks that its process group owns the foreground terminal before writing.
@@ -842,7 +839,12 @@ process. Getting further needs a host kernel bug.
   The group comes from the helper's own child, never workload data.
   Other sessions, the helper and relay are untouched. Normal command completion
   leaves background children running, with output delivered for up to one second
-  after the command exits. A process that leaves the command's process group,
+  after the command exits. For `box exec` and project commands on both
+  platforms, the caller gets the command's status when it exits, once its
+  output ends or that second has passed. pinfold does not signal a process
+  that survives the command's exit and still holds its output or terminal:
+  its later output is discarded, and its guest relay ends when the last such
+  descriptor closes. A process that leaves the command's process group,
   or for a terminal session ignores hangup after leaving it, may keep running.
   `pinfold stop` ends everything. TTY Ctrl-C and Ctrl-\ remain terminal input.
   Plain stdin EOF is not departure. Public `box exec` sends no signal on departure.
@@ -2297,7 +2299,8 @@ lives in `cli.rs`.
 | `x86_64-unknown-linux-musl` | Linux x64 CLI and init |
 
 Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `toml`, `nix`
-(with `socket` for vsock, `sched` and `mount` for the VMM jail; Landlock
+(with `socket` for vsock, `net` for the proxy's upstream addresses,
+`sched` and `mount` for the VMM jail; Landlock
 through nix's `libc` syscalls),
 `ring` for host SHA-256, `sha2` only in the guest builder init, and the TLS client for
 injecting routes: `rustls` (ring) with `rustls-native-certs` for the host's roots.

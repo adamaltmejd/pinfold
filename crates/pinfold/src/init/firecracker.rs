@@ -996,6 +996,11 @@ pub(super) fn exec(
         }
         None => {
             command.arg("--box-env");
+            // Apple's own TTY exec defaulted TERM below the image, spec and
+            // host values; public exec keeps that default.
+            if tty && !project && std::env::var_os("TERM").is_none() {
+                command.env("TERM", "xterm");
+            }
         }
     }
     command

@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs};
-use std::os::fd::{AsFd, AsRawFd, FromRawFd};
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1096,82 +1096,34 @@ fn dial(address: SocketAddr, connection: &Connection) -> Option<TcpStream> {
 
 /// Register the socket before connect so teardown can interrupt a pending dial.
 fn connect_upstream(address: SocketAddr, connection: &Connection) -> Option<TcpStream> {
-    use nix::libc;
+    use nix::sys::socket::{AddressFamily, SockFlag, SockType, SockaddrStorage, connect, socket};
     let domain = if address.is_ipv4() {
-        libc::AF_INET
+        AddressFamily::Inet
     } else {
-        libc::AF_INET6
+        AddressFamily::Inet6
     };
     #[cfg(target_os = "macos")]
     let creation = crate::core::process::fork_guard();
     #[cfg(target_os = "linux")]
-    let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
+    let flags = SockFlag::SOCK_CLOEXEC | SockFlag::SOCK_NONBLOCK;
     #[cfg(target_os = "macos")]
-    let kind = libc::SOCK_STREAM;
-    // SAFETY: socket has no pointer arguments and returns a new descriptor.
-    let fd = unsafe { libc::socket(domain, kind, 0) };
-    if fd < 0 {
-        return None;
-    }
-    // SAFETY: this descriptor belongs exclusively to this stream.
-    let server = unsafe { TcpStream::from_raw_fd(fd) };
+    let flags = SockFlag::empty();
+    let server = TcpStream::from(socket(domain, SockType::Stream, flags, None).ok()?);
     #[cfg(target_os = "macos")]
     {
-        // SAFETY: fd is live; process creation is excluded until CLOEXEC is set.
-        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
-            return None;
-        }
+        use nix::fcntl::{FcntlArg, FdFlag, fcntl};
+        // Process creation is excluded until CLOEXEC is set.
+        fcntl(&server, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)).ok()?;
         drop(creation);
         server.set_nonblocking(true).ok()?;
     }
     connection.server(&server).ok()?;
-    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-    let length = match address {
-        SocketAddr::V4(address) => {
-            let mut raw: libc::sockaddr_in = unsafe { std::mem::zeroed() };
-            raw.sin_family = libc::AF_INET as _;
-            raw.sin_port = address.port().to_be();
-            raw.sin_addr.s_addr = u32::from_ne_bytes(address.ip().octets());
-            #[cfg(target_os = "macos")]
-            {
-                raw.sin_len = std::mem::size_of_val(&raw) as _;
-            }
-            // SAFETY: storage is aligned for and larger than sockaddr_in.
-            unsafe {
-                std::ptr::write((&mut storage as *mut libc::sockaddr_storage).cast(), raw);
-            }
-            std::mem::size_of::<libc::sockaddr_in>()
-        }
-        SocketAddr::V6(address) => {
-            let mut raw: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
-            raw.sin6_family = libc::AF_INET6 as _;
-            raw.sin6_port = address.port().to_be();
-            raw.sin6_addr.s6_addr = address.ip().octets();
-            raw.sin6_flowinfo = address.flowinfo().to_be();
-            raw.sin6_scope_id = address.scope_id();
-            #[cfg(target_os = "macos")]
-            {
-                raw.sin6_len = std::mem::size_of_val(&raw) as _;
-            }
-            // SAFETY: storage is aligned for and larger than sockaddr_in6.
-            unsafe {
-                std::ptr::write((&mut storage as *mut libc::sockaddr_storage).cast(), raw);
-            }
-            std::mem::size_of::<libc::sockaddr_in6>()
-        }
+    let pending = match connect(server.as_raw_fd(), &SockaddrStorage::from(address)) {
+        Ok(()) => false,
+        Err(nix::errno::Errno::EINPROGRESS) => true,
+        Err(_) => return None,
     };
-    // SAFETY: storage contains the matching address structure and length.
-    let connected = unsafe {
-        libc::connect(
-            fd,
-            (&storage as *const libc::sockaddr_storage).cast(),
-            length as _,
-        )
-    };
-    if connected < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINPROGRESS) {
-        return None;
-    }
-    if connected < 0 {
+    if pending {
         loop {
             if connection.cancelled() {
                 return None;

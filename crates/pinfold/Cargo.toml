@@ -6,7 +6,7 @@ publish.workspace = true
 
 [dependencies]
 httparse.workspace = true
-nix = { workspace = true, features = ["term"] }
+nix = { workspace = true, features = ["net", "term"] }
 ring.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true
