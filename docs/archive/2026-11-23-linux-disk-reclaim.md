@@ -88,30 +88,9 @@ step 7, the same as `du`.
   Nothing bounds the growth below the disk's logical size: 64 GiB by
   default, as here, or the spec's `size`.
 - A user whose host disk is full can only remove the disk and start a
-  new one. This sequence follows the spec and was not exercised here:
-  NAME is the project disk, `project.disks.project` in
-  `pinfold config --json`; `pinfold disk list` shows its allocation.
-  1. In the box, commit the edits to keep. A fetch carries only
-     commits; uncommitted edits survive only through the export in
-     step 4.
-  2. With the box running, `git fetch box` on the host. The box's
-     branches arrive as `box/*`.
-  3. Put the commits on a local branch: `git branch BRANCH box/BRANCH`,
-     or merge `box/BRANCH` into an existing local branch, which is then
-     BRANCH.
-  4. `pinfold stop`. Optionally `pinfold disk export NAME DEST`: it
-     copies all of the stopped disk's files, uncommitted edits and
-     files outside Git included, into a new host directory.
-  5. `pinfold disk rm NAME`. An attached disk is refused, hence the stop.
-  6. `pinfold start` creates a new, empty disk.
-  7. `git push box BRANCH` on the host, with BRANCH from step 3. The
-     first push creates the box repository; the branch lands as
-     `host/BRANCH`.
-  8. In the box: `git switch -c BRANCH host/BRANCH`.
-
-  Removing the home disk drops the box's home directory, sessions,
-  logins and caches. `clean --unused AGE` also removes the disks of
-  projects not run for that long, except a project with a live box.
+  new one, after getting the work out by the spec's two routes: the Git
+  remote (commits on a branch the host fetches) and `disk export` of
+  the stopped disk. No recovery sequence was exercised here.
 
 ## Not built
 
