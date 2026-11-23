@@ -69,11 +69,9 @@ pub(super) fn relay(
         {
             disconnect(&connection, &mut connected, &mut writer);
         }
-        if status.is_some()
-            && !connected
-            && terminal.is_none()
-            && outputs.iter().all(Option::is_none)
-        {
+        // A background child may hold the command's outputs open forever; the
+        // relay ends with its command and leaves that child unsignalled.
+        if status.is_some() && !connected {
             return Ok(());
         }
         if !connected {

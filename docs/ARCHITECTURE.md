@@ -812,7 +812,8 @@ process. Getting further needs a host kernel bug.
   pipe reader so its writer observes SIGPIPE. An observed command status is kept.
   An observed exec status survives later relay failure or cancellation.
   After the command exits, remaining output drains to EOF or a one-second
-  deadline; a descendant holding an endpoint cannot retain the client.
+  deadline; a descendant holding an endpoint cannot retain the client or
+  the guest helper, and the helper's exit sends it no signal.
   Both platforms restore only termios this execution changed. Restoration
   checks that its process group owns the foreground terminal before writing.
   A non-raw execution leaves later terminal settings alone. Handled
