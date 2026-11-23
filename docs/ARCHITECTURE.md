@@ -1487,8 +1487,8 @@ Every built-in seeds only `/opt/pinfold/profile/pi` as its pi package and
 sets `defaultProjectTrust: "always"`. It adds
 pi's built-in `codemode` tool to the default tools. Every built-in includes the operating-context extension, which
 writes into pi's system prompt at every start the allowlist from
-`PINFOLD_ALLOW` and that a response carrying `Proxy-Status: pinfold` is
-the sandbox's final refusal, which `curl -v` shows. pi therefore gets
+`PINFOLD_ALLOW` and that a 403 carrying `Proxy-Status: pinfold` is the
+sandbox's final refusal, which `curl -v` shows. pi therefore gets
 the refusal line even when an existing instruction file blocks the seed.
 The seeded instructions carry the same refusal line for Claude and
 Codex, and where work goes in a share and a disk project. Only `default`
