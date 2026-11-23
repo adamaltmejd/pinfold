@@ -1543,7 +1543,8 @@ fn stop_idle_builder() -> io::Result<()> {
         FlockArg::LockExclusiveNonblock,
     )?;
     if idle.is_none() || builder_busy()? {
-        eprintln!(
+        let _ = writeln!(
+            io::stderr(),
             "pinfold clean: build cache: a build is running, so cleanup could not complete; run `pinfold clean` again after it"
         );
         return Ok(());

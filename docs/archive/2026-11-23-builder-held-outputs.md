@@ -36,7 +36,9 @@ is `lsof` on the builder's host process.
   record appeared at the first poll, 0.3 s after the client started, and
   stayed active until the client exited. A client killed by SIGKILL
   completed its record within 0.12 s, so a dead client does not block
-  the stop.
+  the stop. A builder stopped mid-build failed that build (rc 1) and,
+  once restarted, listed no active record, so a crash leaves none
+  behind.
 - With a 200 MB `dd` probe the record completed 0.8 to 1.1 s before the
   client exited, while the client loaded the export. Stopping the
   builder at that moment did not fail the build (rc 0, image tagged).
@@ -49,7 +51,8 @@ is `lsof` on the builder's host process.
 - `container builder stop` keeps the cache: `buildctl du` read 559.28 MB
   before the stop and after the restart, and the probe's `RUN` step was
   `CACHED` after the restart.
-- Three `--no-cache` 200 MB probe builds left 4 held `out.tar` files.
+- Four probe builds since the builder's last start (one cached, three
+  `--no-cache` 200 MB) left 4 held `out.tar` files.
   `clean` stopped the idle builder and the count went to 0. The next
   probe build restarted the builder and succeeded.
 - With a foreign probe build in flight, and separately with another
