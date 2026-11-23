@@ -203,7 +203,7 @@ Project
   start           Keep the box running between commands
   stop            Shut down the project box
 
-Isolated disk: the box has its own copy of the project, not your folder
+Isolated disk: the box has its own files, separate from your folder; work crosses through Git
   git push box    Send host branches (as host/*) and tags into the box
                   In the box: git switch -c BRANCH host/BRANCH
   git fetch box   Bring guest branches back as box/*, and new tags
@@ -238,7 +238,8 @@ pinfold stop
 pinfold build [--profile NAME] [--no-cache] [--allow HOST]…
 pinfold image build NAME --containerfile PATH --context DIR [--label KEY=VALUE]… [--no-cache] [--allow HOST]… [--json]
 pinfold image rm NAME [--json]
-pinfold profile [list]
+pinfold profile
+pinfold profile list
 pinfold profile new NAME [--from PROFILE]
 pinfold clean [--dry-run] [--unused AGE]
 pinfold doctor [--artifacts] [--json]
@@ -1268,23 +1269,23 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
             println!("- {}", terminal_text(&finding));
         }
     }
-    println!("\nProject  {}", terminal_text(&root.to_string_lossy()));
+    println!("\nProject   {}", terminal_text(&root.to_string_lossy()));
     println!(
-        "Runtime  {} ({})",
+        "Runtime   {} ({})",
         runtime.describe(),
         terminal_text(version.as_deref().unwrap_or("version unknown"))
     );
     if let Some(kernel) = kernel {
-        println!("Kernel   {}", terminal_text(&kernel));
+        println!("Kernel    {}", terminal_text(&kernel));
     }
     if let Ok((_, config)) = &project {
-        print_profile(config, 9)?;
+        print_profile(config, 10)?;
     }
     if let Some(image) = image {
-        println!("Image    {}", terminal_text(&image));
+        println!("Image     {}", terminal_text(&image));
     }
     if let Ok((_, config)) = &project {
-        println!("Logins   {}", logins_description(config));
+        println!("Logins    {}", logins_description(config));
     }
     if let Some(plan) = disk {
         println!("Disk usage");
@@ -2028,16 +2029,23 @@ fn profile_list() -> io::Result<i32> {
         } else {
             ""
         };
-        let found =
-            Profile::link(&name).and_then(|link| Ok((profile::base_name(&link)?, link.dir()?)));
-        let (base, place) = match found {
-            Ok((base, dir)) => (
-                base.map_or("—".to_string(), |base| terminal_text(&base)),
-                dir.map_or("built in".to_string(), |dir| {
-                    format!("{} (editable)", terminal_text(&dir.to_string_lossy()))
-                }),
-            ),
-            Err(error) => ("?".to_string(), terminal_text(&error.to_string())),
+        // A user directory wins whole, as `Profile::link` decides, so a
+        // profile that fails to load still shows where to fix it.
+        let dir = profile::user_dir()?.join(&name);
+        let mut place = if dir.is_dir() {
+            format!("{} (editable)", terminal_text(&dir.to_string_lossy()))
+        } else {
+            "built in".to_string()
+        };
+        let base = match Profile::link(&name).and_then(|link| profile::base_name(&link)) {
+            Ok(base) => base.map_or("—".to_string(), |base| terminal_text(&base)),
+            Err(error) => {
+                // A TOML error spans lines; its first names the place.
+                let error = error.to_string();
+                let error = error.lines().next().unwrap_or_default();
+                place = format!("{place}; {}", terminal_text(error));
+                "?".to_string()
+            }
         };
         rows.push(vec![mark.to_string(), terminal_text(&name), base, place]);
     }

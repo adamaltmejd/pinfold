@@ -98,6 +98,8 @@ fn main() -> ExitCode {
     match (verb, args.first().map(String::as_str)) {
         _ if project => {}
         ("init" | "update" | "doctor" | "config" | "apparmor-profile" | "remote", _)
+        // A profile listing only reads.
+        | ("profile", None | Some("list"))
         // `box prune` reports each box it removes; the pass would remove them silently.
         | ("box", Some("up" | "list" | "down" | "inspect" | "events" | "prune")) => {}
         _ => crate::core::clean::maintain(),

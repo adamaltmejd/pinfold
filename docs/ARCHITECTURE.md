@@ -1685,7 +1685,7 @@ Automatic, never prompting:
   in the last hour stays, so the ref its `built` line named still comes
   up; past the hour the newest two rule applies.
 - At most once a day, at the start of a working command (except the deferred
-  cases below, and not `--version`, `--help`, `doctor`, `config`, `update`, `box list`, `box down`, `box inspect`, `box events`, `box prune`, `--`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
+  cases below, and not `--version`, `--help`, `doctor`, `config`, `profile`, `profile list`, `update`, `box list`, `box down`, `box inspect`, `box events`, `box prune`, `--`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
   is gone (nothing owns its generation's lifetime lock), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
   builds beyond each source's newest two (the after-build rule, applied
