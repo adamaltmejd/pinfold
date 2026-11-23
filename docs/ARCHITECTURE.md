@@ -1509,8 +1509,8 @@ so a disk whose box came ready holds its whole `from` after a host power
 loss; on macOS what a volume keeps through one is the runtime's. A disk has no
 labels and no owner beyond its attachments. A disk, its file or volume, its attachments and
 its records belong to one state root; another root naming the same disk
-gets its own. On Linux a disk's allocated host blocks never shrink while the
-disk exists; removing the disk frees them.
+gets its own. On Linux, deleting files in a box does not return a disk's
+allocated host blocks; removing the disk does.
 
 - **Attachment:** at `up`, after the claim. One box may attach a disk writable; while it does,
   another `up` naming that disk is refused as `disk-in-use`. Boxes may

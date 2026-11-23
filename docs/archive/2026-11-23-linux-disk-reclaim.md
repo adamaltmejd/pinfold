@@ -3,11 +3,12 @@
 Issue #129. Question: when a box writes and then deletes files on a
 pinfold disk on Linux, does the host get the blocks back?
 
-Answer: no. Deletion, `sync`, stop and start did not shrink the image's
-allocated host bytes. The box cannot trim. Host allocation grew unevenly
-across rewrites, so it can climb past live data toward the disk's logical
-size (64 GiB, the default, for the measured disk). Removing the disk is
-what frees the space.
+Answer: no. Deleting files in a box does not return a disk's allocated
+host blocks; removing the disk does. Deletion, `sync`, stop and start did
+not shrink the image's allocated host bytes, and the box cannot trim.
+Host allocation grew unevenly across rewrites, so it can climb past live
+data toward the disk's logical size (64 GiB, the default, for the
+measured disk).
 
 ## Environment
 
@@ -88,22 +89,29 @@ step 7, the same as `du`.
   default, as here, or the spec's `size`.
 - A user whose host disk is full can only remove the disk and start a
   new one. This sequence follows the spec and was not exercised here:
-  1. `pinfold disk list` shows each disk's allocation and name.
+  NAME is the project disk, `project.disks.project` in
+  `pinfold config --json`; `pinfold disk list` shows its allocation.
+  1. In the box, commit the edits to keep. A fetch carries only
+     commits; uncommitted edits survive only through the export in
+     step 4.
   2. With the box running, `git fetch box` on the host. The box's
      branches arrive as `box/*`.
-  3. Keep each wanted branch locally: `git merge box/BRANCH` on a
-     local branch, or `git branch BRANCH box/BRANCH`.
-  4. `pinfold stop`. For files outside Git, `pinfold disk export NAME
-     DEST` now, since export needs a stopped disk.
+  3. Put the commits on a local branch: `git branch BRANCH box/BRANCH`,
+     or merge `box/BRANCH` into an existing local branch, which is then
+     BRANCH.
+  4. `pinfold stop`. Optionally `pinfold disk export NAME DEST`: it
+     copies all of the stopped disk's files, uncommitted edits and
+     files outside Git included, into a new host directory.
   5. `pinfold disk rm NAME`. An attached disk is refused, hence the stop.
   6. `pinfold start` creates a new, empty disk.
-  7. `git push box BRANCH` on the host. The first push creates the box
-     repository; the branch lands as `host/BRANCH`.
+  7. `git push box BRANCH` on the host, with BRANCH from step 3. The
+     first push creates the box repository; the branch lands as
+     `host/BRANCH`.
   8. In the box: `git switch -c BRANCH host/BRANCH`.
 
   Removing the home disk drops the box's home directory, sessions,
-  logins and caches. `clean --unused AGE` also removes disks of
-  projects not run for that long.
+  logins and caches. `clean --unused AGE` also removes the disks of
+  projects not run for that long, except a project with a live box.
 
 ## Not built
 
