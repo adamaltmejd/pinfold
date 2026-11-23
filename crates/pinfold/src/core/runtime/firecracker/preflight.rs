@@ -73,19 +73,21 @@ fn has_interpreter(path: &std::path::Path) -> io::Result<bool> {
         return Err(not_elf());
     }
     let offset = u64::from_le_bytes(header[0x20..0x28].try_into().expect("8 bytes"));
-    let size = usize::from(u16::from_le_bytes([header[0x36], header[0x37]]));
-    let count = usize::from(u16::from_le_bytes([header[0x38], header[0x39]]));
-    let length = file.metadata()?.len();
-    let end = offset.checked_add((size * count) as u64);
-    if size < ENTRY || end.is_none_or(|end| end > length) {
+    let size = u16::from_le_bytes([header[0x36], header[0x37]]);
+    let count = u16::from_le_bytes([header[0x38], header[0x39]]);
+    if usize::from(size) != ENTRY {
         return Err(not_elf());
     }
-    let mut table = vec![0u8; size * count];
-    file.read_exact_at(&mut table, offset)
-        .map_err(|_| not_elf())?;
-    Ok(table
-        .chunks_exact(size)
-        .any(|entry| u32::from_le_bytes(entry[..4].try_into().expect("4 bytes")) == PT_INTERP))
+    let mut interpreter = false;
+    for index in 0..u64::from(count) {
+        let mut entry = [0u8; ENTRY];
+        let at = offset
+            .checked_add(index * ENTRY as u64)
+            .ok_or_else(not_elf)?;
+        file.read_exact_at(&mut entry, at).map_err(|_| not_elf())?;
+        interpreter |= u32::from_le_bytes(entry[..4].try_into().expect("4 bytes")) == PT_INTERP;
+    }
+    Ok(interpreter)
 }
 
 /// Open `/dev/kvm` and use it: access, not group membership.
