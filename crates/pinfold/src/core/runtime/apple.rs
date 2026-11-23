@@ -1518,6 +1518,10 @@ fn prune_builder(flags: &[&str]) -> io::Result<()> {
 /// Return freed guest blocks to the host by online trim, without replacing
 /// the builder or stopping active builds (#86).
 fn trim_builder() -> io::Result<()> {
+    // The guest's ext4 trims freed blocks only once the journal has committed
+    // their release; without the sync a trim just after a prune returns
+    // little or nothing (#417).
+    output(&["container", "exec", "buildkit", "sync"])?;
     output(&["container", "clean", "buildkit"]).map(drop)
 }
 
