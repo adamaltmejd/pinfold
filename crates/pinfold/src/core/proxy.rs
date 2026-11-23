@@ -1339,26 +1339,29 @@ fn refuse(
         _ => "destination_ip_prohibited",
     };
     let details = reason.replace('\\', "\\\\").replace('"', "\\\"");
-    let body = match method {
-        Some(method) if method != "HEAD" => format!(
-            "The pinfold sandbox refused this request: {reason}.\n\
-             Allowed hosts and routes are set on the host, in pinfold's \
-             configuration; nothing inside the box can change them.\n"
-        ),
-        _ => String::new(),
+    // A HEAD's Content-Length must be its GET's (RFC 9110, 8.6), so a
+    // refused HEAD sends none; `Connection: close` ends it.
+    let (framing, body) = match method {
+        None => ("Content-Length: 0\r\n".to_string(), String::new()),
+        Some("HEAD") => (String::new(), String::new()),
+        Some(_) => {
+            let body = format!(
+                "The pinfold sandbox refused this request: {reason}.\n\
+                 Allowed hosts and routes are set on the host, in pinfold's \
+                 configuration; nothing inside the box can change them.\n"
+            );
+            let framing = format!(
+                "Content-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n",
+                body.len()
+            );
+            (framing, body)
+        }
     };
     let response = format!(
         "HTTP/1.1 {code} {}\r\n\
          Proxy-Status: pinfold; error={error}; details=\"{details}\"\r\n\
-         {}Content-Length: {}\r\n\
-         Connection: close\r\n\r\n{body}",
+         {framing}Connection: close\r\n\r\n{body}",
         phrase(code),
-        if body.is_empty() {
-            ""
-        } else {
-            "Content-Type: text/plain; charset=utf-8\r\n"
-        },
-        body.len(),
     );
     let _ = Deadline(client.as_fd(), IDLE_TIMEOUT).write_all(response.as_bytes());
 }
