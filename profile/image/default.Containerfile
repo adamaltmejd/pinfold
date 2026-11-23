@@ -32,25 +32,12 @@ RUN set -eu; \
     printf '%s\n' "PS1='pinfold:\\w\\\$ '" >> /etc/bash.bashrc
 
 # An interactive shell in a project box that starts in the home, such as a
-# Rex pane, moves to the project. Every interactive shell marks the project
-# trusted in ~/.claude.json, since the VM is the trust boundary; a
-# symlink, an unparseable file or one jq reads as empty is left alone. A Claude Code rewriting the file at the
-# same moment can drop the flag; the next shell restores it.
+# Rex pane, moves to the project. The `claude` launcher below marks the
+# project trusted.
 RUN printf '%s\n' \
     'case $- in *i*)' \
     '    if [ -n "${PINFOLD_PROJECT-}" ] && [ -d "$PINFOLD_PROJECT" ]; then' \
     '        [ "$PWD" = "$HOME" ] && cd "$PINFOLD_PROJECT"' \
-    '        (' \
-    '            f="$HOME/.claude.json"; p=".projects[\$project].hasTrustDialogAccepted"' \
-    '            [ -L "$f" ] && exit' \
-    '            jq -e --arg project "$PINFOLD_PROJECT" "$p == true" "$f" >/dev/null 2>&1 && exit' \
-    '            t=$(mktemp "$f.XXXXXX" 2>/dev/null) || exit' \
-    '            if [ -e "$f" ]; then' \
-    '                jq --arg project "$PINFOLD_PROJECT" "$p = true" "$f"' \
-    '            else' \
-    '                jq -n --arg project "$PINFOLD_PROJECT" "{} | $p = true"' \
-    '            fi >"$t" 2>/dev/null && [ -s "$t" ] && mv -f "$t" "$f" || rm -f "$t"' \
-    '        )' \
     '    fi' \
     '    ;;' \
     'esac' >> /etc/bash.bashrc
@@ -145,11 +132,37 @@ RUN set -eu; \
     chmod -R a+rX /opt/pinfold/agents; \
     printf 'installed agents: pi=%s claude=%s codex=%s\n' "$pi_version" "$claude_version" "$codex_version" | tee -a "$receipt"; \
     ln -s /opt/pinfold/agents/pi/pi /usr/local/bin/pi; \
-    ln -s /opt/pinfold/agents/claude/claude /usr/local/bin/claude; \
     ln -s /opt/pinfold/agents/codex/bin/codex /usr/local/bin/codex; \
     ln -s /opt/pinfold/agents/codex/bin/codex-code-mode-host /usr/local/bin/codex-code-mode-host
 ENV PI_TELEMETRY=0 PI_SKIP_VERSION_CHECK=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_UPDATES=1
+
+# `claude` on PATH is a launcher. In a project box it first records, in
+# ~/.claude.json, that onboarding is done, the auto-mode nudge seen and the
+# project trusted, since the VM is the trust boundary: no first-run screen
+# asks again, and none defaults away from the seeded permission mode. Every
+# other key stays; a symlink is left alone; a failed jq or write still
+# starts Claude. The write is skipped when all three are set, so it can
+# race a running Claude's own rewrite only while one is missing.
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'if [ -n "${PINFOLD_PROJECT-}" ] && [ -n "${HOME-}" ]; then' \
+    '    (' \
+    '        f="$HOME/.claude.json"' \
+    '        edit=".hasCompletedOnboarding = true | .hasSeenAutoDefaultNudge = true | .projects[\$p].hasTrustDialogAccepted = true"' \
+    '        [ -L "$f" ] && exit' \
+    '        jq -e --arg p "$PINFOLD_PROJECT" "($edit) == ." "$f" >/dev/null 2>&1 && exit' \
+    '        t=$(mktemp "$f.XXXXXX" 2>/dev/null) || exit' \
+    '        if [ -e "$f" ]; then' \
+    '            jq --arg p "$PINFOLD_PROJECT" "$edit" "$f"' \
+    '        else' \
+    '            jq -n --arg p "$PINFOLD_PROJECT" "{} | $edit"' \
+    '        fi >"$t" 2>/dev/null && [ -s "$t" ] && mv -f "$t" "$f" || rm -f "$t"' \
+    '    )' \
+    'fi' \
+    'exec /opt/pinfold/agents/claude/claude "$@"' \
+    > /usr/local/bin/claude; \
+    chmod 0755 /usr/local/bin/claude
 
 # Every built-in recipe ends here, so this link's own installs are stripped too.
 RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +

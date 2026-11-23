@@ -1421,7 +1421,10 @@ with or without a TTY.
   project home only.
 - Built-ins package all three agents on PATH. Missing-only home seeds
   supply Pi's trust/settings defaults, Claude permission/sandbox defaults
-  and Codex approval/sandbox/update-check defaults. Native home instructions
+  and Codex approval/sandbox/update-check defaults. In the `default`
+  image, `claude` on PATH is a launcher that, in a project box, first sets
+  Claude's onboarding, auto-mode nudge and `$PINFOLD_PROJECT` trust flags
+  in `~/.claude.json`, so no first-run screen undoes the seeded defaults. Native home instructions
   are `.pi/agent/APPEND_SYSTEM.md`, `.claude/CLAUDE.md` and `.codex/AGENTS.md`.
   An existing instruction file blocks its missing-only seed, including an
   earlier seed; changing profiles does not update it. Instructions are
