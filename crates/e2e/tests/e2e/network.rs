@@ -159,17 +159,12 @@ fn proxy_status(stdout: &str) -> (Option<String>, &str) {
         loop {
             rest = rest.trim_start().strip_prefix(';')?.trim_start();
             let (key, after) = rest.split_once('=')?;
-            let (parameter, after) = match after.strip_prefix('"') {
-                Some(string) => sf_string(string)?,
-                None => {
-                    let (token, after) = after.split_at(after.find(';').unwrap_or(after.len()));
-                    (token.trim_end().to_string(), after)
-                }
-            };
-            if key == "details" {
-                return Some(parameter);
+            // `details` must be a string; any other parameter is skipped.
+            match (key, after.strip_prefix('"')) {
+                ("details", quoted) => return Some(sf_string(quoted?)?.0),
+                (_, Some(string)) => rest = sf_string(string)?.1,
+                (_, None) => rest = &after[after.find(';').unwrap_or(after.len())..],
             }
-            rest = after;
         }
     });
     (details, code)

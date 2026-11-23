@@ -1113,10 +1113,14 @@ network listener, no token: the socket identifies the box.
   `expectation unsupported`, `dns_error` for `resolve failed`,
   `proxy_internal_response` for `connection cap`, and
   `destination_ip_prohibited` for `ip literal` and a refused address's
-  class. Its `text/plain` body says the pinfold sandbox refused the
-  request, gives the reason, and says allowed hosts and routes are set on
-  the host. A refused `HEAD` gets the same head and no body. Neither
-  holds anything from the request. Refusals that
+  class. The header is always sent. A `text/plain` body is sent only
+  when the request parsed (a CONNECT with a `host:port` target, or a
+  plain HTTP head that passed the checks above) and its method is not
+  `HEAD`. It says the pinfold sandbox refused the request, gives the
+  reason, and says allowed hosts and routes are set on the host. Every
+  other refusal, including `connection cap` and a 400 from parsing the
+  head, has `Content-Length: 0` and no body. Neither holds anything from
+  the request. Refusals that
   get no response (`header timeout`, the ClientHello checks), the empty
   502 for an upstream that cannot be reached, and responses relayed from
   an upstream are unchanged.
