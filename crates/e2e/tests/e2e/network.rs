@@ -154,19 +154,40 @@ fn proxy_status(stdout: &str) -> (Option<String>, &str) {
         if !field.eq_ignore_ascii_case("proxy-status") {
             return None;
         }
-        let rest = value.trim().strip_prefix("pinfold;")?;
-        let mut chars = rest.split_once("details=\"")?.1.chars();
-        let mut details = String::new();
-        while let Some(char) = chars.next() {
-            match char {
-                '"' => return Some(details),
-                '\\' => details.push(chars.next()?),
-                char => details.push(char),
+        // The member's parameters: `; key=token` or `; key="string"`.
+        let mut rest = value.trim().strip_prefix("pinfold")?;
+        loop {
+            rest = rest.trim_start().strip_prefix(';')?.trim_start();
+            let (key, after) = rest.split_once('=')?;
+            let (parameter, after) = match after.strip_prefix('"') {
+                Some(string) => sf_string(string)?,
+                None => {
+                    let (token, after) = after.split_at(after.find(';').unwrap_or(after.len()));
+                    (token.trim_end().to_string(), after)
+                }
+            };
+            if key == "details" {
+                return Some(parameter);
             }
+            rest = after;
         }
-        None
     });
     (details, code)
+}
+
+/// An RFC 8941 string after its opening quote, unescaped, and the text
+/// after its closing quote.
+fn sf_string(text: &str) -> Option<(String, &str)> {
+    let mut string = String::new();
+    let mut chars = text.char_indices();
+    while let Some((index, char)) = chars.next() {
+        match char {
+            '"' => return Some((string, &text[index + 1..])),
+            '\\' => string.push(chars.next()?.1),
+            char => string.push(char),
+        }
+    }
+    None
 }
 
 #[test]
@@ -183,8 +204,9 @@ fn only_allowlisted_hosts_get_through() {
     // body other than the box's, and the fixture answers 400. Sabotage
     // (run): drop the 417 in `plain`; the other expectation then reaches
     // the fixture (418). Sabotage (not run): give `refuse`'s
-    // `Proxy-Status` a fixed `details`, or drop the field; a refusal's
-    // response then no longer names its logged reason.
+    // `Proxy-Status` a fixed `details`, rename the parameter, drop the
+    // field, or send it only with a 403; a refusal's response (the 417
+    // included) then no longer names its logged reason.
     // api.github.com and the route are the positive controls.
     let env = TestEnv::new("allowlist");
     let fixture = Fixture::start(418);
@@ -361,6 +383,8 @@ fn only_allowlisted_hosts_get_through() {
                 &upload,
                 "-o",
                 "/dev/null",
+                "-D",
+                "-",
                 "-w",
                 "%{http_code}",
                 &format!("http://{host}/upload"),
@@ -369,7 +393,7 @@ fn only_allowlisted_hosts_get_through() {
     };
     let continued = expect("100-continue", "model.internal");
     assert_eq!(
-        (continued.code, continued.stdout.as_str()),
+        (continued.code, proxy_status(&continued.stdout).1),
         (0, "200"),
         "{continued:?}"
     );
@@ -381,14 +405,12 @@ fn only_allowlisted_hosts_get_through() {
     );
     assert!(requests[0].header("expect").is_empty(), "{requests:?}");
     let (refused, lines) = logged(&|| expect("x-pinfold-test", "fixture.internal"));
-    assert_eq!(
-        (refused.code, refused.stdout.as_str()),
-        (0, "417"),
-        "{refused:?}"
-    );
+    let (details, code) = proxy_status(&refused.stdout);
+    assert_eq!((refused.code, code), (0, "417"), "{refused:?}");
     assert_eq!(
         lines,
         line("fixture.internal", "refused", "expectation unsupported")
     );
+    assert_eq!(details, Some(lines[0].2.clone()), "{refused:?}");
     assert_eq!(fixture.requests().len(), 1, "the refused request was sent");
 }

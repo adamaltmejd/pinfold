@@ -333,7 +333,7 @@ fn serve(
                 }
             }
             if workers.len() >= MAX_CONNECTIONS {
-                refuse(&mut client, &log, "", 503, "connection cap");
+                refuse(&mut client, &log, "", false, 503, "connection cap");
                 continue;
             }
             let rules = Arc::clone(&rules);
@@ -371,7 +371,7 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &AuditLog, connection: &Co
         Err(_) => return,
     };
     if !head_well_formed(&head) {
-        return refuse(&mut client, log, "", 400, "ambiguous framing");
+        return refuse(&mut client, log, "", false, 400, "ambiguous framing");
     }
     // One parse for both methods; httparse rejects a folded header, a
     // fourth token on the request line and more than MAX_HEADERS headers.
@@ -383,14 +383,14 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &AuditLog, connection: &Co
         request.version,
         request.path,
     ) else {
-        return refuse(&mut client, log, "", 400, "malformed request");
+        return refuse(&mut client, log, "", false, 400, "malformed request");
     };
     if method == "CONNECT" {
         return connect(&mut client, rules, log, target, connection);
     }
     match parse_plain(method, version, target, request.headers) {
         Ok(request) => plain(&mut client, rules, log, &request, connection),
-        Err(reason) => refuse(&mut client, log, "", 400, reason),
+        Err(reason) => refuse(&mut client, log, "", method == "HEAD", 400, reason),
     }
 }
 
@@ -404,21 +404,21 @@ fn connect(
     connection: &Connection,
 ) {
     let Some((host, port)) = target.rsplit_once(':').filter(|(host, _)| !host.is_empty()) else {
-        return refuse(client, log, "", 400, "malformed request");
+        return refuse(client, log, "", false, 400, "malformed request");
     };
     if network::literal(host).is_some() {
-        return refuse(client, log, host, 403, "ip literal");
+        return refuse(client, log, host, false, 403, "ip literal");
     }
     if rules.routes.contains_key(&host.to_ascii_lowercase()) {
-        return refuse(client, log, host, 403, "route");
+        return refuse(client, log, host, false, 403, "route");
     }
     if !rules.allows(host) {
-        return refuse(client, log, host, 403, "not allowlisted");
+        return refuse(client, log, host, false, 403, "not allowlisted");
     }
     if port.parse::<u16>() != Ok(443) {
-        return refuse(client, log, host, 403, "port not allowed");
+        return refuse(client, log, host, false, 403, "port not allowed");
     }
-    let Some(address) = resolve_checked(client, log, host, host, 443, connection) else {
+    let Some(address) = resolve_checked(client, log, host, false, host, 443, connection) else {
         return;
     };
     if respond(client, 200).is_err() {
@@ -457,13 +457,34 @@ fn plain(
     connection: &Connection,
 ) {
     if request.expect == Some(false) {
-        return refuse(client, log, &request.host, 417, "expectation unsupported");
+        return refuse(
+            client,
+            log,
+            &request.host,
+            request.head(),
+            417,
+            "expectation unsupported",
+        );
     }
     if request.port != 80 {
-        return refuse(client, log, &request.host, 403, "port not allowed");
+        return refuse(
+            client,
+            log,
+            &request.host,
+            request.head(),
+            403,
+            "port not allowed",
+        );
     }
     if network::literal(&request.host).is_some() {
-        return refuse(client, log, &request.host, 403, "ip literal");
+        return refuse(
+            client,
+            log,
+            &request.host,
+            request.head(),
+            403,
+            "ip literal",
+        );
     }
     let host = request.host.to_ascii_lowercase();
     if let Some(upstream) = rules.routes.get(&host) {
@@ -471,9 +492,24 @@ fn plain(
         return;
     }
     if !rules.allows(&host) {
-        return refuse(client, log, &request.host, 403, "not allowlisted");
+        return refuse(
+            client,
+            log,
+            &request.host,
+            request.head(),
+            403,
+            "not allowlisted",
+        );
     }
-    let Some(address) = resolve_checked(client, log, &request.host, &host, 80, connection) else {
+    let Some(address) = resolve_checked(
+        client,
+        log,
+        &request.host,
+        request.head(),
+        &host,
+        80,
+        connection,
+    ) else {
         return;
     };
     if record(log, &request.host, "allowed", "allowlisted", None).is_err() {
@@ -520,7 +556,9 @@ fn route(
     let remove = if login_policy {
         match login_removals(request) {
             Ok(remove) => remove,
-            Err((status, reason)) => return refuse(client, log, &request.host, status, reason),
+            Err((status, reason)) => {
+                return refuse(client, log, &request.host, request.head(), status, reason);
+            }
         }
     } else {
         Vec::new()
@@ -532,7 +570,16 @@ fn route(
         } => (target, &target.authority, Cow::Borrowed(headers.as_slice())),
         Upstream::Codex { target, login } => match login.headers(&connection.control.cancelled) {
             Some(headers) => (target, &target.authority, Cow::Owned(headers)),
-            None => return refuse(client, log, &request.host, 403, "login lapsed"),
+            None => {
+                return refuse(
+                    client,
+                    log,
+                    &request.host,
+                    request.head(),
+                    403,
+                    "login lapsed",
+                );
+            }
         },
     };
     if !target.https {
@@ -555,6 +602,7 @@ fn route(
         client,
         log,
         &request.host,
+        request.head(),
         &target.host,
         target.port,
         connection,
@@ -579,6 +627,7 @@ fn resolve_checked(
     client: &mut UnixStream,
     log: &AuditLog,
     log_host: &str,
+    head: bool,
     host: &str,
     port: u16,
     connection: &Connection,
@@ -590,11 +639,11 @@ fn resolve_checked(
     match resolved {
         Ok(address) => Some(address),
         Err(network::ResolveError::Forbidden(reason)) => {
-            refuse(client, log, log_host, 403, reason);
+            refuse(client, log, log_host, head, 403, reason);
             None
         }
         Err(network::ResolveError::Unresolved) => {
-            refuse(client, log, log_host, 502, "resolve failed");
+            refuse(client, log, log_host, head, 502, "resolve failed");
             None
         }
     }
@@ -682,6 +731,12 @@ struct Plain {
     /// `100-continue`, which the proxy answers itself; `Some(false)` is
     /// refused 417.
     expect: Option<bool>,
+}
+
+impl Plain {
+    fn head(&self) -> bool {
+        self.method == "HEAD"
+    }
 }
 
 /// Parse and check a plain HTTP request head. The error is the 400's log
@@ -1252,7 +1307,15 @@ fn phrase(code: u16) -> &'static str {
 /// Log a refusal and answer it with its reason (Egress proxy, Refusal
 /// responses). The reason is one of the spec's fixed tokens, so nothing the
 /// box sent, not even the host, reaches the header or the body.
-fn refuse(client: &mut UnixStream, log: &AuditLog, host: &str, code: u16, reason: &'static str) {
+/// A refused `HEAD` gets the same head and no body (RFC 9110, 9.3.2).
+fn refuse(
+    client: &mut UnixStream,
+    log: &AuditLog,
+    host: &str,
+    head: bool,
+    code: u16,
+    reason: &'static str,
+) {
     if record(log, host, "refused", reason, None).is_err() {
         return;
     }
@@ -1281,9 +1344,10 @@ fn refuse(client: &mut UnixStream, log: &AuditLog, host: &str, code: u16, reason
          Proxy-Status: pinfold; error={error}; details=\"{details}\"\r\n\
          Content-Type: text/plain; charset=utf-8\r\n\
          Content-Length: {}\r\n\
-         Connection: close\r\n\r\n{body}",
+         Connection: close\r\n\r\n{}",
         phrase(code),
-        body.len()
+        body.len(),
+        if head { "" } else { &body },
     );
     let _ = Deadline(client.as_fd(), IDLE_TIMEOUT).write_all(response.as_bytes());
 }
