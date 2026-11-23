@@ -1486,10 +1486,13 @@ the project's own `.pi/` and `.agents/skills`.
 Every built-in seeds only `/opt/pinfold/profile/pi` as its pi package and
 sets `defaultProjectTrust: "always"`. It adds
 pi's built-in `codemode` tool to the default tools. Every built-in includes the operating-context extension, which
-writes the allowlist from `PINFOLD_ALLOW` into pi's system prompt at
-each start. The seeded instructions say that a proxy 403 is the sandbox
-and final, that `curl -v` shows its `Proxy-Status`, and where work goes
-in a share and a disk project. Only `default` carries home seeds;
+writes into pi's system prompt at every start the allowlist from
+`PINFOLD_ALLOW` and that a response carrying `Proxy-Status: pinfold` is
+the sandbox's final refusal, which `curl -v` shows. pi therefore gets
+the refusal line even when an existing instruction file blocks the seed.
+The seeded instructions carry the same refusal line for Claude and
+Codex, and where work goes in a share and a disk project. Only `default`
+carries home seeds;
 the others inherit them. Documents adds `read-documents`, which adam
 inherits. Adam's own `pi/package.json` replaces default's and also
 registers fff and ponytail.
