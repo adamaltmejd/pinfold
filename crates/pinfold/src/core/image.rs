@@ -200,7 +200,6 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
             request.containerfile.display()
         ))
     })?;
-    let images = service();
     // Linux's outer error is admission; running job errors are inner results.
     // A missing Apple runtime binary shows first as a failed spawn.
     let failed = |error: io::Error| {
@@ -210,10 +209,9 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
             ImageError::Failed(error.to_string())
         }
     };
-    let labels = request.labels;
     eprintln!("pinfold: building image {}", request.name);
     build(
-        images,
+        service(),
         Build {
             label: None,
             source: &request.name,
@@ -222,7 +220,7 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
                 containerfile: &request.containerfile,
             },
             cache: request.cache,
-            labels,
+            labels: request.labels,
             allow: request.allow,
         },
     )
