@@ -836,10 +836,11 @@ process. Getting further needs a host kernel bug.
   Other sessions, the helper and relay are untouched. Normal command completion
   leaves background children running, with output delivered for up to one second
   after the command exits. For `box exec` and project commands on both
-  platforms, the caller gets the command's status when it exits, after that
-  second. A process it leaves holding its output keeps running, its later
-  output is discarded, and its guest relay ends when it closes those
-  descriptors. A process that leaves the command's process group,
+  platforms, the caller gets the command's status when it exits, once its
+  output ends or that second has passed. pinfold does not signal a process
+  that survives the command's exit and still holds its output or terminal:
+  its later output is discarded, and its guest relay ends when the last such
+  descriptor closes. A process that leaves the command's process group,
   or for a terminal session ignores hangup after leaving it, may keep running.
   `pinfold stop` ends everything. TTY Ctrl-C and Ctrl-\ remain terminal input.
   Plain stdin EOF is not departure. Public `box exec` sends no signal on departure.
