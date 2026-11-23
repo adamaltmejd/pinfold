@@ -456,6 +456,9 @@ fn plain(
     request: &Plain,
     connection: &Connection,
 ) {
+    if request.expect == Some(false) {
+        return refuse(client, log, &request.host, 417, "expectation unsupported");
+    }
     if request.port != 80 {
         return refuse(client, log, &request.host, 403, "port not allowed");
     }
@@ -675,6 +678,10 @@ struct Plain {
     connection: Vec<Vec<u8>>,
     /// The request body length, from the one Content-Length.
     content_length: u64,
+    /// An HTTP/1.1 request's `Expect`: `Some(true)` when each is
+    /// `100-continue`, which the proxy answers itself; `Some(false)` is
+    /// refused 417.
+    expect: Option<bool>,
 }
 
 /// Parse and check a plain HTTP request head. The error is the 400's log
@@ -701,6 +708,7 @@ fn parse_plain(
     let mut content_length = None;
     let mut forwarded = Vec::new();
     let mut connection = Vec::new();
+    let mut expect = None;
     for header in headers {
         if header.name.eq_ignore_ascii_case("connection") {
             connection.push(header.value.to_vec());
@@ -711,6 +719,16 @@ fn parse_plain(
         let length = header.name.eq_ignore_ascii_case("content-length");
         if length && content_length.is_some() {
             return Err("ambiguous framing");
+        }
+        // Never forwarded: the proxy answers it. RFC 9110 has an HTTP/1.0
+        // server ignore it.
+        if header.name.eq_ignore_ascii_case("expect") {
+            if version == 1 {
+                let value = std::str::from_utf8(header.value).map_err(|_| "malformed request")?;
+                let known = value.trim().eq_ignore_ascii_case("100-continue");
+                expect = Some(expect.unwrap_or(true) && known);
+            }
+            continue;
         }
         if header.name.eq_ignore_ascii_case("host") || hop_by_hop(header.name) {
             continue;
@@ -734,6 +752,7 @@ fn parse_plain(
         headers: forwarded,
         connection,
         content_length: content_length.unwrap_or(0),
+        expect,
     })
 }
 
@@ -890,6 +909,9 @@ fn forward(
     head.extend_from_slice(b"Connection: close\r\n\r\n");
     let mut exchange = || -> io::Result<(Vec<u8>, Option<u16>)> {
         server.write_all(&head)?;
+        if request.expect == Some(true) {
+            Deadline(client.as_fd(), IDLE_TIMEOUT).write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+        }
         let mut body = Read::take(&mut *client, request.content_length);
         io::copy(&mut body, &mut server)?;
         server.flush()?;
@@ -1238,6 +1260,7 @@ fn respond(client: &mut UnixStream, code: u16) -> io::Result<()> {
         200 => "Connection Established",
         400 => "Bad Request",
         403 => "Forbidden",
+        417 => "Expectation Failed",
         502 => "Bad Gateway",
         _ => "Service Unavailable",
     };
