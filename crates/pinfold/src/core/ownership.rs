@@ -63,7 +63,7 @@ pub fn open_lock(key: &str) -> io::Result<File> {
 }
 
 /// The lock, or `None` while another holds it.
-fn try_flock(file: File, mode: FlockArg) -> io::Result<Option<Flock<File>>> {
+pub(crate) fn try_flock(file: File, mode: FlockArg) -> io::Result<Option<Flock<File>>> {
     match Flock::lock(file, mode) {
         Ok(lock) => Ok(Some(lock)),
         Err((_, nix::errno::Errno::EAGAIN)) => Ok(None),
