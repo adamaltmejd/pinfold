@@ -12,7 +12,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use crate::core::clean;
 use crate::core::disk::Seeding;
 use crate::core::plan::{Disk, Env, Login, Mount, MountKind, Plan, Route, Values, valid_name};
-use crate::core::profile::{Profile, Seed};
+use crate::core::profile::{Profile, Seed, Share};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{self, BoxInfo, Child, Prepared, runtime};
 use crate::core::{disk, login, ownership, proxy};
@@ -212,7 +212,7 @@ impl Box {
         // sends its values. `op` may wait on the user, so it runs once every
         // check before the claim that needs no value has passed; until
         // then validation checks `from` sources alone.
-        plan.validate(values)
+        plan.validate(Some(values))
             .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
         let reads_op = expected_image.is_none() && plan.reads_op();
         let (requested, mut values) = (plan, values.clone());
@@ -343,7 +343,7 @@ impl Box {
                     })
                     .await?;
                     requested
-                        .validate(&values)
+                        .validate(Some(&values))
                         .map_err(|error| refused(&plan, RefusalReason::Spec, error))?;
                 }
                 resolve_logins(&plan, &values, signals, &mut cancel_start).await?
@@ -651,16 +651,10 @@ impl Box {
     /// Check shutdown once before admission, including a runtime exit whose
     /// status is not yet published by its waiter.
     pub async fn ended_if_ready(&mut self) -> io::Result<Option<Shutdown>> {
-        use std::future::Future;
-        let observed = {
-            let mut ended = std::pin::pin!(self.ended());
-            std::future::poll_fn(|context| {
-                std::task::Poll::Ready(match ended.as_mut().poll(context) {
-                    std::task::Poll::Ready(reason) => Some(reason),
-                    std::task::Poll::Pending => None,
-                })
-            })
-            .await
+        let observed = tokio::select! {
+            biased;
+            reason = self.ended() => Some(reason),
+            _ = std::future::ready(()) => None,
         };
         if let Some(reason) = observed {
             return reason.map(Some);
@@ -1044,7 +1038,7 @@ pub(crate) fn validate_project(
     values: Option<&Values>,
     profile: &Profile,
 ) -> Result<(), String> {
-    plan.validate_structure()?;
+    plan.validate(None)?;
     if let Some(values) = values {
         plan.check_variables(values)?;
     }
@@ -1053,11 +1047,9 @@ pub(crate) fn validate_project(
     validate_generated(plan, &extra)?;
     let mut resolved = plan.clone();
     if let Some(share) = &profile.share {
-        resolved.mounts.push(Mount {
-            host: share.path(&plan.name).map_err(|error| error.to_string())?,
-            guest: PathBuf::from("/opt/pinfold/profile"),
-            kind: MountKind::Readonly,
-        });
+        resolved
+            .mounts
+            .push(profile_share(share, &plan.name).map_err(|error| error.to_string())?);
     }
     validate_generated(&resolved, &extra)?;
     if !profile.home.is_empty() {
@@ -1106,17 +1098,7 @@ fn validate_generated(plan: &Plan, extra: &[&Path]) -> Result<(), String> {
                 ));
             }
         }
-        if plan
-            .disks
-            .iter()
-            .filter(|disk| destination.starts_with(crate::core::plan::guest_path(&disk.guest)))
-            .max_by_key(|disk| {
-                crate::core::plan::guest_path(&disk.guest)
-                    .components()
-                    .count()
-            })
-            .is_some_and(|disk| disk.readonly)
-        {
+        if disk_under(plan, &destination).is_some_and(|(disk, _)| disk.readonly) {
             return Err(format!(
                 "generated directory {} is on a read-only disk",
                 destination.display()
@@ -1137,19 +1119,27 @@ fn generated_directories(plan: &Plan, destinations: &[PathBuf]) -> Vec<disk::Dir
     destinations
         .iter()
         .filter_map(|destination| {
-            plan.disks
-                .iter()
-                .filter_map(|disk| {
-                    let guest = crate::core::plan::guest_path(&disk.guest);
-                    Some((
-                        guest.clone(),
-                        destination.strip_prefix(&guest).ok()?.to_path_buf(),
-                    ))
-                })
-                .max_by_key(|(guest, _)| guest.components().count())
-                .map(|(disk, relative)| disk::Directory { disk, relative })
+            disk_under(plan, destination).map(|(disk, relative)| disk::Directory {
+                disk: crate::core::plan::guest_path(&disk.guest),
+                relative,
+            })
         })
         .collect()
+}
+
+/// The deepest disk whose guest path holds `path`, and `path` below it.
+fn disk_under<'a>(plan: &'a Plan, path: &Path) -> Option<(&'a Disk, PathBuf)> {
+    plan.disks
+        .iter()
+        .filter_map(|disk| {
+            let guest = crate::core::plan::guest_path(&disk.guest);
+            Some((disk, path.strip_prefix(&guest).ok()?.to_path_buf()))
+        })
+        .max_by_key(|(disk, _)| {
+            crate::core::plan::guest_path(&disk.guest)
+                .components()
+                .count()
+        })
 }
 
 /// Render route names and provider metadata, never resolved credentials.
@@ -1229,13 +1219,18 @@ fn resolve_profile(plan: &mut Plan, supplied: Option<Profile>) -> io::Result<Opt
         plan.image = Some(recipe.image_ref());
     }
     if let Some(share) = &profile.share {
-        plan.mounts.push(Mount {
-            host: share.path(&plan.name)?,
-            guest: PathBuf::from("/opt/pinfold/profile"),
-            kind: MountKind::Readonly,
-        });
+        plan.mounts.push(profile_share(share, &plan.name)?);
     }
     Ok(Some(profile))
+}
+
+/// The read-only mount of a profile's share.
+fn profile_share(share: &Share, name: &str) -> io::Result<Mount> {
+    Ok(Mount {
+        host: share.path(name)?,
+        guest: PathBuf::from("/opt/pinfold/profile"),
+        kind: MountKind::Readonly,
+    })
 }
 
 /// A refusal carrying `plan`'s box name.
@@ -1270,19 +1265,7 @@ fn home_disk(plan: &Plan, seeds: Vec<Seed>) -> io::Result<Seeding> {
     {
         return Err(refuse("HOME must be an absolute plain path".into()));
     }
-    let Some((disk, relative)) = plan
-        .disks
-        .iter()
-        .filter_map(|disk| {
-            let guest = crate::core::plan::guest_path(&disk.guest);
-            Some((disk, home.strip_prefix(&guest).ok()?.to_path_buf()))
-        })
-        .max_by_key(|(disk, _)| {
-            crate::core::plan::guest_path(&disk.guest)
-                .components()
-                .count()
-        })
-    else {
+    let Some((disk, relative)) = disk_under(plan, home) else {
         return Err(refuse("HOME is not on a disk".into()));
     };
     if disk.readonly {
@@ -1409,23 +1392,14 @@ async fn resolve_logins(
 
 async fn cancelled(cancel: &mut Option<tokio::sync::watch::Receiver<bool>>) {
     if let Some(cancel) = cancel {
-        loop {
-            if *cancel.borrow_and_update() {
-                return;
-            }
-            if cancel.changed().await.is_err() {
-                return;
-            }
-        }
+        let _ = cancel.wait_for(|stop| *stop).await;
+        return;
     }
     std::future::pending::<()>().await;
 }
 
 fn stop_proxy(proxy: &mut Option<proxy::Server>) -> io::Result<()> {
-    match proxy.as_mut() {
-        Some(server) => server.stop(),
-        None => Ok(()),
-    }
+    proxy.as_mut().map_or(Ok(()), proxy::Server::stop)
 }
 
 async fn audit_failure(proxy: &mut Option<proxy::Server>, observed: &mut Option<bool>) {

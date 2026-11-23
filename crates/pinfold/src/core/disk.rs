@@ -67,7 +67,9 @@ pub struct Claimed {
 
 impl Claimed {
     /// Undo a claim whose box `name` failed to start, under its disks'
-    /// locks.
+    /// locks. Remove the disks the claim created and the marks it added,
+    /// except on a disk another box attached since, so a disk no box
+    /// mounted keeps its old state.
     pub fn undo(&self, runtime: &dyn Runtime, name: &str) {
         let names: BTreeSet<&str> = self
             .created
@@ -77,54 +79,49 @@ impl Claimed {
             .collect();
         crate::core::process::with_deadline(std::time::Duration::from_secs(300), |cancel| {
             match startup_locks(&names, cancel) {
-                Ok(_locks) => self.undo_locked(runtime, name),
+                Ok(_locks) => {
+                    let attached = match complete_attachments(Some(name)) {
+                        Ok(attached) => attached,
+                        Err(error) => {
+                            crate::core::process::diagnostic(format_args!(
+                                "startup cleanup: disk attachments: {error}"
+                            ));
+                            return;
+                        }
+                    };
+                    for disk in self
+                        .created
+                        .iter()
+                        .filter(|disk| !attached.contains_key(&disk.name))
+                    {
+                        let result = runtime
+                            .remove_disk(&disk.name)
+                            .and_then(|()| unmark(&disk.name, UNCLEAN))
+                            .and_then(|()| unmark(&disk.name, UNFILLED));
+                        if let Err(error) = result {
+                            crate::core::process::diagnostic(format_args!(
+                                "startup cleanup: disk {:?}: {error}",
+                                disk.name
+                            ));
+                        }
+                    }
+                    for disk in self
+                        .marked
+                        .iter()
+                        .filter(|disk| !attached.contains_key(*disk))
+                    {
+                        if let Err(error) = unmark(disk, UNCLEAN) {
+                            crate::core::process::diagnostic(format_args!(
+                                "startup cleanup: disk {disk:?}: {error}"
+                            ));
+                        }
+                    }
+                }
                 Err(error) => crate::core::process::diagnostic(format_args!(
                     "startup cleanup: disk locks: {error}"
                 )),
             }
         });
-    }
-
-    /// Remove the disks the claim created and the marks it added, except
-    /// on a disk another box attached since, so a disk no box mounted keeps
-    /// its old state.
-    fn undo_locked(&self, runtime: &dyn Runtime, name: &str) {
-        let attached = match complete_attachments(Some(name)) {
-            Ok(attached) => attached,
-            Err(error) => {
-                crate::core::process::diagnostic(format_args!(
-                    "startup cleanup: disk attachments: {error}"
-                ));
-                return;
-            }
-        };
-        for disk in self
-            .created
-            .iter()
-            .filter(|disk| !attached.contains_key(&disk.name))
-        {
-            let result = runtime
-                .remove_disk(&disk.name)
-                .and_then(|()| unmark(&disk.name, UNCLEAN))
-                .and_then(|()| unmark(&disk.name, UNFILLED));
-            if let Err(error) = result {
-                crate::core::process::diagnostic(format_args!(
-                    "startup cleanup: disk {:?}: {error}",
-                    disk.name
-                ));
-            }
-        }
-        for disk in self
-            .marked
-            .iter()
-            .filter(|disk| !attached.contains_key(*disk))
-        {
-            if let Err(error) = unmark(disk, UNCLEAN) {
-                crate::core::process::diagnostic(format_args!(
-                    "startup cleanup: disk {disk:?}: {error}"
-                ));
-            }
-        }
     }
 }
 

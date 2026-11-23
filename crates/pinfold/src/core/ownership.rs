@@ -320,11 +320,10 @@ impl Claim {
         if !fresh {
             absent_ok(fs::remove_dir_all(state_dir))?;
         }
-        let mut random = [0; 16];
-        File::open("/dev/urandom")?.read_exact(&mut random)?;
+        let generation = super::random_hex()?;
         self.record = Some(Record {
             name: self.name.clone(),
-            generation: sha256_hex(random),
+            generation,
             ready: false,
             retiring: false,
             state_dir: state_dir.to_path_buf(),
