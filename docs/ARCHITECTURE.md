@@ -1313,7 +1313,7 @@ its base image leaves those uids free.
 | `documents` | default tools plus Bun, AnyDoc and Poppler |
 | `adam` | documents tools plus gh, fff (pi extension) and ponytail |
 
-`profile/image/<name>.Containerfile` is each built-in's recipe. `documents`
+`profile/<name>/Containerfile` is each built-in's recipe. `documents`
 has `base = "default"` and `adam` has `base = "documents"`; each recipe
 `FROM`s its base's stable ref and adds only its own tools.
 Every built-in recipe ends with the step that strips setuid/setgid bits,
@@ -1399,7 +1399,9 @@ with or without a TTY.
 ```
 
 - `default`, `documents` and `adam` are built into the binary from
-  `profile/`. A user profile with the same name replaces the whole
+  `profile/<name>/`, laid out as above with only that profile's own
+  files; a file's path under `home/` or `share/` is its path in the
+  guest. A user profile with the same name replaces the whole
   built-in, also as another profile's base.
 - `base = "NAME"` in `pinfold.toml` names the profile this one builds on,
   built-in or user. A base may have its own base. A cycle, a self-reference
