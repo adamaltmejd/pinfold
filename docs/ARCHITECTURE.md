@@ -935,7 +935,8 @@ network listener, no token: the socket identifies the box.
   framing only. Ambiguous framing and bare LF get 400, as does any head the
   parser rejects, folded headers included; a CONNECT head is parsed the
   same way. `Expect` is never forwarded. On an HTTP/1.1 request, its
-  fields form one comma-separated list; when it has members and each,
+  fields form one comma-separated list, empty members ignored; when it
+  has a member and each,
   trimmed of SP and HTAB and compared ignoring ASCII case, is
   `100-continue`, the proxy itself answers `100 Continue` once the request has passed every check above and below and
   the upstream is connected; any other `Expect` gets 417, reason

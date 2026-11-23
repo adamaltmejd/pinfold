@@ -708,7 +708,9 @@ fn parse_plain(
     let mut content_length = None;
     let mut forwarded = Vec::new();
     let mut connection = Vec::new();
-    let mut expect = None;
+    // Whether the `Expect` list has a member, and whether each is
+    // `100-continue`.
+    let mut expect: Option<(bool, bool)> = None;
     for header in headers {
         if header.name.eq_ignore_ascii_case("connection") {
             connection.push(header.value.to_vec());
@@ -721,11 +723,11 @@ fn parse_plain(
             return Err("ambiguous framing");
         }
         // Never forwarded: the proxy answers it. RFC 9110 has an HTTP/1.0
-        // server ignore it. Its fields form one comma list; a field with no
-        // member counts as an unknown expectation.
+        // server ignore it. All its fields form one comma list, judged
+        // once every field is in.
         if header.name.eq_ignore_ascii_case("expect") {
             if version == 1 {
-                let mut members = header
+                let members = header
                     .value
                     .split(|byte| *byte == b',')
                     .map(|member| {
@@ -739,11 +741,13 @@ fn parse_plain(
                             _ => &[][..],
                         }
                     })
-                    .filter(|member| !member.is_empty())
-                    .peekable();
-                let known = members.peek().is_some()
-                    && members.all(|member| member.eq_ignore_ascii_case(b"100-continue"));
-                expect = Some(expect.unwrap_or(true) && known);
+                    .filter(|member| !member.is_empty());
+                let (mut any, mut all) = expect.unwrap_or((false, true));
+                for member in members {
+                    any = true;
+                    all &= member.eq_ignore_ascii_case(b"100-continue");
+                }
+                expect = Some((any, all));
             }
             continue;
         }
@@ -769,7 +773,7 @@ fn parse_plain(
         headers: forwarded,
         connection,
         content_length: content_length.unwrap_or(0),
-        expect,
+        expect: expect.map(|(any, all)| any && all),
     })
 }
 
