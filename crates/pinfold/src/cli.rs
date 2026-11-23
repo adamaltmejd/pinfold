@@ -241,7 +241,7 @@ pinfold image rm NAME [--json]
 pinfold profile
 pinfold profile list
 pinfold profile new NAME [--from PROFILE]
-pinfold clean [--dry-run] [--unused AGE]
+pinfold clean [--dry-run] [--idle AGE]
 pinfold doctor [--artifacts] [--json]
 pinfold apparmor-profile
 pinfold update [--check]
@@ -883,9 +883,9 @@ fn human_size(bytes: u64) -> String {
 }
 
 pub fn clean(args: &[String]) -> io::Result<i32> {
-    let (dry_run, unused) = parse_clean(args)?;
+    let (dry_run, idle) = parse_clean(args)?;
     let runtime = runtime();
-    let plan = CleanPlan::measure(runtime, unused)?;
+    let plan = CleanPlan::measure(runtime, idle)?;
     let total = human_size(plan.total());
     let action = if dry_run {
         format!("dry run; {total} measured")
@@ -895,10 +895,10 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
     println!("pinfold clean: {action}");
     plan.print();
     if !dry_run {
-        let (disk_count, unused) = (plan.disk_count, plan.unused);
+        let (disk_count, idle) = (plan.disk_count, plan.idle);
         let removed = plan.remove(runtime)?;
         if disk_count > 0 {
-            if unused.is_none() {
+            if idle.is_none() {
                 println!("pinfold clean: disks kept (pinfold disk list)");
             } else if removed == 0 {
                 println!(
@@ -931,22 +931,22 @@ struct CleanPlan {
     /// Retired runs' directories.
     runs: Vec<PathBuf>,
     run_bytes: u64,
-    /// Projects `--unused` selected and their disks, by project id.
+    /// Projects `--idle` selected and their disks, by project id.
     project_disks: BTreeMap<String, Vec<String>>,
     /// Every disk's allocated bytes, a category of its own.
     disk_bytes: u64,
     disk_count: usize,
     /// Recorded checkouts that are gone or moved; their state and disks
-    /// stay until `--unused` or `disk rm`.
+    /// stay until `--idle` or `disk rm`.
     moved: Vec<PathBuf>,
     automatic_bytes: u64,
     project_state: u64,
     build_cache_bytes: u64,
-    unused: Option<Duration>,
+    idle: Option<Duration>,
 }
 
 impl CleanPlan {
-    fn measure(runtime: &dyn Runtime, unused: Option<Duration>) -> io::Result<CleanPlan> {
+    fn measure(runtime: &dyn Runtime, idle: Option<Duration>) -> io::Result<CleanPlan> {
         let boxes = clean::boxes(runtime)?;
         let box_paths: BTreeSet<PathBuf> = boxes
             .dead
@@ -978,7 +978,7 @@ impl CleanPlan {
             if !project.root.exists() {
                 moved.push(project.root.clone());
             }
-            if Self::idle(&project, &boxes.live_projects, unused) {
+            if Self::idle(&project, &boxes.live_projects, idle) {
                 project_state += clean::path_bytes(&project.dir);
                 let names: Vec<String> = crate::pi::state::disk_names(&project.id)
                     .into_iter()
@@ -1004,7 +1004,7 @@ impl CleanPlan {
             disk_bytes: disks.iter().map(|disk| disk.allocated).sum(),
             disk_count: disks.len(),
             moved,
-            unused,
+            idle,
         })
     }
 
@@ -1032,9 +1032,9 @@ impl CleanPlan {
         let disks = human_size(self.disk_bytes);
         if self.disk_count == 0 {
             println!("  disks: {disks}");
-        } else if self.unused.is_some() {
+        } else if self.idle.is_some() {
             println!(
-                "  disks: {disks} in {}; --unused AGE removes those of projects not run for AGE (pinfold disk list)",
+                "  disks: {disks} in {}; --idle AGE removes those of projects not run for AGE (pinfold disk list)",
                 disks_text(self.disk_count)
             );
             println!("    remove others with `pinfold disk rm NAME|--all`");
@@ -1044,11 +1044,11 @@ impl CleanPlan {
                 disks_text(self.disk_count)
             );
             println!(
-                "    remove with `pinfold clean --unused AGE` (projects not run for AGE) or `pinfold disk rm NAME|--all`"
+                "    remove with `pinfold clean --idle AGE` (projects not run for AGE) or `pinfold disk rm NAME|--all`"
             );
         }
-        // Under `--unused` an idle project's state and disks go too.
-        let moved = if self.unused.is_some() {
+        // Under `--idle` an idle project's state and disks go too.
+        let moved = if self.idle.is_some() {
             "checkout gone"
         } else {
             "checkout gone, state and disks kept"
@@ -1084,7 +1084,7 @@ impl CleanPlan {
                 if !locks.contains_key(project.id.as_str()) {
                     continue;
                 }
-                if Self::idle(&project, &live, self.unused) {
+                if Self::idle(&project, &live, self.idle) {
                     clean::remove_paths(vec![project.dir.clone()])?;
                     // A disk a box attaches stays; `disk::remove` checks.
                     for name in self.project_disks.get(&project.id).into_iter().flatten() {
@@ -1110,37 +1110,37 @@ impl CleanPlan {
         disk_failure.map_or(Ok(removed), Err)
     }
 
-    /// Whether `--unused` selects the project: not run for that long and no
+    /// Whether `--idle` selects the project: not run for that long and no
     /// live box. A moved checkout alone keeps its state and disks.
     fn idle(
         project: &crate::pi::state::StateDir,
         live: &BTreeSet<String>,
-        unused: Option<Duration>,
+        age: Option<Duration>,
     ) -> bool {
-        let idle = crate::core::now().saturating_sub(project.last_run);
-        !live.contains(&project.id) && unused.is_some_and(|unused| idle >= unused.as_secs())
+        let since_run = crate::core::now().saturating_sub(project.last_run);
+        !live.contains(&project.id) && age.is_some_and(|age| since_run >= age.as_secs())
     }
 }
 
 fn parse_clean(args: &[String]) -> io::Result<(bool, Option<Duration>)> {
     let mut dry_run = false;
-    let mut unused = None;
+    let mut idle = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
-            "--unused" => {
+            "--idle" => {
                 let value = args
                     .next()
-                    .ok_or_else(|| usage("clean", "--unused needs an age like 30d"))?;
-                unused = Some(parse_age(value)?);
+                    .ok_or_else(|| usage("clean", "--idle needs an age like 30d"))?;
+                idle = Some(parse_age(value)?);
             }
             option => {
                 return Err(usage("clean", &format!("unknown clean option {option:?}")));
             }
         }
     }
-    Ok((dry_run, unused))
+    Ok((dry_run, idle))
 }
 
 fn parse_age(value: &str) -> io::Result<Duration> {

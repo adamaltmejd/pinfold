@@ -72,7 +72,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
 
     // Dead boxes are every root's to prune; hold them for this pass.
     let hold = hold_maintenance();
-    let cleaned = run(env.command().args(["clean", "--unused", "0s"]), COMMAND);
+    let cleaned = run(env.command().args(["clean", "--idle", "0s"]), COMMAND);
     drop(hold);
     assert_eq!(cleaned.code, 0, "{cleaned:?}");
 
