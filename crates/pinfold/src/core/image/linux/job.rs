@@ -241,7 +241,7 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
         _ = interrupt.recv() => { let _ = restoring.await; return Err(io::ErrorKind::Interrupted.into()); },
         _ = terminate.recv() => { let _ = restoring.await; return Err(io::ErrorKind::Interrupted.into()); },
     }
-    claim.prepare(&state)?;
+    claim.prepare(&state, false)?;
     let request = Request {
         context: request.context.to_path_buf(),
         containerfile: request.containerfile.to_path_buf(),

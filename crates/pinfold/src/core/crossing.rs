@@ -5,7 +5,7 @@
 //! host only verifies a bundle and indexes its objects with fsck into a
 //! quarantine. Git, through the remote helper, writes the refs.
 
-pub(crate) use crate::core::process::output_cancellable;
+use crate::core::process::output_cancellable;
 use crate::core::process::{ExitWait, drain, fork_guard};
 
 use nix::fcntl::{Flock, FlockArg};

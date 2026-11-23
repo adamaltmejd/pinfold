@@ -67,8 +67,7 @@ pub(crate) struct Roots {
 
 impl Roots {
     pub(crate) fn resolve() -> io::Result<Self> {
-        let home = std::env::home_dir()
-            .ok_or_else(|| io::Error::other("HOME is not set and the uid has no passwd entry"))?;
+        let home = dirs::home()?;
         Ok(Self {
             config: Bytes::canonical(&dirs::config_dir()?)?,
             state: Bytes::canonical(&dirs::state_dir()?)?,

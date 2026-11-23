@@ -268,7 +268,7 @@ impl Box {
                 ));
             }
             claim
-                .prepare_fresh(&state_dir)
+                .prepare(&state_dir, true)
                 .map_err(|error| ownership_error(&plan, error))?;
             Some(claim)
         } else {
@@ -398,7 +398,7 @@ impl Box {
         }
         if !prepared_early {
             claim
-                .prepare(&state_dir)
+                .prepare(&state_dir, false)
                 .map_err(|error| ownership_error(&plan, error))?;
         }
         // Disk refusals come after the name claim; returning drops the

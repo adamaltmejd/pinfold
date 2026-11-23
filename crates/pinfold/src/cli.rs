@@ -1596,7 +1596,8 @@ fn config_edit() -> io::Result<i32> {
         .arg(script)
         .arg("sh")
         .arg(&path)
-        .status_guarded()?;
+        .spawn_guarded()?
+        .wait()?;
     let code = exit_code(status);
     if code != 0 {
         eprintln!(
