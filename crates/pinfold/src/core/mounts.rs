@@ -10,7 +10,8 @@ use super::plan::{MountKind, Plan, guest_path};
 use super::profile::{Profile, Share};
 use crate::dirs;
 
-/// Reused by project admission; `extra` names its configuration files too.
+/// Reused by project admission, for the project root and each read-only
+/// folder; `extra` names its configuration files too.
 pub(crate) fn check_paths_outside(
     root: &Path,
     profile: Option<&Profile>,
@@ -25,7 +26,8 @@ fn check_extra_paths_outside(
     paths: impl IntoIterator<Item = PathBuf>,
     bidirectional: bool,
 ) -> io::Result<()> {
-    let root = fs::canonicalize(root)?;
+    // A missing read-only folder is refused later, as `spec` naming it.
+    let root = dirs::resolve_host_path(root)?;
     for path in paths {
         if source_beneath(&path, &root)? || (bidirectional && source_beneath(&root, &path)?) {
             return Err(io::Error::new(

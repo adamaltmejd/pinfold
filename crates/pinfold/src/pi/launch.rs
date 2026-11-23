@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::io;
 use std::os::fd::BorrowedFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::runtime::Builder;
@@ -14,7 +14,7 @@ use crate::core::r#box::{Box, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::crossing::CrossingError;
 use crate::core::image::{ImageInfo, service};
-use crate::core::plan::{Disk, Egress, Env, Mount, MountKind, Plan};
+use crate::core::plan::{Disk, Egress, Env, Mount, MountKind, Plan, guest_path};
 use crate::core::runtime::Runtime;
 use crate::core::{artifacts, disk, image, sha256_hex};
 use crate::formatting::terminal_text;
@@ -402,7 +402,7 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
         .or_insert(Env::Exact(utf8(guest, "project root")?.to_string()));
     let [home, project] = state::disk_names(id);
     let mut disks = vec![empty_writable_disk(home, Path::new(state::HOME))];
-    let mounts = match config.mount {
+    let mut mounts = match config.mount {
         ProjectMount::Disk => {
             disks.push(empty_writable_disk(project, guest));
             Vec::new()
@@ -413,6 +413,31 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
             kind: MountKind::Share,
         }],
     };
+    // The box layer refuses only equal destinations. A folder nested in the
+    // project or home would add a mount point there, on Apple in the
+    // host's project folder.
+    let mut taken = vec![guest_path(guest), PathBuf::from(state::HOME)];
+    if config.profile.share.is_some() {
+        taken.push(PathBuf::from("/opt/pinfold/profile"));
+    }
+    for folder in &config.folders {
+        let destination = guest_path(&folder.guest);
+        if let Some(other) = taken
+            .iter()
+            .find(|other| destination.starts_with(other) || other.starts_with(&destination))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "spec: read-only folder guest {} overlaps {}",
+                    terminal_text(&folder.guest.to_string_lossy()),
+                    terminal_text(&other.to_string_lossy())
+                ),
+            ));
+        }
+        taken.push(destination);
+        mounts.push(folder.clone());
+    }
     Ok(Plan {
         profile: Some(config.profile.name.clone()),
         disks,
