@@ -61,6 +61,7 @@ pub trait ImageService: Sync {
 
     /// Remove unused build cache without interrupting builds: Apple's unused
     /// BuildKit records or Linux's exclusively claimed idle builder cache.
+    /// Apple then stops the builder when no build is running.
     fn purge_build_cache(&self) -> io::Result<()>;
 
     /// Allocated build-cache storage, including its backing filesystem.

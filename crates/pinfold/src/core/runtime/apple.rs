@@ -13,6 +13,7 @@ use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use nix::fcntl::{Flock, FlockArg};
 use nix::libc;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -25,7 +26,7 @@ use crate::core::runtime::{
     BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, captured, output,
     parse_json, spawn_error,
 };
-use crate::core::{clean, ownership};
+use crate::core::{clean, ownership, process};
 use crate::dirs;
 use crate::formatting::terminal_text;
 
@@ -1528,6 +1529,91 @@ fn trim_builder() -> io::Result<()> {
     output(&["container", "clean", "buildkit"]).map(drop)
 }
 
+/// Every pinfold build holds this host lock shared; `clean` holds it
+/// exclusive while it stops the builder.
+const BUILDER_LOCK: &str = "builder:apple";
+/// The build-records query took 0.3 s and the stop 0.4 s when measured.
+const BUILDER_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+const BUILDER_STOP_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Stop the builder when nothing builds on it. Its host process keeps each
+/// build's unlinked export open until it stops (#440); the next build
+/// restarts it with its cache.
+fn stop_idle_builder() -> io::Result<()> {
+    // Held through the stop so no pinfold build starts in between.
+    let idle = ownership::try_flock(
+        ownership::open_lock(BUILDER_LOCK)?,
+        FlockArg::LockExclusiveNonblock,
+    )?;
+    // Every Apple build waits on the lock, so nothing under it may hang,
+    // a write to a stderr nobody drains included: decide, release, print.
+    let busy = match idle {
+        None => Ok(Some("a build is running")),
+        Some(_) => match process::with_deadline(BUILDER_QUERY_TIMEOUT, |_| builder_busy()) {
+            Ok(true) => Ok(Some("a build is running")),
+            Ok(false) => process::with_deadline(BUILDER_STOP_TIMEOUT, |_| {
+                output(&["container", "builder", "stop"]).map(drop)
+            })
+            .map(|()| None)
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::Interrupted => io::Error::other(format!(
+                    "container builder stop did not finish within {}s",
+                    BUILDER_STOP_TIMEOUT.as_secs()
+                )),
+                _ => error,
+            }),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                Ok(Some("the builder did not answer"))
+            }
+            Err(error) => Err(error),
+        },
+    };
+    drop(idle);
+    if let Some(reason) = busy? {
+        let _ = writeln!(
+            io::stderr(),
+            "pinfold clean: build cache: {reason}, so cleanup could not complete; run `pinfold clean` again after it"
+        );
+    }
+    Ok(())
+}
+
+/// Whether BuildKit has a build in progress, pinfold's or another caller's:
+/// a build record without a completion time. A killed client's build
+/// completes its record at once.
+fn builder_busy() -> io::Result<bool> {
+    #[derive(Deserialize)]
+    struct Event {
+        record: Record,
+    }
+    #[derive(Deserialize)]
+    struct Record {
+        #[serde(rename = "CompletedAt")]
+        completed_at: Option<serde::de::IgnoredAny>,
+    }
+    let json = output(&[
+        "container",
+        "exec",
+        "buildkit",
+        "buildctl",
+        "debug",
+        "histories",
+        "--format",
+        "{{json .}}",
+    ])?;
+    for event in serde_json::Deserializer::from_slice(&json).into_iter::<Event>() {
+        let event = event.map_err(|error| {
+            io::Error::other(format!(
+                "buildctl debug histories returned invalid JSON: {error}"
+            ))
+        })?;
+        if event.record.completed_at.is_none() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 impl ImageService for Apple {
     fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
         let json = output(&["container", "image", "list", "--format", "json"])?;
@@ -1558,7 +1644,8 @@ impl ImageService for Apple {
             output(&["container", "start", "buildkit"])?;
         }
         prune_builder(&[])?;
-        trim_builder()
+        trim_builder()?;
+        stop_idle_builder()
     }
 
     fn build_cache_bytes(&self) -> io::Result<u64> {
@@ -1582,6 +1669,9 @@ impl ImageService for Apple {
     }
 
     fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
+        // Through the post-build prune and trim, which also need the builder.
+        let _building = Flock::lock(ownership::open_lock(BUILDER_LOCK)?, FlockArg::LockShared)
+            .map_err(|(_, error)| io::Error::from(error))?;
         refresh_base(&std::fs::read(request.containerfile)?)?;
         let result = run_build(request)?;
         // Neither step fails the build.

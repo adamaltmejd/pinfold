@@ -1176,7 +1176,9 @@ A project recipe typically `FROM`s the profile image.
   ones left published.
 - After each completed Apple build, pinfold attempts to prune the shared
   builder's unused cache to 16 GB, then return unused builder blocks;
-  failure only warns and preserves the build result.
+  failure only warns and preserves the build result. It never stops the
+  builder. An Apple build holds a host lock shared, which `clean` takes
+  exclusive to stop the builder.
 - A build's identity is its unique tag, never an image label. Every
   build is tagged `<repo>:<build>` and moves the stable `<repo>:latest` to
   it. A caller build whose layers and labels are unchanged returns the
@@ -1741,10 +1743,19 @@ of NAME, whatever its age, and no other name's.
 
 `pinfold clean` lists sizes, then removes:
 - everything automatic, now
-- the unused build cache (Apple: prune BuildKit records and return their
-  blocks to the host, keeping the shared builder, its own root filesystem
-  and active builds; Linux: remove only an exclusively claimed idle owned
-  builder cache)
+- the unused build cache (Apple: prune BuildKit records, return their
+  blocks to the host, then stop the idle builder, which releases build
+  outputs the runtime still holds; a later build restarts it with its
+  cache and root filesystem. The builder is idle when no pinfold build
+  holds its lock and BuildKit lists no build without a completion time.
+  Otherwise, or when the builder does not answer within a deadline,
+  clean leaves it running and says so; that warning does not change the
+  exit code. Pinfold's own builds are always excluded by the lock. Builds
+  started outside pinfold are seen only through the builder's own build
+  records, so one it does not yet report (a client connected but not
+  submitted, a builder configured to keep no history) can be failed by
+  the stop. Linux: remove
+  only an exclusively claimed idle owned builder cache)
 - with `--unused AGE`, state and disks of projects not run for that long,
   except a project's with a live box. Never automatic: a project disk
   holds unfetched work, and a home disk sessions and logins.
