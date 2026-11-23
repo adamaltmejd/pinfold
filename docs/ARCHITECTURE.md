@@ -1386,8 +1386,12 @@ host helper, `codex-app-server`: its version and assets per host `os-arch`
 `up` with a codex or pi `openai-codex` login route. A missing recorded file reinstalls it. A checksum mismatch fails the login.
 
 `scripts/bump-pins.py` moves the host helper, infrastructure, image-tool,
-Rust, Cargo and Public Suffix List pins only with a pinfold release. Versions
-only move up to stable releases and are never rehashed at the same version.
+Rust and Cargo pins only with a pinfold release. It moves the Public Suffix
+List only with `--suffix-list`, which a manual release passes and the
+nightly does not; that run prints the allow entries newly refused or no
+longer refused, and the release notes name them under "Caller changes".
+Versions only move up to stable releases and are never rehashed at the same
+version.
 The helper takes the latest stable release once its assets exist; other image
 tools wait seven full days after their last required asset was published.
 A missing publication time makes them ineligible. Cargo dependencies take

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Repin repository dependencies and tools (ARCHITECTURE.md, Pinned artifacts)."""
 
+import argparse
 import base64
 import datetime
 import hashlib
@@ -17,6 +18,7 @@ PROFILE = ROOT / "profile"
 HOST_HELPER = ROOT / "crates" / "pinfold" / "host-helper.toml"
 VMM = ROOT / "crates" / "pinfold" / "vmm.toml"
 KERNEL = ROOT / "guest-kernel" / "pins"
+SUFFIX_LIST = ROOT / "crates" / "pinfold" / "public_suffix_list.dat"
 # Containerfile pins that move together, by ADD destination. An npm package
 # comes after one whose dependencies or optionalDependencies name it at the
 # same version.
@@ -346,8 +348,8 @@ def repin_build_tools(texts):
         print(f"{name} {current} -> {target}")
 
 
-def repin_suffix_list(texts):
-    path = ROOT / "crates" / "pinfold" / "public_suffix_list.dat"
+def repin_suffix_list(texts, move):
+    path = SUFFIX_LIST
     target = fetch("https://publicsuffix.org/list/public_suffix_list.dat").decode()
     pattern = r"^// VERSION: (\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_UTC)$"
     current = re.search(pattern, texts[path], re.MULTILINE)
@@ -369,12 +371,50 @@ def repin_suffix_list(texts):
         )
     ):
         raise ValueError("Public Suffix List is incomplete")
-    if new[1] > current[1]:
-        print(f"public suffix list {current[1]} -> {new[1]}")
-        texts[path] = target
+    if new[1] <= current[1]:
+        return
+    # A new list changes which allow entries the box spec refuses, a caller
+    # change the nightly's notes cannot name, so only a manual release moves it.
+    if not move:
+        print(
+            f"public suffix list {current[1]}: {new[1]} exists; --suffix-list moves it"
+        )
+        return
+    print(f"public suffix list {current[1]} -> {new[1]}")
+    old, now = refused_suffixes(texts[path]), refused_suffixes(target)
+    for entry in sorted(now - old):
+        print(f"  newly refused: .{entry}")
+    for entry in sorted(old - now):
+        print(f"  no longer refused: .{entry}")
+    texts[path] = target
+
+
+def refused_suffixes(text):
+    """The names X whose `.X` allow entry core/plan.rs's
+    on_or_above_public_suffix refuses: every rule, its marker stripped, and
+    each name above it."""
+    names = set()
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("//"):
+            continue
+        if line.startswith("*."):
+            line = line[2:]
+        elif line.startswith("!"):
+            line = line[1:]
+        labels = line.lower().split(".")
+        names.update(".".join(labels[i:]) for i in range(len(labels)))
+    return names
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument(
+        "--suffix-list",
+        action="store_true",
+        help="also move the Public Suffix List (a caller change; manual releases only)",
+    )
+    args = parser.parse_args()
     recipes = sorted({path for path, _ in IMAGE_TOOLS.values()})
     texts = {
         path: path.read_text()
@@ -385,7 +425,7 @@ def main():
             KERNEL,
             ROOT / "rust-toolchain.toml",
             ROOT / "Cargo.toml",
-            ROOT / "crates" / "pinfold" / "public_suffix_list.dat",
+            SUFFIX_LIST,
         ]
     }
     pins = {}
@@ -440,9 +480,10 @@ def main():
 
     repin_firecracker(texts, cutoff)
     repin_build_tools(texts)
-    repin_suffix_list(texts)
+    repin_suffix_list(texts, args.suffix_list)
     for path, text in texts.items():
-        path.write_text(text)
+        if path != SUFFIX_LIST or args.suffix_list:
+            path.write_text(text)
 
 
 if __name__ == "__main__":
