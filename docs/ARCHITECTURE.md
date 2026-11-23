@@ -73,7 +73,11 @@ deliberately grants access to selected host files.
 
 Not protected:
 - A project's read-only folder (Configuration) exposes all its readable
-  contents to the box, which can send them to any allowed host.
+  contents to the box, which can send them to any allowed host. A folder
+  whose path lies inside a directory another box can write, or under a
+  home directory reached through such a directory, is chosen by that box.
+  A bind mount of part of a project or a protected path is not recognized
+  as inside it.
 - A share exposes all its readable contents, including ignored and untracked
   files, Git history and repository configuration. Allowed model endpoints
   can receive those contents. Working files have no protection against
@@ -2132,7 +2136,8 @@ time and host disk space in proportion to its size.
 
 A project is refused as `host-path-in-project` when any of the protected
 paths listed below resolves inside it, or when a read-only folder of it
-resolves to, inside or above one. This check applies before project
+is, lies inside or contains one (a folder reached through a link refuses
+as `spec` first). This check applies before project
 state or configuration is created, whether or not the project is a Git
 checkout. A read-only folder is checked at each box start, before a
 box or disk is created.
