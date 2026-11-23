@@ -107,19 +107,18 @@ choose the profile and confirm the settings. If your shell sets
 `PINFOLD_PROFILE`, that selects the profile. Unset it to choose a
 different one. On macOS you also choose how the box sees the folder:
 share it (the default), so the box edits it and its Git metadata, or use
-an isolated project disk, which starts empty; in a Git project, `git push
-box` and `git fetch box` move branches and tags. Linux always uses a project disk. If the selected
-managed image is missing, Pinfold offers to build it and then starts your
-command. A build needs network access. An explicit `image` must already
-be available locally. Rebuild with `pinfold build` if a later launch
-reports `image-outdated`. Before saving, setup shows the settings file it
-will write and the lines it will hold. A project with that file gets no setup
-questions.
+an isolated project disk, which starts empty. Linux always uses a project
+disk. Before saving, setup shows the settings file it will write and the
+lines it will hold. A project with that file gets no setup questions. If
+the selected managed image is missing, pinfold offers to build it, which
+needs network access, and then starts your command. An explicit `image`
+must already be available locally. Rebuild with `pinfold build` if a later
+launch reports `image-outdated`.
 
-Run `pinfold config` to see which folder, profile and image the project uses.
-Run `pinfold` to see the box status and project settings. Before setup it
-previews the profile and file mount the first run asks to confirm. Run `pinfold doctor`
-to check for problems or `pinfold --help` to list the commands.
+Run `pinfold config` to see which folder, profile and image the project
+uses, `pinfold` for the box status and project settings (before setup, a
+preview of what the first run asks to confirm), `pinfold doctor` to check
+for problems and `pinfold --help` to list the commands.
 
 For scripts, prepare the project first with `pinfold config edit` and
 `pinfold build`. `config edit` opens
@@ -180,10 +179,9 @@ key can also arrive through the environment. Using a Claude subscription
 through Pi is subject to Anthropic's terms: Pi presents the token as Claude
 Code and may bill it as extra usage.
 
-Each login route grants every process in the box the host login's authority
-over every path at its origin. It does not inspect request bodies or prevent
-a reflecting upstream from returning credentials. See
-[Login routes](docs/ARCHITECTURE.md#egress-proxy) for the exact policy.
+A login route grants every process in the box the host login's authority
+over every path at its origin; see [Login routes](docs/ARCHITECTURE.md#egress-proxy)
+and the [threat model](docs/ARCHITECTURE.md#threat-model).
 
 One detached owner serves each project. Each `pinfold -- CMD` starts or
 joins a session; the box ends when no session, Git crossing or `start`
@@ -193,28 +191,27 @@ TERM, then KILL. Joining keeps the running policy and credentials; changed
 host roots or effective configuration refuse as `config-changed`, so stop the box
 first. `start` and `stop` take no arguments, print nothing to stdout, and
 on success print one status line on stderr: `start` says `started` or `already
-running`, `stop` says `stopped` or `no box running`. Infrastructure
-failures exit 125. Edits to a share remain after stop. A kept box protects
-its project from cleanup and executable replacement; stop it before
-cleanup or an update.
+running`, `stop` says `stopped` or `no box running`. Edits to a share remain
+after stop. A kept box protects its project from cleanup and executable
+replacement; stop it before cleanup or an update.
 
-Arguments after `--` pass literally to the command, including `--help`. Command exit codes
-pass through; project setup failure or external teardown before observed completion uses 125. CMD owns stdout;
-pinfold diagnostics use stderr.
+Arguments after `--` pass literally to the command, including `--help`.
+Command exit codes pass through. A `start` or `stop` infrastructure failure,
+a project setup failure and an external teardown before observed completion
+exit 125. CMD owns stdout; pinfold diagnostics use stderr.
 
 Project reports use readable text, including when piped. Add `--json` to
 `config`, `doctor` and `disk` for structured output. Use
 `pinfold doctor --artifacts --json` for artifact pins.
 
 Managed builds of a chain that contains the bundled `default` recipe
-re-resolve stable agent releases through it every time. Installation
-reruns when a resolved version changes; other steps use the layer cache.
-Use `pinfold build` or `pinfold build --profile NAME` to update.
-Add `--no-cache` to force the full recipe to run. Launch never installs agents.
-A build first rebuilds every profile beneath it, root first: a project
-build its selected profile and that profile's bases. Other projects and
-profiles on a rebuilt image report `image-outdated` at their next launch
-if its identity changed.
+re-resolve stable agent releases through it every time; installation
+reruns only when a resolved version changes, and other steps use the layer
+cache. Use `pinfold build` or `pinfold build --profile NAME` to update, and
+`--no-cache` to force the full recipe to run. Launch never installs agents.
+A build first rebuilds the profiles beneath it, root first. Other projects
+and profiles on a rebuilt image report `image-outdated` at their next
+launch if its identity changed.
 
 Every built-in image includes standalone Pi, native Claude and Codex with
 its code-mode host on PATH. Built-in profiles seed `.pi/agent/APPEND_SYSTEM.md`,
@@ -228,10 +225,10 @@ Linux build egress has its own allowlist. Add exact hosts with
 `pinfold build --allow HOST`. Apple builds reject `--allow` additions.
 
 For a share, host edits are live and the box stages and commits in the
-host's `.git`; a box commit is the host's commit. Pinfold reads share Git
-metadata as data and never executes Git on the host for that project.
-Host and box Git at the same moment can lose commits or record files as
-deleted (see the threat model). Export `GIT_OPTIONAL_LOCKS=0` in the shell
+host's `.git`; a box commit is the host's commit. Pinfold reads that
+metadata as data and never runs Git on the host for the project. Host and
+box Git at the same moment can lose commits or record files as deleted
+(see the threat model). Export `GIT_OPTIONAL_LOCKS=0` in the shell
 that runs `pinfold` and in host tools that poll `git status`; unless it is
 exactly `0`, `pinfold -- CMD` warns `git-optional-locks` on stderr. It does not cover
 host `git diff` or host commits while the box commits. There is no crossing;
@@ -254,16 +251,11 @@ git push box main                         # a host branch into the box as host/m
 git fetch box                             # guest branches as box/*, to merge, and new tags
 ```
 
-Git prints `[new reference] main -> host/main` on every successful push of a branch;
-`git push box :` sends no branch.
-
 Crossing never touches a working tree. The first push into a disk
 without a repository creates an empty one there. To check a branch out,
 run `git switch -c main host/main` in the box. Pushed tags (`--tags`,
 `push.followTags`) land as the box's own tags. `git fetch box` brings
-the box's new tags back as yours, as Git follows tags from any remote. A
-fetch never changes or deletes a tag you have, unless a refspec you type
-maps a ref to another tag name. A fetched tag is yours to publish, and one
+the box's new tags back as yours. A fetched tag is yours to publish, and one
 named like a branch makes `git push box BRANCH` ambiguous until you delete it.
 
 `git pull box`, a refspec such as `git fetch box main:other` and `--prune`
@@ -271,17 +263,17 @@ let the box's branches reach or delete your refs.
 Without a running box, crossing starts a transient one on the project
 disk, without egress.
 
-Outside Git on macOS, a share exposes the folder’s existing host files and
-retains its home. An explicit disk instead starts empty and imports no
-host files. On Linux a folder outside Git is refused as `not-git`. See
+Outside Git on macOS, a share exposes the folder’s existing host files; an
+explicit disk starts empty and imports none. On Linux a folder outside Git
+is refused as `not-git`. See
 [Configuration](docs/ARCHITECTURE.md#configuration) for precedence and recipes.
 
 To save a stopped disk into a new host directory, run
 `pinfold disk export NAME DEST [--image IMAGE]`. It uses the local default
 profile image unless an image is named; build that image explicitly if absent.
-An attached or unclean disk is refused. Exported files are untrusted: inspect
-them before opening or executing them. Symlinks remain symlinks and are never
-followed during export. An existing destination is never replaced.
+An attached or unclean disk is refused, and an existing destination is never
+replaced. Exported files are untrusted: inspect them before opening or
+executing them. Symlinks remain symlinks.
 
 Optional profiles add tools. Each builds on the one above it:
 
@@ -290,8 +282,8 @@ Optional profiles add tools. Each builds on the one above it:
 | `documents` | `default` | Bun, AnyDoc for local document conversion, Poppler for PDFs |
 | `adam` | `documents` | gh, fff (pi extension) and ponytail; allows `github.com` and `api.github.com` |
 
-Each one's directory under [profile/](profile) holds only what it adds:
-its recipe adds only its own tools. All three seed these
+Each one's directory under [profile/](profile) holds only what it adds.
+All three seed these
 [Pi settings](profile/default/home/.pi/agent/settings.json).
 In a running box, `cat /opt/pinfold/agents/install.txt` shows the agent versions
 installed at build time. `cat ~/.pi/agent/settings.json` shows the current guest settings.
@@ -313,10 +305,10 @@ profile = "documents"
 image = "localhost/pinfold/image-research-tools:latest"
 ```
 
-`image` can also be a profile default. A project `image` overrides it;
-there is no environment override. An explicit image cannot be combined with
-a project Containerfile. With an explicit
-image, `pinfold build` reports that there is no selected recipe to build.
+`image` can also be a profile default; a project `image` overrides it. An
+explicit image cannot be combined with a project Containerfile. With an
+explicit image, `pinfold build` reports that there is no selected recipe
+to build.
 
 ### Your own profile
 
@@ -346,10 +338,8 @@ until rebuilt. `pinfold profile new NAME --from adam` copies `adam`'s own
 files, so the copy still builds on `documents`. A profile named like a
 built-in replaces it, also as a base.
 
-Custom profiles can omit `Containerfile` when an image or project recipe is
-selected. Keep Pi settings, extensions and skills in their native files under
-`home/` and `share/`. Home seeds fill missing files; changing profiles keeps
-saved settings, sessions and disks. Shared files are read-only at every start.
+Keep Pi settings, extensions and skills in their native files under
+`home/` and `share/`. Shared files are read-only at every start.
 
 ## From another agent
 
@@ -389,27 +379,31 @@ disk; shares use host files directly. To start fresh:
 1. Finish every command. For a disk Git project, commit guest work you want
    to keep, run `git fetch box`, inspect the commits, then merge or give them a host
    branch to retain them. Stop a kept box with `pinfold stop`.
-   Use `disk export` for other disk files. Share edits already reside on the
-   host; stop revokes box access and preserves those edits.
+   Use `disk export` for other disk files, including an explicit macOS disk
+   project outside Git. Share edits already reside on the host; stop revokes
+   box access and preserves those edits.
 2. Run `pinfold config --json`. Read the exact names from `project.disks.home`
    and `project.disks.project` (null for a share).
-3. Run `pinfold disk rm NAME` for each disk you want to clear.
+3. Run `pinfold disk rm NAME` for each disk you want to clear. It refuses
+   attached disks; the removals are separate operations, so serialize access
+   to the project. Never delete state or volume files directly.
 4. Launch `pinfold -- pi` or `pinfold -- pi -p "TASK"` again. No image rebuild
-   is needed.
+   is needed; profiles, project configuration and the selected image remain intact.
 
 For a share, removing the home resets only home contents; it never clears
 host shared files. For a disk project, remove both disks for a fresh home
-and project. Removing only the home preserves the guest repository; removing only the project preserves
-sessions, settings and other home files. Everything on a deleted disk is
-lost, including uncommitted work and home-only files. Fetch brings back commits,
-not uncommitted or home-only files. Later fetches can move `box/*` refs.
+and project. Removing only the home preserves the guest repository; removing
+only the project preserves sessions, settings and other home files.
+Everything on a deleted disk is lost, including uncommitted work and
+home-only files. Fetch brings back commits, not uncommitted or home-only
+files, and later fetches can move `box/*` refs.
 
-Outside Git in an explicit macOS disk project, save wanted files with
-`disk export` before removing the persistent disks.
-
-Disk removal refuses attached disks. The two removals are separate operations;
-serialize access to the project. Use `disk rm`, never delete state or volume
-files directly. Profiles, project configuration and the selected image remain intact.
+`pinfold clean [--dry-run] [--idle AGE]` reclaims disk space: it runs the
+automatic maintenance now and removes the unused build cache. `--dry-run`
+only lists. `--idle AGE` also removes the state and disks of projects not run
+for that long, except a project with a live box; AGE is a whole number and a
+unit, `s`, `m`, `h` or `d`, such as `30d`. That is never automatic, because a
+project disk holds unfetched work.
 
 ## Configuration
 
@@ -435,23 +429,22 @@ as `config-changed`; stop the box to change it.
 For a single command, forward host variables with `PINFOLD_ENV_<NAME>`.
 It wins over `env`.
 
+The proxy lets through only the hosts in `allow` and the configured
+routes. A request to any other host gets a 403 carrying `Proxy-Status: pinfold`
+with the reason; `curl -v` in the box shows it.
+
 To let the box read host files outside the project, such as notes or a
 dataset's documentation, add read-only folders after the project mount in
 the project's configuration. `host` is absolute or `~/…`, a real path
 with no links, outside the project; `guest` is where the box sees it.
 The box can read everything in the folder and send it to any allowed
-host. A change applies at the next box start.
+host. A change applies at the next box start. On Linux each start copies
+each folder, taking time and host disk space in proportion to its size, and
+the project mount is `kind = "disk"`.
 
 ```toml
 mounts = [{ host = ".", kind = "share" }, { host = "~/notes/dataset", guest = "/notes" }]
 ```
-
-### GitHub access
-
-Give the box a token through `env` with `from`, as `GH_TOKEN` above, and
-allow `api.github.com` (the `adam` profile does). Prefer a fine-grained
-token scoped to the one repository the box works on, with only the
-permissions it needs. Every process in the box can read the token.
 
 For disposable Rust build outputs in guest memory:
 
@@ -462,13 +455,16 @@ PINFOLD_ENV_CARGO_TARGET_DIR=/tmp/pinfold-target pinfold -- pi
 `/tmp` is in guest memory and goes with the box. Save deliverables in the
 project’s actual cwd; commit them for disk-project crossing.
 
+### GitHub access
+
+Give the box a token through `env` with `from`, as `GH_TOKEN` above, and
+allow `api.github.com` (the `adam` profile does). Prefer a fine-grained
+token scoped to the one repository the box works on, with only the
+permissions it needs. Every process in the box can read the token.
+
 ## Limits
 
 Read the [threat model](docs/ARCHITECTURE.md#threat-model) and [disks](docs/ARCHITECTURE.md#disks) before use.
-
-Shared-file reads can be stale or internally inconsistent after host changes;
-no fixed recovery delay is guaranteed. Shares have no cross-box
-coordination.
 
 Developers integrating pinfold: see the spec's
 [Process interface](docs/ARCHITECTURE.md#process-interface).

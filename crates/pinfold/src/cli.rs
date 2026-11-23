@@ -204,16 +204,11 @@ Project
   stop            Shut down the project box
 
 Isolated disk: the box has its own files, separate from your folder; work crosses through Git
-  git push box    Send host branches (as host/*) and tags into the box
-                  In the box: git switch -c BRANCH host/BRANCH
-  git fetch box   Bring guest branches back as box/*, and new tags
-                  Once first: git remote add box pinfold::ROOT
-                  (needs git-remote-pinfold on PATH)
-  disk export     Copy a stopped disk's files into a new directory
+  git push|fetch box  Move branches and tags; first: git remote add box pinfold::ROOT
 
 Maintenance
   doctor          Check the runtime, project setup and disk use
-  clean           Reclaim unused storage
+  clean           Reclaim disk space; --idle AGE also removes idle projects' state and disks
   update          Check for or install a release
 
 Advanced
@@ -241,7 +236,7 @@ pinfold image rm NAME [--json]
 pinfold profile
 pinfold profile list
 pinfold profile new NAME [--from PROFILE]
-pinfold clean [--dry-run] [--idle AGE]
+pinfold clean [--dry-run] [--idle AGE]   AGE is a whole number and s, m, h or d, like 30d
 pinfold doctor [--artifacts] [--json]
 pinfold apparmor-profile
 pinfold update [--check]
