@@ -3,10 +3,11 @@
 Issue #129. Question: when a box writes and then deletes files on a
 pinfold disk on Linux, does the host get the blocks back?
 
-Answer: no. Deletion, `sync`, stop and start leave the image's allocated
-host blocks unchanged. The box cannot trim. Freed blocks are often but not
-always reused, so allocation can climb past live data toward the disk's
-64 GiB logical size. Only `disk rm` returns the space.
+Answer: no. Deletion, `sync`, stop and start did not shrink the image's
+allocated host bytes. The box cannot trim. Host allocation grew unevenly
+across rewrites, so it can climb past live data toward the disk's logical
+size (64 GiB, the default, for the measured disk). Removing the disk is
+what frees the space.
 
 ## Environment
 
@@ -45,8 +46,8 @@ The disk is the project disk, `disks/pi-proj-…-project.ext4`. Logical
 size stayed 68,719,476,736 throughout. "Allocated" is
 `du --block-size=1`; `stat -c '%b*%B'` agreed in every row. Each write was
 `dd if=/dev/urandom bs=1M count=2048` then `sync`; each delete was
-`rm` then `sync`, all through `pinfold -- sh -c`. Guest `df` showed
-2,105,344 bytes used after every delete.
+`rm` then `sync`, all through `pinfold -- sh -c`. After every delete,
+`df` in the guest reported 2,105,344 bytes of filesystem usage.
 
 | Step | Allocated bytes | Change |
 |---|---:|---:|
@@ -74,22 +75,35 @@ step 7, the same as `du`.
 
 ## Conclusion
 
-- Deletion does not return space. A delete followed by `sync` adds about
-  100 KiB of metadata and frees no host block.
+- Deletion does not return space. Each delete followed by `sync` added
+  about 100 KiB of host allocation.
 - Trim does not work. The box user lacks the capability. The virtio
   drives offer no discard, and pinfold's drive config asks for none.
 - Stop and start return nothing.
-- Freed blocks are reused unevenly. Of four 2 GiB rewrites after the
-  first write, three added 0.16 to 134 MB; one (cycle 3) placed almost
-  all of its data in fresh blocks and added 1.97 GB. This is one run. After five cycles the image held 4.35 GB for
-  2 MB of live data. ext4's allocator makes no promise to reuse, so
-  allocation can grow to the logical size, 64 GiB per disk.
-- A user whose host disk is full: `pinfold disk list` shows each disk's
-  allocation. Bring work out with `git fetch box` (or `disk export` for a
-  stopped disk's files), then `pinfold stop` and `pinfold disk rm NAME`.
-  The next start creates a fresh sparse disk, and `git push box` sends
-  branches back in. Removing the home disk drops the box's home
-  directory and caches.
+- Host allocation grows unevenly. Of four 2 GiB rewrites after the
+  first write, three added 0.16 to 134 MB of host allocation and one
+  (cycle 3) added 1.97 GB. This is one run. After five cycles the image
+  had 4.35 GB allocated while the guest filesystem reported 2 MB used.
+  Nothing bounds the growth below the disk's logical size: 64 GiB by
+  default, as here, or the spec's `size`.
+- A user whose host disk is full can only remove the disk and start a
+  new one. This sequence follows the spec and was not exercised here:
+  1. `pinfold disk list` shows each disk's allocation and name.
+  2. With the box running, `git fetch box` on the host. The box's
+     branches arrive as `box/*`.
+  3. Keep each wanted branch locally: `git merge box/BRANCH` on a
+     local branch, or `git branch BRANCH box/BRANCH`.
+  4. `pinfold stop`. For files outside Git, `pinfold disk export NAME
+     DEST` now, since export needs a stopped disk.
+  5. `pinfold disk rm NAME`. An attached disk is refused, hence the stop.
+  6. `pinfold start` creates a new, empty disk.
+  7. `git push box BRANCH` on the host. The first push creates the box
+     repository; the branch lands as `host/BRANCH`.
+  8. In the box: `git switch -c BRANCH host/BRANCH`.
+
+  Removing the home disk drops the box's home directory, sessions,
+  logins and caches. `clean --unused AGE` also removes disks of
+  projects not run for that long.
 
 ## Not built
 
