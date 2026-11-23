@@ -153,9 +153,17 @@ fn only_allowlisted_hosts_get_through() {
     // Sabotage (run): skip the SNI comparison in tls.rs; curl then rejects
     // api.github.com's certificate (60, not 35). Sabotage (run): drop the
     // plain HTTP allowlist check; example.com over port 80 answers 200.
+    // Sabotage (run): skip the proxy's `100 Continue` in `forward`; the
+    // 100-continue upload then waits past curl's bound (28); or forward a
+    // body other than the box's, and the fixture answers 400. Sabotage
+    // (run): drop the 417 in `plain`; the other expectation then reaches
+    // the fixture (418).
     // api.github.com and the route are the positive controls.
     let env = TestEnv::new("allowlist");
     let fixture = Fixture::start(418);
+    // Answers 200 only to a POST whose body holds this, else 400.
+    let upload = format!("pf-upload-{}", std::process::id());
+    let model = Fixture::model("", &upload);
     let host = host_address();
     let name = box_name("allowlist");
     let up = env.up(&json!({
@@ -163,7 +171,10 @@ fn only_allowlisted_hosts_get_through() {
         "image": default_image(),
         "egress": {
             "allow": ["api.github.com", "localhost", host],
-            "routes": { "fixture.internal": fixture.route() },
+            "routes": {
+                "fixture.internal": fixture.route(),
+                "model.internal": model.route(),
+            },
         },
     }));
     let connect = |args: &[&str]| {
@@ -290,4 +301,51 @@ fn only_allowlisted_hosts_get_through() {
     );
     let text = serde_json::to_string(&log).unwrap();
     assert!(!text.contains(&sentinel), "the log holds the query");
+
+    // A client that waits for `100 Continue` before its body gets it from
+    // the proxy, inside curl's 20-second bound; any other expectation is
+    // refused before the fixture is dialed.
+    let expect = |value: &str, host: &str| {
+        curl(
+            &env,
+            &name,
+            &[
+                "--expect100-timeout",
+                "600",
+                "-H",
+                &format!("Expect: {value}"),
+                "--data-binary",
+                &upload,
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                &format!("http://{host}/upload"),
+            ],
+        )
+    };
+    let continued = expect("100-continue", "model.internal");
+    assert_eq!(
+        (continued.code, continued.stdout.as_str()),
+        (0, "200"),
+        "{continued:?}"
+    );
+    let requests = model.requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "the model fixture's requests: {requests:?}"
+    );
+    assert!(requests[0].header("expect").is_empty(), "{requests:?}");
+    let (refused, lines) = logged(&|| expect("x-pinfold-test", "fixture.internal"));
+    assert_eq!(
+        (refused.code, refused.stdout.as_str()),
+        (0, "417"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        lines,
+        line("fixture.internal", "refused", "expectation unsupported")
+    );
+    assert_eq!(fixture.requests().len(), 1, "the refused request was sent");
 }

@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::io;
+use std::os::fd::BorrowedFd;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -43,10 +44,11 @@ pub(crate) fn require_repo(root: &Path) -> io::Result<()> {
 /// current directory, let CHECK refuse its root, then run WORK against the
 /// box that attaches its project disk, or a transient box on that disk,
 /// without egress, when none does. WORK gets the runtime, init, the box's
-/// name, the root, its guest path and a flag that a signal or the box's end
-/// sets.
+/// name, the root, its guest path and a flag that a signal, the box's end
+/// or Git closing GIT, the helper's input, sets.
 pub(crate) fn cross<T, W>(
     check: impl FnOnce(&Path) -> io::Result<()>,
+    git: BorrowedFd<'_>,
     work: W,
 ) -> io::Result<Result<T, CrossingError>>
 where
@@ -64,7 +66,12 @@ where
 {
     let runtime = Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async {
-        let mut signals = Signals::new()?;
+        // Git sends nothing while it waits on the helper, so its input
+        // closing means Git is gone: every wait below, the crossing
+        // included, ends as on SIGHUP. Cancelling the crossing closes the
+        // box command's connection, so the box stops it as a departed
+        // client's.
+        let mut signals = Signals::new()?.with_closing(git)?;
         let interrupted = |signal: nix::sys::signal::Signal| {
             io::Error::new(io::ErrorKind::Interrupted, format!("interrupted by {signal}"))
         };

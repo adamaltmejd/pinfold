@@ -194,7 +194,9 @@ versions. Inventory and cleanup remain available on older versions.
 Linux is x64 only. Preflight requires a user other than root, `/dev/kvm`
 readable and writable by the user (the `kvm` group), unprivileged user
 namespaces, Landlock ABI 5 or later (Linux 6.10+), `mkfs.ext4`
-(e2fsprogs). Without user
+(e2fsprogs), and a statically linked pinfold executable: it is also the
+guest init, so one with a `PT_INTERP` program header is refused with the
+token `static` before any disk is prepared. Without user
 namespaces or Landlock ABI 5, `up` is refused as `runtime`, naming the missing requirement's token
 (below); there is no unjailed fallback.
 
@@ -832,7 +834,9 @@ process. Getting further needs a host kernel bug.
   Client signals, Leave after a signal, lease EOF and control connection loss
   are departures. A crossing's box command is a project command whose
   client is the crossing process itself, so it ends however the crossing
-  ends. The helper watches connection loss independently of command
+  ends: `git-remote-pinfold` treats Git closing the helper's input as
+  SIGHUP, from before it waits for the project through box startup and
+  the crossing, so a killed Git ends it. The guest helper watches connection loss independently of command
   I/O. Helper setup or relay failure also ends the command group and reaps its
   leader.
   The group comes from the helper's own child, never workload data.
@@ -930,7 +934,14 @@ network listener, no token: the socket identifies the box.
 - **Plain HTTP:** port 80 only, one request per connection, Content-Length
   framing only. Ambiguous framing and bare LF get 400, as does any head the
   parser rejects, folded headers included; a CONNECT head is parsed the
-  same way.
+  same way. `Expect` is never forwarded. On an HTTP/1.1 request, its
+  fields form one comma-separated list, empty members ignored; when it
+  has a member and each,
+  trimmed of SP and HTAB and compared ignoring ASCII case, is
+  `100-continue`, the proxy itself answers `100 Continue` once the request has passed every check above and below and
+  the upstream is connected; any other `Expect` gets 417, reason
+  `expectation unsupported`, before any other check of a parsed request.
+  HTTP/1.0 `Expect` is ignored.
 - **Refused:** IP literals, and names resolving to loopback, unspecified
   (`0/8`), private, link-local, CGNAT (`100.64/10`), benchmark
   (`198.18/15`), IETF protocol (`192.0.0/24`), multicast, reserved (`240/4`,
@@ -958,7 +969,7 @@ network listener, no token: the socket identifies the box.
   service. The value never reaches argv, the box, the spec or the log. The
   box can use the credential but not read it, unless `to` echoes request
   headers back. Header names that frame the request (`Host`,
-  `Content-Length`, hop-by-hop) are refused.
+  `Content-Length`, `Expect`, hop-by-hop) are refused.
 - **Login routes:** a route whose value is `{ "login": AGENT }` carries
   a login for that agent; pinfold owns the origin and named authentication
   channels. A spec has at most one login route per agent, or for Pi one per
@@ -1079,8 +1090,8 @@ network listener, no token: the socket identifies the box.
   query, and the upstream's status (null when no status line arrived). No header value is ever written.
   A refusal's reason is one of `not allowlisted`, `ip literal`, `route`,
   `port not allowed`, `sni missing`, `sni mismatch`, `malformed clienthello`,
-  `malformed request`, `ambiguous framing`, `header timeout`,
-  `connection cap`, `resolve failed`, `login lapsed`, `login credential query`,
+  `malformed request`, `ambiguous framing`, `expectation unsupported`,
+  `header timeout`, `connection cap`, `resolve failed`, `login lapsed`, `login credential query`,
   or a refused address's class: `loopback`, `unspecified`, `private`,
   `link-local`, `cgnat`, `benchmark`, `ietf-protocol`, `multicast`,
   `reserved`, `site-local`, `nat64 local-use`.
@@ -1413,7 +1424,10 @@ with or without a TTY.
   project home only.
 - Built-ins package all three agents on PATH. Missing-only home seeds
   supply Pi's trust/settings defaults, Claude permission/sandbox defaults
-  and Codex approval/sandbox/update-check defaults. Native home instructions
+  and Codex approval/sandbox/update-check defaults. In the `default`
+  image, `claude` on PATH is a launcher that, in a project box, first sets
+  Claude's onboarding, auto-mode nudge and `$PINFOLD_PROJECT` trust flags
+  in `~/.claude.json`, so no first-run screen undoes the seeded defaults. Native home instructions
   are `.pi/agent/APPEND_SYSTEM.md`, `.claude/CLAUDE.md` and `.codex/AGENTS.md`.
   An existing instruction file blocks its missing-only seed, including an
   earlier seed; changing profiles does not update it. Instructions are
@@ -2084,6 +2098,9 @@ each base's `pinfold.toml`, nearest first > built-in defaults. Each key takes th
 included: a list replaces the ones below it, and `allow = []` allows
 nothing. An environment variable that is set, even empty, sets its key.
 An override containing non-UTF-8 bytes is refused, naming only its key.
+A `PINFOLD_ENV_` variable whose name is not UTF-8 is refused the same
+way, as `PINFOLD_ENV_*`, naming no part of its name or value; its value
+follows the `from` value rules.
 Only the environment and the project's file select `profile`; a profile's
 own `profile` value is ignored. `env` is the exception to whole-key
 replacement: each layer replaces it name by name, so a name a lower layer
@@ -2249,7 +2266,7 @@ cut rows.
 | # | Guarantee | Shown by |
 |---|---|---|
 | 1 | **No network but loopback.** The box has no interface but loopback. Its only way out is its own proxy; without `egress` it has none. | In a box with a route, only `lo` exists and the documentation address `192.0.2.1` is unreachable. A box without `egress` connects to the proxy's port and is refused. On Linux, vsock connections to CID 2 on every port from 1 to 4096 are reset at once, not timed out: all of them in the box without `egress`, all but 3128 in the box with a route. Control: the same image with a route reaches the host fixture through the proxy; on Linux, in that box, CID 2 port 3128 reaches the proxy. |
-| 2 | **Only allowlisted hosts get through.** The proxy lets out only allowlisted names, never an IP literal or a name resolving to a refused address (Egress proxy). A route reaches exactly its one host service, and its log line names the method, the path without its query and the upstream status. | `localhost` and the host's own address are put on the allowlist and requested; each gets a 403, logged `loopback` and `ip literal`. A CONNECT to an allowlisted name whose ClientHello SNI names another host is accepted, then refused and logged `sni mismatch`. `example.com` gets a 403 logged `not allowlisted`, over CONNECT and plain HTTP. Control: in the same box, `api.github.com` answers, and a route reaches the host fixture with the Host header rewritten; its log line names the method, the path without its query and the upstream status. |
+| 2 | **Only allowlisted hosts get through.** The proxy lets out only allowlisted names, never an IP literal or a name resolving to a refused address (Egress proxy). A route reaches exactly its one host service, and its log line names the method, the path without its query and the upstream status. The proxy answers `Expect: 100-continue` itself and refuses any other expectation. | `localhost` and the host's own address are put on the allowlist and requested; each gets a 403, logged `loopback` and `ip literal`. A CONNECT to an allowlisted name whose ClientHello SNI names another host is accepted, then refused and logged `sni mismatch`. `example.com` gets a 403 logged `not allowlisted`, over CONNECT and plain HTTP. Control: in the same box, `api.github.com` answers, and a route reaches the host fixture with the Host header rewritten; its log line names the method, the path without its query and the upstream status. A POST to the route with `Expect: 100-continue`, from a curl that waits longer for `100 Continue` than its own bound, reaches a second host fixture that answers 200 only to the body the box sent, and that fixture receives no `Expect`; one with another expectation gets 417 logged `expectation unsupported` and reaches no fixture. |
 | 5 | **Nothing can gain privileges.** Box work runs as the host uid with no capabilities and cannot regain privileges, in a VM with its own kernel. | In a box on the built-in `default` image, a grandchild of an exec'd command (fork then exec) has the host uid, `CapBnd` 0 and `NoNewPrivs` 1, and its `unshare -U` fails with `ENOSPC`. Box work can reach no image-provided setuid or setgid file: there is none in any directory it can enter, and each directory it cannot enter refuses it. The box's root is not writable. On Linux, PID 1 keeps only `CAP_SYS_ADMIN`, and the exec service is the host uid with every capability set empty. Control: a plain child runs in the same box, and the grandchild's `unshare(0)` succeeds. Two boxes report different `/proc/sys/kernel/random/boot_id` values, and on Linux each differs from the host's, so each box boots its own kernel. |
 | 8 | **Losing the owner fails closed.** If the owner dies, the box loses its way out, and the leftover can be removed. | SIGKILL of `box up`. On Apple the guest survives: `box exec` runs a script in it that prints a marker and then requests an allowlisted host; the marker appears and the request gets no upstream response. On Linux the VM ends with its owner (43). Another state root sees the owner dead, and `box prune` in a state root whose daily pass is due removes the leftover; the name is reusable. SIGKILL of a detached project owner while a session runs makes the client exit 125. Control: before the kill, another state root lists the owner alive, and on Apple the same in-box request succeeds. |
 | 10 | **Disk-project branches and tags cross only through the Git remote.** A fetch writes box branches only under `refs/remotes/box/*` and adds only new tags; it never moves or deletes the host's own branches or tags, except as the threat model lists. A push lands only in the box's `refs/remotes/host/*` and its tags. Crossing carries no hook or configuration. | (a) A box that writes its own listing names a branch at a host-only commit. `git fetch box` fails naming that branch, no ref under `refs/remotes/box/` changes, and `.git/objects` is unchanged. So does a bundle whose pack also carries an unreachable tag of a tag of a missing commit, failing naming that commit; and, with the host a partial clone of a local promisor, a listing that names the branch at a commit only the promisor holds and a bundle naming it as a prerequisite. (b) Separately, a valid listing carries a tag named like a host tag at another object. After `git fetch --force --tags --prune --prune-tags box`, every host tag is where it was. The box then commits hooks under every client-side name, `core.hooksPath`, `.husky/` and `.githooks/`; the host fetches, merges and checks out twice, and nothing planted runs. With `push.followTags`, `git push box main` lands main only in the box's `refs/remotes/host/main` and its annotated tags as box tags, and changes no box working-tree file; after it and after a repeat, the host's `refs/remotes/box/main` is the box's own main. A fresh start leaves the project disk empty and the host's `.git/config` byte-identical; the first push creates the box repository. Control: a host hook runs, and a legitimate branch and new tag land under `refs/remotes/box/*` and `refs/tags/*`. |
@@ -2260,7 +2277,7 @@ cut rows.
 | 43 | **The VMM reaches only its own box.** Linux only. Each VMM runs as the user in its own jail and sees only its own box's files. | Two boxes up, one with a detached owner. Each VMM process is the user's, with `CapBnd` 0 and `NoNewPrivs` 1, in user, mount, PID, network, IPC and UTS namespaces of its own. Through `/proc/PID/root` it sees its own disk and not the other box's; no directory from the home is mounted in it; its jail holds no socket but those in its own vsock socket directory, so no project session or shutdown control socket; every descriptor it holds is in its jail, `/dev/null` or an anonymous kernel object. Control: its own disk is visible, and SIGKILL of the owner ends the VM. |
 | 44 | **Linux image work stays in its own VM.** Linux only. A build's RUN steps have no network but the production proxy, which lets out only allowed hosts and audits each decision. | In one build, a RUN step's direct connection to a public address, bypassing the proxy, fails; through the proxy `api.github.com` answers while `example.com` gets a 403, with the denial in the build's egress log. Control: the same build with `--allow example.com` reaches it. |
 | 45 | **Disk export writes only a new destination.** Export copies a stopped disk's files into a new directory, never over an existing one, and follows no box-planted link. | A stopped disk holding a symlink to a host path and an executable file is exported. The link is copied as a link and its target is untouched; the file stays executable. Export to an existing destination, a dangling symlink, is refused `destination-exists` and leaves the link unchanged. Control: export into a new destination succeeds. |
-| 47 | **A project's sessions share one box.** All of a project's sessions use one box under its startup configuration. One session ending does not end another, and a client with different configuration is refused. Only the launch that starts the box runs `op`. | Two simultaneous first launches, each with a stand-in `op` first on PATH that gives the reference's value, share one owner and generation, and that stand-in is asked once; the box has its value. Killing one client ends its command group while the other keeps working, and SIGKILL of a fetch's Git and helper ends the box command it hung, even one that ignores TERM. A client whose `from` variable holds another value is refused `config-changed` naming `env.values`, and one whose `op` reference differs naming `env.names`. Every later client of the project (the same-value join, the two refused ones, and the exit-code and executable-lookup runs) has instead a stand-in `op` that refuses every read first on PATH, and none asks it. After the configuration file's allowlist changes mid-run, the started allowlist still decides. Commands get literal argv, empty arguments and `--help` included; exits 0, 23, 126 and 127 pass through, and a setup failure exits 125. With no configuration and no terminal, `-- CMD` is refused `no-config` and creates no project state, and `git fetch box` from an unused state root is refused `no-config` and leaves that root empty. Control: the same `from` value joins, after `config edit` the refused invocation runs, and a configured disk project's `git fetch box` from that root passes admission and runs the daily pass. |
+| 47 | **A project's sessions share one box.** All of a project's sessions use one box under its startup configuration. One session ending does not end another, and a client with different configuration is refused. Only the launch that starts the box runs `op`. | Two simultaneous first launches, each with a stand-in `op` first on PATH that gives the reference's value, share one owner and generation, and that stand-in is asked once; the box has its value. Killing one client ends its command group while the other keeps working, and SIGKILL of a fetch's Git alone ends the box command it hung, even one that ignores TERM. A client whose `from` variable holds another value is refused `config-changed` naming `env.values`, and one whose `op` reference differs naming `env.names`. Every later client of the project (the same-value join, the two refused ones, and the exit-code and executable-lookup runs) has instead a stand-in `op` that refuses every read first on PATH, and none asks it. After the configuration file's allowlist changes mid-run, the started allowlist still decides. Commands get literal argv, empty arguments and `--help` included; exits 0, 23, 126 and 127 pass through, and a setup failure exits 125. With no configuration and no terminal, `-- CMD` is refused `no-config` and creates no project state, and `git fetch box` from an unused state root is refused `no-config` and leaves that root empty. Control: the same `from` value joins, after `config edit` the refused invocation runs, and a configured disk project's `git fetch box` from that root passes admission and runs the daily pass. |
 | 48 | **A share reaches only its folder by path, and a project holding a protected path is refused.** Through a share the box reaches no host path outside its declared directory; a hard link inside the share to an outside file is not covered (threat model). A project holding a protected path is refused. On Linux, which has no shares, the refusal runs for a disk project. | With the project's configuration directory symlinked into the checkout, `-- CMD` and `config edit` are refused `host-path-in-project` and create no state. Separately, with only the selected profile's directory symlinked in, and on Apple with only the supplied init's own directory under `artifacts/init` symlinked into a project with no configuration, the same two commands are refused the same way. In a running share, the box follows an outward symlink and cannot read an unmounted host fixture. Control: with each symlink removed the same project runs, and on Apple shared edits and a box `git commit` land on the host's branch. |
 | 50 | **A profile with a base applies the base beneath it and is outdated when the base changes.** | A three-link user chain of tiny recipes, none with `base = "default"`: the root is on a public base on Linux and on the already-built default image on macOS. After a change to the root's recipe, a launch names `image-outdated` for the root and every image above it; after rebuilding only the root, for the two above it; after the chain's rebuild, none, and a second unchanged rebuild keeps every image identity in the chain. Control: a box from the top link has every link's file and seed and a top-level replacement seed. With the chain built, a cycle is refused as `profile`, and correcting it runs. |
 

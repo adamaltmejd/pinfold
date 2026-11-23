@@ -675,6 +675,7 @@ fn valid_header_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte))
         && !name.eq_ignore_ascii_case("host")
         && !name.eq_ignore_ascii_case("content-length")
+        && !name.eq_ignore_ascii_case("expect")
         && !proxy::hop_by_hop(name)
 }
 

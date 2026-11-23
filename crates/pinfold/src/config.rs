@@ -367,11 +367,7 @@ impl Config {
                 .env
                 .unwrap_or_default()
                 .into_iter()
-                .chain(env::vars_os().filter_map(|(name, _)| {
-                    let name = name.to_str()?.strip_prefix("PINFOLD_ENV_")?.to_string();
-                    let from = Some(format!("PINFOLD_ENV_{name}"));
-                    Some((name, Env::Secret { from, op: None }))
-                }))
+                .chain(env_overrides()?)
                 .collect(),
         })
     }
@@ -541,6 +537,27 @@ fn profile_name(file: Option<String>) -> io::Result<String> {
     Ok(override_value("PINFOLD_PROFILE")?
         .or(file)
         .unwrap_or_else(|| DEFAULT_PROFILE.to_string()))
+}
+
+/// Each host `PINFOLD_ENV_<NAME>` as `<NAME>`, read by name. One whose
+/// name is not UTF-8 is refused, naming neither its value nor its bytes.
+fn env_overrides() -> io::Result<Vec<(String, Env)>> {
+    let mut found = Vec::new();
+    for (name, _) in env::vars_os() {
+        if !name.as_encoded_bytes().starts_with(b"PINFOLD_ENV_") {
+            continue;
+        }
+        let Some(name) = name.to_str() else {
+            return Err(invalid(
+                "PINFOLD_ENV_*",
+                "a variable's name is not valid UTF-8",
+            ));
+        };
+        let from = Some(name.to_string());
+        let name = name["PINFOLD_ENV_".len()..].to_string();
+        found.push((name, Env::Secret { from, op: None }));
+    }
+    Ok(found)
 }
 
 pub(crate) fn override_value(name: &str) -> io::Result<Option<String>> {
