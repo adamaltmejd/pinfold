@@ -2086,6 +2086,9 @@ each base's `pinfold.toml`, nearest first > built-in defaults. Each key takes th
 included: a list replaces the ones below it, and `allow = []` allows
 nothing. An environment variable that is set, even empty, sets its key.
 An override containing non-UTF-8 bytes is refused, naming only its key.
+A `PINFOLD_ENV_` variable whose name is not UTF-8 is refused the same
+way, as `PINFOLD_ENV_*`, naming no part of its name or value; its value
+follows the `from` value rules.
 Only the environment and the project's file select `profile`; a profile's
 own `profile` value is ignored. `env` is the exception to whole-key
 replacement: each layer replaces it name by name, so a name a lower layer
