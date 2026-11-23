@@ -347,5 +347,5 @@ fn only_allowlisted_hosts_get_through() {
         lines,
         line("fixture.internal", "refused", "expectation unsupported")
     );
-    assert_eq!(fixture.requests().len(), 2, "the refused request was sent");
+    assert_eq!(fixture.requests().len(), 1, "the refused request was sent");
 }
