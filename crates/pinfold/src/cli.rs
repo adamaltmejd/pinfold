@@ -1349,11 +1349,12 @@ fn print_profile(config: &Config, width: usize) -> io::Result<()> {
                 .into_iter()
                 .filter(|file| dir.join(file).exists())
                 .collect();
-            format!(
-                "{} (editable: {})",
-                terminal_text(&dir.to_string_lossy()),
-                files.join(", ")
-            )
+            let dir = terminal_text(&dir.to_string_lossy());
+            if files.is_empty() {
+                format!("{dir} (editable)")
+            } else {
+                format!("{dir} (editable: {})", files.join(", "))
+            }
         }
         None => format!(
             "built in; copy it with `pinfold profile new NAME --from {}` to change it",
