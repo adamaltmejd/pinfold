@@ -1520,9 +1520,12 @@ fn prune_builder(flags: &[&str]) -> io::Result<()> {
 fn trim_builder() -> io::Result<()> {
     // The guest's ext4 trims freed blocks only once the journal has committed
     // their release; without the sync a trim just after a prune returns
-    // little or nothing (#417).
-    output(&["container", "exec", "buildkit", "sync"])?;
-    output(&["container", "clean", "buildkit"]).map(drop)
+    // little or nothing (#417). Sync only the root filesystem: a plain sync
+    // also waits on the builder's VirtioFS mounts, without bound. A failed
+    // sync still trims, and is reported as a failed trim.
+    let synced = output(&["container", "exec", "buildkit", "sync", "-f", "/"]);
+    output(&["container", "clean", "buildkit"])?;
+    synced.map(drop)
 }
 
 impl ImageService for Apple {
