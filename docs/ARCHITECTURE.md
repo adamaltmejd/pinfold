@@ -1741,9 +1741,13 @@ of NAME, whatever its age, and no other name's.
   outputs the runtime still holds; a later build restarts it with its
   cache and root filesystem. The builder is idle when no pinfold build
   holds its lock and BuildKit lists no build without a completion time.
-  Otherwise clean leaves it running and says a build is running; that
-  warning does not change the exit code. A build started outside pinfold
-  in the instant between that check and the stop may fail. Linux: remove
+  Otherwise, or when the builder does not answer within a deadline,
+  clean leaves it running and says so; that warning does not change the
+  exit code. Pinfold's own builds are always excluded by the lock. Builds
+  started outside pinfold are seen only through the builder's own build
+  records, so one it does not yet report (a client connected but not
+  submitted, a builder configured to keep no history) can be failed by
+  the stop. Linux: remove
   only an exclusively claimed idle owned builder cache)
 - with `--unused AGE`, state and disks of projects not run for that long,
   except a project's with a live box. Never automatic: a project disk

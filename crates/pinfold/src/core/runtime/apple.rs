@@ -26,7 +26,7 @@ use crate::core::runtime::{
     BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, captured, output,
     parse_json, spawn_error,
 };
-use crate::core::{clean, ownership};
+use crate::core::{clean, ownership, process};
 use crate::dirs;
 use crate::formatting::terminal_text;
 
@@ -1532,6 +1532,9 @@ fn trim_builder() -> io::Result<()> {
 /// Every pinfold build holds this host lock shared; `clean` holds it
 /// exclusive while it stops the builder.
 const BUILDER_LOCK: &str = "builder:apple";
+/// The build-records query took 0.3 s and the stop 0.4 s when measured.
+const BUILDER_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+const BUILDER_STOP_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Stop the builder when nothing builds on it. Its host process keeps each
 /// build's unlinked export open until it stops (#440); the next build
@@ -1542,14 +1545,35 @@ fn stop_idle_builder() -> io::Result<()> {
         ownership::open_lock(BUILDER_LOCK)?,
         FlockArg::LockExclusiveNonblock,
     )?;
-    if idle.is_none() || builder_busy()? {
+    // Every Apple build waits on the lock, so nothing under it may hang.
+    let busy = match idle {
+        None => Some("a build is running"),
+        Some(_) => match process::with_deadline(BUILDER_QUERY_TIMEOUT, |_| builder_busy()) {
+            Ok(true) => Some("a build is running"),
+            Ok(false) => None,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                Some("the builder did not answer")
+            }
+            Err(error) => return Err(error),
+        },
+    };
+    if let Some(reason) = busy {
         let _ = writeln!(
             io::stderr(),
-            "pinfold clean: build cache: a build is running, so cleanup could not complete; run `pinfold clean` again after it"
+            "pinfold clean: build cache: {reason}, so cleanup could not complete; run `pinfold clean` again after it"
         );
         return Ok(());
     }
-    output(&["container", "builder", "stop"]).map(drop)
+    process::with_deadline(BUILDER_STOP_TIMEOUT, |_| {
+        output(&["container", "builder", "stop"]).map(drop)
+    })
+    .map_err(|error| match error.kind() {
+        io::ErrorKind::Interrupted => io::Error::other(format!(
+            "container builder stop did not finish within {}s",
+            BUILDER_STOP_TIMEOUT.as_secs()
+        )),
+        _ => error,
+    })
 }
 
 /// Whether BuildKit has a build in progress, pinfold's or another caller's:
