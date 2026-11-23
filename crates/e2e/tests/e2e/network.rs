@@ -144,6 +144,31 @@ fn decisions<'a>(log: &'a [Value], host: &str, decision: &str) -> Vec<&'a Value>
         .collect()
 }
 
+/// Split curl's `-D - -w CODE` stdout into the `details` string of the
+/// `pinfold` member of `Proxy-Status` (RFC 9209; an RFC 8941 string) and
+/// the code.
+fn proxy_status(stdout: &str) -> (Option<String>, &str) {
+    let (head, code) = stdout.rsplit_once('\n').unwrap_or(("", stdout));
+    let details = head.lines().find_map(|line| {
+        let (field, value) = line.split_once(':')?;
+        if !field.eq_ignore_ascii_case("proxy-status") {
+            return None;
+        }
+        let rest = value.trim().strip_prefix("pinfold;")?;
+        let mut chars = rest.split_once("details=\"")?.1.chars();
+        let mut details = String::new();
+        while let Some(char) = chars.next() {
+            match char {
+                '"' => return Some(details),
+                '\\' => details.push(chars.next()?),
+                char => details.push(char),
+            }
+        }
+        None
+    });
+    (details, code)
+}
+
 #[test]
 fn only_allowlisted_hosts_get_through() {
     // Sabotage (run): delete the CONNECT IP-literal check in proxy.rs. The
@@ -157,7 +182,9 @@ fn only_allowlisted_hosts_get_through() {
     // 100-continue upload then waits past curl's bound (28); or forward a
     // body other than the box's, and the fixture answers 400. Sabotage
     // (run): drop the 417 in `plain`; the other expectation then reaches
-    // the fixture (418).
+    // the fixture (418). Sabotage (not run): give `refuse`'s
+    // `Proxy-Status` a fixed `details`, or drop the field; a refusal's
+    // response then no longer names its logged reason.
     // api.github.com and the route are the positive controls.
     let env = TestEnv::new("allowlist");
     let fixture = Fixture::start(418);
@@ -223,26 +250,42 @@ fn only_allowlisted_hosts_get_through() {
     assert_eq!(lines[0].1, "allowed", "{lines:?}");
 
     // curl exits 56 when the proxy answers CONNECT with an error status.
+    // Each refusal's response names the logged reason: curl dumps the
+    // CONNECT response's head too.
     for (target, reason) in [
         ("localhost", "loopback"),
         (host.as_str(), "ip literal"),
         ("example.com", "not allowlisted"),
     ] {
-        let (refused, lines) = logged(&|| connect(&[&format!("https://{target}/")]));
+        let (refused, lines) = logged(&|| connect(&["-D", "-", &format!("https://{target}/")]));
+        let (details, code) = proxy_status(&refused.stdout);
         assert_eq!(
-            (refused.code, refused.stdout.as_str()),
+            (refused.code, code),
             (56, "403"),
             "{target}'s CONNECT: {refused:?}"
         );
         assert_eq!(lines, line(target, "refused", reason));
+        assert_eq!(details, Some(lines[0].2.clone()), "{refused:?}");
     }
-    let (refused, lines) = logged(&|| plain("http://example.com/"));
-    assert_eq!(
-        (refused.code, refused.stdout.as_str()),
-        (0, "403"),
-        "{refused:?}"
-    );
+    let (refused, lines) = logged(&|| {
+        curl(
+            &env,
+            &name,
+            &[
+                "-o",
+                "/dev/null",
+                "-D",
+                "-",
+                "-w",
+                "%{http_code}",
+                "http://example.com/",
+            ],
+        )
+    });
+    let (details, code) = proxy_status(&refused.stdout);
+    assert_eq!((refused.code, code), (0, "403"), "{refused:?}");
     assert_eq!(lines, line("example.com", "refused", "not allowlisted"));
+    assert_eq!(details, Some(lines[0].2.clone()), "{refused:?}");
 
     // The proxy accepts CONNECT to api.github.com, then reads a ClientHello
     // naming example.com and drops it: curl's handshake fails (35). The

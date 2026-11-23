@@ -1229,27 +1229,63 @@ fn tunnel(client: &UnixStream, server: TcpStream, log: &AuditLog, host: &str) {
 }
 
 fn respond(client: &mut UnixStream, code: u16) -> io::Result<()> {
-    let reason = match code {
-        200 => "Connection Established",
-        400 => "Bad Request",
-        403 => "Forbidden",
-        417 => "Expectation Failed",
-        502 => "Bad Gateway",
-        _ => "Service Unavailable",
-    };
     let framing = if code == 200 {
         ""
     } else {
         "Content-Length: 0\r\nConnection: close\r\n"
     };
     Deadline(client.as_fd(), IDLE_TIMEOUT)
-        .write_all(format!("HTTP/1.1 {code} {reason}\r\n{framing}\r\n").as_bytes())
+        .write_all(format!("HTTP/1.1 {code} {}\r\n{framing}\r\n", phrase(code)).as_bytes())
 }
 
-fn refuse(client: &mut UnixStream, log: &AuditLog, host: &str, code: u16, reason: &str) {
-    if record(log, host, "refused", reason, None).is_ok() {
-        let _ = respond(client, code);
+fn phrase(code: u16) -> &'static str {
+    match code {
+        200 => "Connection Established",
+        400 => "Bad Request",
+        403 => "Forbidden",
+        417 => "Expectation Failed",
+        502 => "Bad Gateway",
+        _ => "Service Unavailable",
     }
+}
+
+/// Log a refusal and answer it with its reason (Egress proxy, Refusal
+/// responses). The reason is one of the spec's fixed tokens, so nothing the
+/// box sent, not even the host, reaches the header or the body.
+fn refuse(client: &mut UnixStream, log: &AuditLog, host: &str, code: u16, reason: &'static str) {
+    if record(log, host, "refused", reason, None).is_err() {
+        return;
+    }
+    let error = match reason {
+        "not allowlisted"
+        | "route"
+        | "port not allowed"
+        | "login lapsed"
+        | "login credential query" => "http_request_denied",
+        "malformed request" | "ambiguous framing" | "expectation unsupported" => {
+            "http_request_error"
+        }
+        "resolve failed" => "dns_error",
+        "connection cap" => "proxy_internal_response",
+        // `ip literal` and a refused address's class.
+        _ => "destination_ip_prohibited",
+    };
+    let details = reason.replace('\\', "\\\\").replace('"', "\\\"");
+    let body = format!(
+        "The pinfold sandbox refused this request: {reason}.\n\
+         Allowed hosts and routes are set on the host, in pinfold's \
+         configuration; nothing inside the box can change them.\n"
+    );
+    let response = format!(
+        "HTTP/1.1 {code} {}\r\n\
+         Proxy-Status: pinfold; error={error}; details=\"{details}\"\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\r\n{body}",
+        phrase(code),
+        body.len()
+    );
+    let _ = Deadline(client.as_fd(), IDLE_TIMEOUT).write_all(response.as_bytes());
 }
 
 /// Append one decision as a JSON line. A route decision also names the
