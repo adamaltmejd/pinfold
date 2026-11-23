@@ -48,10 +48,6 @@ fn transfer(
             "--connect-timeout",
         ])
         .arg(timeout.as_secs_f64().min(15.0).to_string())
-        .arg("--max-time")
-        .arg(timeout.as_secs_f64().to_string())
-        .arg("--max-filesize")
-        .arg(limit.to_string())
         .args(["--speed-limit", "1", "--speed-time", "30"])
         .arg(url)
         .stdin(Stdio::null())
