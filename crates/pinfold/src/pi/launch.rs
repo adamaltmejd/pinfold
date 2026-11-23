@@ -363,7 +363,9 @@ pub(crate) fn outdated_images(
             .get(clean::BASE_LABEL)
             .filter(|digest| !digest.is_empty())
             .map(String::as_str);
-        let reason = if recipe_changed(info, chain[index].1) {
+        let reason = if info.labels.get(image::CONTAINERFILE_LABEL)
+            != Some(&sha256_hex(chain[index].1))
+        {
             Some("has changed or unrecorded Containerfile inputs".to_string())
         } else if let Some((base, _)) = chain.get(index + 1) {
             let current = base.as_ref().map(|base| base.id.as_str());
@@ -385,11 +387,6 @@ pub(crate) fn outdated_images(
         }
     }
     Ok(Outdated { images, build })
-}
-
-/// Whether `image` lacks the recorded SHA-256 of `bytes`.
-fn recipe_changed(image: &ImageInfo, bytes: &[u8]) -> bool {
-    image.labels.get(image::CONTAINERFILE_LABEL) != Some(&sha256_hex(bytes))
 }
 
 pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) -> io::Result<Plan> {
