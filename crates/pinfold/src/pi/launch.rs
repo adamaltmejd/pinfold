@@ -14,7 +14,7 @@ use crate::core::r#box::{Box, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::crossing::CrossingError;
 use crate::core::image::{ImageInfo, service};
-use crate::core::plan::{Disk, Egress, Env, Mount, MountKind, Plan, guest_path};
+use crate::core::plan::{Disk, Egress, Env, Mount, MountKind, Plan};
 use crate::core::runtime::Runtime;
 use crate::core::{artifacts, disk, image, sha256_hex};
 use crate::formatting::terminal_text;
@@ -413,31 +413,7 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
             kind: MountKind::Share,
         }],
     };
-    // The box layer refuses only equal destinations. A folder nested in the
-    // project or home would add a mount point there, on Apple in the
-    // host's project folder.
-    let mut taken = vec![guest_path(guest), PathBuf::from(state::HOME)];
-    if config.profile.share.is_some() {
-        taken.push(PathBuf::from("/opt/pinfold/profile"));
-    }
-    for folder in &config.folders {
-        let destination = guest_path(&folder.guest);
-        if let Some(other) = taken
-            .iter()
-            .find(|other| destination.starts_with(other) || other.starts_with(&destination))
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "spec: read-only folder guest {} overlaps {}",
-                    terminal_text(&folder.guest.to_string_lossy()),
-                    terminal_text(&other.to_string_lossy())
-                ),
-            ));
-        }
-        taken.push(destination);
-        mounts.push(folder.clone());
-    }
+    mounts.extend(config.folders.iter().cloned());
     Ok(Plan {
         profile: Some(config.profile.name.clone()),
         disks,
@@ -449,6 +425,37 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
         }),
         ..box_plan(config, id, image)?
     })
+}
+
+/// At a box start, refuse a folder destination at, inside or containing
+/// another's. The box layer refuses only equal destinations; a folder
+/// nested in the project or home would add a mount point there, on Apple
+/// in the host's project folder. Guests are canonical (configuration).
+pub(crate) fn check_folder_guests(config: &Config, root: &Path) -> io::Result<()> {
+    let mut taken = vec![
+        state::guest_root(config.mount, root).to_path_buf(),
+        PathBuf::from(state::HOME),
+    ];
+    if config.profile.share.is_some() {
+        taken.push(PathBuf::from("/opt/pinfold/profile"));
+    }
+    for folder in &config.folders {
+        if let Some(other) = taken
+            .iter()
+            .find(|other| folder.guest.starts_with(other) || other.starts_with(&folder.guest))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "spec: read-only folder guest {} overlaps {}",
+                    terminal_text(&folder.guest.to_string_lossy()),
+                    terminal_text(&other.to_string_lossy())
+                ),
+            ));
+        }
+        taken.push(folder.guest.clone());
+    }
+    Ok(())
 }
 
 /// The plan both a project box and a transient crossing box start from: the

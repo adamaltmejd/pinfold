@@ -410,6 +410,11 @@ impl Snapshot {
         context.verify(config.mount)?;
         let id = state::project_id(root);
         let image = launch::resolve_image(&config, &id);
+        // A joining client is compared first: a changed folder list is
+        // `config-changed`, never this refusal.
+        if start {
+            launch::check_folder_guests(&config, root)?;
+        }
         let mut plan = launch::build_plan(&config, &id, root, &image)?;
         for mount in &mut plan.mounts {
             if mount.kind == MountKind::Share {
@@ -434,6 +439,29 @@ impl Snapshot {
         }
         crate::core::r#box::validate_project(&checked, check.then_some(&values), &config.profile)
             .map_err(io::Error::other)?;
+        // Each folder's canonical host is startup configuration and what the
+        // box mounts. Only a start checks it; a join keeps an unresolvable
+        // host as written, so it differs from a running box's.
+        for mount in &mut plan.mounts {
+            if mount.kind != MountKind::Readonly {
+                continue;
+            }
+            match std::fs::canonicalize(&mount.host) {
+                Ok(canonical) => {
+                    if start {
+                        crate::config::admit_folder(root, &canonical, &config.profile)?;
+                    }
+                    mount.host = canonical;
+                }
+                Err(error) if start => {
+                    return Err(io::Error::other(format!(
+                        "spec: read-only folder {}: {error}",
+                        crate::formatting::terminal_text(&mount.host.to_string_lossy())
+                    )));
+                }
+                Err(_) => {}
+            }
+        }
         if !config.cpus.is_finite() {
             return Err(io::Error::other("spec-invalid: CPUs must be finite"));
         }
@@ -536,15 +564,6 @@ impl Snapshot {
             env_names,
             env_values,
         };
-        // The box mounts the path checked here; the snapshot keeps the
-        // folders as configured.
-        if start {
-            for mount in &mut plan.mounts {
-                if mount.kind == MountKind::Readonly {
-                    mount.host = crate::config::admit_folder(root, &mount.host, &config.profile)?;
-                }
-            }
-        }
         Ok(Resolved {
             snapshot,
             config,

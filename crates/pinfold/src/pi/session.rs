@@ -670,7 +670,6 @@ async fn admit(
     executable: &File,
 ) -> io::Result<Option<Lease>> {
     crate::config::check_roots_outside(root)?;
-    crate::config::check_folders_outside(root)?;
     let _maintenance = maintenance(root, signals).await?;
     let mut noticed = false;
     loop {

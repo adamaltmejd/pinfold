@@ -80,7 +80,7 @@ impl ProjectMount {
         format!(
             "{chosen}mounts = [{{ host = \".\", kind = \"{}\" }}]
 # kind: {kinds}.
-# Host folders the box can only read follow the project entry: {{ host = \"~/notes\", guest = \"/notes\" }}
+# Host folders (absolute or ~/) the box can only read follow the project entry: {{ host = \"~/notes\", guest = \"/notes\" }}
 
 # Optional settings: uncomment a line to set it.
 {example}# Local image to run instead of the profile's (not with a Containerfile beside this file):
@@ -257,9 +257,9 @@ impl std::error::Error for NoConfig {}
 /// The merged configuration for one project run.
 pub struct Config {
     pub mount: ProjectMount,
-    /// Read-only host folders after the project mount, expanded lexically:
-    /// `~/` is the user's home and a relative host the project root's. The
-    /// guest is normalized. A box start resolves each host ([`admit_folder`]).
+    /// Read-only host folders after the project mount, each host absolute,
+    /// `~/` expanded to the user's home. A box start checks the canonical
+    /// host it mounts ([`admit_folder`]).
     pub folders: Vec<Mount>,
     /// Whether the project is a Git checkout to cross.
     pub repository: bool,
@@ -305,9 +305,21 @@ impl Config {
         };
         let project = Layer::parse(&bytes, &source)?;
         let (mount, mut folders) = ProjectMount::parse(project.mounts.as_ref(), &source)?;
+        // A relative host would be walked through the project, where a
+        // box can plant a link that chooses the next start's folder.
+        let canonical_root = fs::canonicalize(root)?;
         for folder in &mut folders {
-            // TOML strings are UTF-8.
-            folder.host = match folder
+            let refused = |detail: &str| {
+                invalid(
+                    &source,
+                    &format!(
+                        "spec: read-only folder {} {detail}",
+                        terminal_text(&folder.host.to_string_lossy())
+                    ),
+                )
+            };
+            // TOML strings are UTF-8. `~//notes` is the home's `notes`.
+            let host = match folder
                 .host
                 .to_str()
                 .and_then(|host| host.strip_prefix("~/"))
@@ -316,10 +328,19 @@ impl Config {
                     .ok_or_else(|| {
                         io::Error::other("HOME is not set and the uid has no passwd entry")
                     })?
-                    .join(rest),
-                None => root.join(&folder.host),
+                    .join(rest.trim_start_matches('/')),
+                None if folder.host.is_absolute() => folder.host.clone(),
+                None => return Err(refused("must be absolute or start with ~/")),
             };
-            folder.guest = guest_path(&folder.guest);
+            if host.starts_with(root) || host.starts_with(&canonical_root) {
+                return Err(refused("lies inside the project"));
+            }
+            if guest_path(&folder.guest).as_os_str() != folder.guest.as_os_str() {
+                return Err(refused(
+                    "needs a guest with no `.` or `..`, repeated or trailing slash",
+                ));
+            }
+            folder.host = host;
         }
         let mut config = Self::from_project(root, dir, project, mount)?;
         config.folders = folders;
@@ -419,52 +440,31 @@ impl Config {
         let share = self.mount == ProjectMount::Share;
         check_paths_outside(root, root, Some(&self.profile), share)
     }
-
-    /// Refuse a read-only folder that overlaps a protected path: the box
-    /// could read pinfold's own state, the egress log included. A folder
-    /// that does not resolve is left to the box start, which refuses it.
-    pub fn check_folders(&self, root: &Path) -> io::Result<()> {
-        for folder in &self.folders {
-            if let Ok(host) = dirs::resolve_host_path(&folder.host) {
-                check_paths_outside(root, &host, Some(&self.profile), true)?;
-            }
-        }
-        Ok(())
-    }
 }
 
-/// [`Config::check_folders`] before any project lock or state exists. A
-/// configuration that does not load is reported by the checks that follow.
-pub(crate) fn check_folders_outside(root: &Path) -> io::Result<()> {
-    match Config::load(root) {
-        Ok(config) => config.check_folders(root),
-        Err(_) => Ok(()),
-    }
-}
-
-/// At a box start, a folder's host after the box layer admitted it as
-/// written: resolved once, then refused unless UTF-8, free of what a mount
-/// path may not hold, and clear of every protected path. The box mounts the
-/// result.
-pub(crate) fn admit_folder(root: &Path, host: &Path, profile: &Profile) -> io::Result<PathBuf> {
+/// At a box start, the canonical host the box will mount, after the box
+/// layer admitted the host as written: refused unless UTF-8, free of what a
+/// mount path may not hold, outside the project and clear of every
+/// protected path, since the box could read pinfold's own state, the
+/// egress log included.
+pub(crate) fn admit_folder(root: &Path, canonical: &Path, profile: &Profile) -> io::Result<()> {
     let refused = |detail: &str| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
                 "spec: read-only folder {} {detail}",
-                terminal_text(&host.to_string_lossy())
+                terminal_text(&canonical.to_string_lossy())
             ),
         )
     };
-    let resolved = fs::canonicalize(host).map_err(|error| refused(&error.to_string()))?;
-    crate::pi::launch::utf8(&resolved, "read-only folder")?;
-    if !valid_mount_path(&resolved) {
-        return Err(refused(
-            "resolves to a path holding ',' or an ASCII control character",
-        ));
+    crate::pi::launch::utf8(canonical, "read-only folder")?;
+    if !valid_mount_path(canonical) {
+        return Err(refused("holds ',' or an ASCII control character"));
     }
-    check_paths_outside(root, &resolved, Some(profile), true)?;
-    Ok(resolved)
+    if canonical.starts_with(fs::canonicalize(root)?) {
+        return Err(refused("lies inside the project"));
+    }
+    check_paths_outside(root, canonical, Some(profile), true)
 }
 
 /// The protected paths no configuration selects, checked before admission

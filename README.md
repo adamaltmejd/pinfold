@@ -437,7 +437,7 @@ It wins over `env`.
 
 To let the box read host files outside the project, such as notes or a
 dataset's documentation, add read-only folders after the project mount in
-the project's configuration. `host` is absolute, `~/…` or relative to the
+the project's configuration. `host` is absolute or `~/…`, outside the
 project; `guest` is where the box sees it. The box can read everything
 in the folder and send it to any allowed host. A change applies at the
 next box start.

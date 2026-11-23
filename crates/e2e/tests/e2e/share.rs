@@ -118,14 +118,14 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
     share_reaches_only_its_folder(&env, &projects[1]);
 }
 
-/// A read-only folder linked into the state root is refused before a box
-/// exists. With a fixture folder in its place, the same project's box reads
-/// it and cannot write it.
-// Sabotage (not run): in config.rs, pass `false` instead of `true` in both
-// read-only folder checks (`Config::check_folders`, `admit_folder`). The
-// linked folder, which lies inside the state root and contains no
-// protected path, then runs and exits 0. This block proves only that
-// direction of the overlap check: a folder inside a protected path.
+/// A read-only folder linked into the state root is refused at the box
+/// start, before a box exists. With a fixture folder in its place, the same
+/// project's box reads it and cannot write it.
+// Sabotage (not run): in config.rs `admit_folder`, pass `false` instead of
+// `true` to `check_paths_outside`. The linked folder, whose canonical path
+// lies inside the state root and contains no protected path, then runs and
+// exits 0. This block proves only the start check, and only that direction
+// of the overlap: a folder inside a protected path.
 // Sabotage (not run): in `build_plan`, push each folder with
 // `MountKind::Share` on macOS. The write then lands and changes the host
 // file. Dropping the folder from the plan fails the read.
@@ -176,14 +176,16 @@ fn read_only_folder(env: &TestEnv, project: &Project) {
     assert_eq!(tree(env.state_home()), before);
 
     // Control: the fixture folder in its place. The read prints the file;
-    // the write of bytes prints its errno, EROFS.
+    // the write of bytes prints its errno, EROFS. Through a writable mount
+    // the bytes would reach the host file.
     settings(&folder);
     let out = project.pinfold(&[
         "--",
         "perl",
         "-e",
         "open(my $f, '<', \"$ARGV[0]/note\") or die \"read: $!\\n\"; print <$f>;
-         if (open(my $w, '>>', \"$ARGV[0]/note\") and print {$w} \"box\\n\" and close($w)) { print \"written\\n\" } else { print 0 + $!, \"\\n\" }",
+         my $w;
+         if (open($w, '>>', \"$ARGV[0]/note\") and print {$w} \"box\\n\" and close($w)) { print \"written\\n\" } else { print 0 + $!, \"\\n\" }",
         &guest,
     ]);
     assert_eq!(out.code, 0, "{out:?}");
