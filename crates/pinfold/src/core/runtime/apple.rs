@@ -1492,9 +1492,11 @@ fn image_info(image: ListedImage) -> io::Result<ImageInfo> {
     })
 }
 
-/// Builder cache kept after each build, 4 GB in decimal MB: a measured
-/// four-image chain needs 2.5 GB, and Apple's own GC keeps 32 GiB (#392).
-const BUILDER_KEEP_MB: &str = "4096";
+/// Builder cache kept after each build, 16 GB in buildctl's decimal MB.
+/// The 2.5 GB measured for the bundled chain (#392) is too little: a user
+/// chain of four images on it already holds 3.3 GiB, so 4 GB evicted
+/// layers after every build. Apple's own GC keeps 32 GiB.
+const BUILDER_KEEP_MB: &str = "16000";
 const BUILD_LOG_BYTES: usize = 64 * 1024;
 
 /// Prune unused BuildKit records in the shared builder. BuildKit keeps
@@ -1550,10 +1552,6 @@ impl ImageService for Apple {
         }
         prune_builder(&[])?;
         trim_builder()
-    }
-
-    fn build_cache(&self) -> &'static str {
-        "the shared builder's backing storage (pruned to 4 GB after each build, emptied by clean)"
     }
 
     fn build_cache_bytes(&self) -> io::Result<u64> {

@@ -245,7 +245,7 @@ impl Profile {
     /// copy.
     pub fn link(name: &str) -> io::Result<Profile> {
         check_name("profile", name)?;
-        let root = dirs::config_dir()?.join("profiles").join(name);
+        let root = user_dir()?.join(name);
         if root.is_dir() {
             return load_dir(name, &root);
         }
@@ -258,6 +258,13 @@ impl Profile {
                 ),
             )
         })
+    }
+
+    /// A user profile's directory; `None` for a built-in.
+    pub fn dir(&self) -> io::Result<Option<PathBuf>> {
+        (!self.built_in)
+            .then(|| user_dir().map(|dir| dir.join(&self.name)))
+            .transpose()
     }
 
     /// A named built-in alone, even when a user's profile overrides it.
@@ -315,6 +322,14 @@ impl Profile {
     }
 }
 
+/// The built-in profiles' names.
+pub const BUILT_IN: [&str; 3] = ["default", "documents", "adam"];
+
+/// The directory holding the user's profiles.
+pub fn user_dir() -> io::Result<PathBuf> {
+    Ok(dirs::config_dir()?.join("profiles"))
+}
+
 /// `upper`'s files over `lower`'s, sorted by path. An upper path replaces
 /// the lower file at that path and, where one is a directory in the other
 /// link, everything lower beneath it or above it on that path.
@@ -334,7 +349,7 @@ fn overlay<T>(lower: Vec<T>, upper: Vec<T>, path: impl Fn(&T) -> &Path) -> Vec<T
 
 /// The `base` a profile's `pinfold.toml` names. Configuration checks the
 /// rest of the file.
-fn base_name(profile: &Profile) -> io::Result<Option<String>> {
+pub(crate) fn base_name(profile: &Profile) -> io::Result<Option<String>> {
     let invalid = |message: String| {
         io::Error::new(
             io::ErrorKind::InvalidData,

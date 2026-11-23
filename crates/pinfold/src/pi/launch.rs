@@ -249,18 +249,55 @@ impl std::fmt::Display for MissingManagedImage {
 impl std::error::Error for MissingManagedImage {}
 
 pub(crate) fn image_warnings(config: &Config, image: &str) -> io::Result<Vec<String>> {
-    image_warnings_for(config, image, &service().resolve_image(image)?)
+    outdated_images(config, image, &service().resolve_image(image)?).map(|found| found.warnings())
 }
 
-/// Warnings for `image` from an already resolved lookup.
-pub(crate) fn image_warnings_for(
+/// The outdated images in the selected chain, root first, each with its
+/// reason, and the one build that refreshes them all.
+#[derive(Default)]
+pub(crate) struct Outdated {
+    images: Vec<(String, String)>,
+    build: String,
+}
+
+impl Outdated {
+    /// One `image-outdated` warning per image.
+    pub(crate) fn warnings(&self) -> Vec<String> {
+        self.images
+            .iter()
+            .map(|(image, reason)| {
+                format!(
+                    "pinfold: image-outdated: image {image} {reason}; run `{}`",
+                    self.build
+                )
+            })
+            .collect()
+    }
+
+    /// The lowest outdated image and how many outdated images build on it.
+    pub(crate) fn summary(&self) -> Option<String> {
+        let ((image, reason), above) = self.images.split_first()?;
+        let above = match above.len() {
+            0 => String::new(),
+            1 => "; 1 image builds on it".to_string(),
+            n => format!("; {n} images build on it"),
+        };
+        Some(format!(
+            "pinfold: image-outdated: image {image} {reason}{above}; run `{}`",
+            self.build
+        ))
+    }
+}
+
+/// [`Outdated`] for `image` from an already resolved lookup.
+pub(crate) fn outdated_images(
     config: &Config,
     image: &str,
     resolved: &Result<ImageInfo, String>,
-) -> io::Result<Vec<String>> {
+) -> io::Result<Outdated> {
     if config.image.is_some() {
         return match resolved {
-            Ok(_) => Ok(Vec::new()),
+            Ok(_) => Ok(Outdated::default()),
             Err(_) => Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
@@ -314,7 +351,7 @@ pub(crate) fn image_warnings_for(
     }
     // From the root up: an image is outdated when its recipe changed, its
     // recorded base is not the current base image, or that base is outdated.
-    let mut warnings = Vec::new();
+    let mut images = Vec::new();
     let mut outdated = false;
     for index in (0..chain.len()).rev() {
         let Some(info) = &chain[index].0 else {
@@ -343,14 +380,11 @@ pub(crate) fn image_warnings_for(
             recorded.map(|recorded| format!("was built from image {recorded}; it now has no base"))
         };
         if let Some(reason) = reason {
-            warnings.push(format!(
-                "pinfold: image-outdated: image {} {reason}; run `{build}`",
-                info.reference
-            ));
+            images.push((info.reference.clone(), reason));
             outdated = true;
         }
     }
-    Ok(warnings)
+    Ok(Outdated { images, build })
 }
 
 /// Whether `image` lacks the recorded SHA-256 of `bytes`.

@@ -58,9 +58,6 @@ impl ImageService for Linux {
         }
         Ok(())
     }
-    fn build_cache(&self) -> &'static str {
-        "the idle isolated builder cache"
-    }
     fn build_cache_bytes(&self) -> io::Result<u64> {
         allocated_bytes(&cache_dir()?)
     }

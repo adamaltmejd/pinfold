@@ -63,10 +63,6 @@ pub trait ImageService: Sync {
     /// BuildKit records or Linux's exclusively claimed idle builder cache.
     fn purge_build_cache(&self) -> io::Result<()>;
 
-    /// What [`ImageService::purge_build_cache`] removes, named for `pinfold
-    /// clean` and `doctor`.
-    fn build_cache(&self) -> &'static str;
-
     /// Allocated build-cache storage, including its backing filesystem.
     fn build_cache_bytes(&self) -> io::Result<u64>;
 
