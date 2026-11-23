@@ -868,7 +868,7 @@ async fn resolve_spec(
     let root = root.to_path_buf();
     let mut worker = tokio::task::spawn_blocking(move || {
         crate::core::process::with_cancellation(worker_cancel, || {
-            let resolved = Snapshot::resolve(&root, expected_mount, None)?;
+            let resolved = Snapshot::resolve(&root, expected_mount, None, startup)?;
             let warnings = if startup {
                 launch::image_warnings(
                     &resolved.config,
@@ -1584,7 +1584,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let expected_mount = Some(snapshot.project_mount());
         let values = snapshot.values(op_values).map_err(|_| protocol())?;
         let mut resolving = tokio::task::spawn_blocking(move || {
-            crate::core::process::with_cancellation(setup_flag, || Snapshot::resolve(&setup_root, expected_mount, Some(values)))
+            crate::core::process::with_cancellation(setup_flag, || Snapshot::resolve(&setup_root, expected_mount, Some(values), true))
         });
         let setup = loop { tokio::select! {
             biased;

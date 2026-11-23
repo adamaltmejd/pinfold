@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::plan::{Env, Route};
+use crate::core::plan::{Env, Mount, MountKind, Route, guest_path};
 use crate::core::profile::Profile;
 use crate::dirs;
 use crate::formatting::terminal_text;
@@ -31,7 +31,8 @@ const DEFAULT_ALLOW: [&str; 9] = [
     "pi.dev",
 ];
 
-/// The project itself is the only configurable mount.
+/// The project mount's kind. Further `mounts` entries are read-only
+/// folders ([`Config::folders`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectMount {
@@ -79,6 +80,7 @@ impl ProjectMount {
         format!(
             "{chosen}mounts = [{{ host = \".\", kind = \"{}\" }}]
 # kind: {kinds}.
+# Host folders (absolute or ~/, real paths with no links) the box can only read follow the project entry: {{ host = \"~/notes\", guest = \"/notes\" }}
 
 # Optional settings: uncomment a line to set it.
 {example}# Local image to run instead of the profile's (not with a Containerfile beside this file):
@@ -108,30 +110,45 @@ impl ProjectMount {
         )
     }
 
-    fn parse(value: Option<&toml::Value>, source: &str) -> io::Result<Self> {
+    /// The project mount, then each further entry as a read-only mount
+    /// whose host is as written.
+    fn parse(value: Option<&toml::Value>, source: &str) -> io::Result<(Self, Vec<Mount>)> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Attachment {
             host: String,
             kind: ProjectMount,
         }
-        if let Some(value) = value
-            && let Ok(mounts) = value.clone().try_into::<Vec<Attachment>>()
-            && let [mount] = mounts.as_slice()
-            && mount.host == "."
-        {
-            if mount.kind == Self::Share && cfg!(target_os = "linux") {
-                return Err(invalid(
-                    source,
-                    "spec: share mounts are unsupported on Linux",
-                ));
-            }
-            return Ok(mount.kind);
+        let refused = || {
+            invalid(
+                source,
+                "spec: mounts must start with [{ host = \".\", kind = \"share\" }] or [{ host = \".\", kind = \"disk\" }], then only read-only folders { host = \"PATH\", guest = \"/PATH\" }",
+            )
+        };
+        let Some([first, rest @ ..]) = value.and_then(toml::Value::as_array).map(Vec::as_slice)
+        else {
+            return Err(refused());
+        };
+        let Ok(mount) = first.clone().try_into::<Attachment>() else {
+            return Err(refused());
+        };
+        if mount.host != "." {
+            return Err(refused());
         }
-        Err(invalid(
-            source,
-            "spec: mounts must be exactly [{ host = \".\", kind = \"share\" }] or [{ host = \".\", kind = \"disk\" }]",
-        ))
+        if mount.kind == Self::Share && cfg!(target_os = "linux") {
+            return Err(invalid(
+                source,
+                "spec: share mounts are unsupported on Linux",
+            ));
+        }
+        let mut folders = Vec::new();
+        for entry in rest {
+            match entry.clone().try_into::<Mount>() {
+                Ok(folder) if folder.kind == MountKind::Readonly => folders.push(folder),
+                _ => return Err(refused()),
+            }
+        }
+        Ok((mount.kind, folders))
     }
 }
 
@@ -181,6 +198,7 @@ pub fn create(root: &Path, setup: Option<(&str, ProjectMount)>) -> io::Result<(P
     };
     check_paths_outside(
         root,
+        root,
         profile.as_ref(),
         setup.is_some_and(|(_, mount)| mount == ProjectMount::Share),
     )?;
@@ -218,7 +236,7 @@ pub(crate) fn project_mount(root: &Path) -> io::Result<Option<ProjectMount>> {
     };
     let source = terminal_text(&path.to_string_lossy());
     let layer = Layer::parse(&bytes, &source)?;
-    ProjectMount::parse(layer.mounts.as_ref(), &source).map(Some)
+    ProjectMount::parse(layer.mounts.as_ref(), &source).map(|(mount, _)| Some(mount))
 }
 
 #[derive(Debug)]
@@ -239,6 +257,10 @@ impl std::error::Error for NoConfig {}
 /// The merged configuration for one project run.
 pub struct Config {
     pub mount: ProjectMount,
+    /// Read-only host folders after the project mount, each host absolute,
+    /// `~/` expanded to the user's canonical home. A box start admits each
+    /// host only as its own real path ([`admit_folder`]).
+    pub folders: Vec<Mount>,
     /// Whether the project is a Git checkout to cross.
     pub repository: bool,
     /// The project's configuration file.
@@ -282,8 +304,53 @@ impl Config {
             ));
         };
         let project = Layer::parse(&bytes, &source)?;
-        let mount = ProjectMount::parse(project.mounts.as_ref(), &source)?;
-        Self::from_project(root, dir, project, mount)
+        let (mount, mut folders) = ProjectMount::parse(project.mounts.as_ref(), &source)?;
+        // A relative host would be walked through the project, where a
+        // box can plant a link that chooses the next start's folder.
+        for folder in &mut folders {
+            let refused = |detail: &str| {
+                invalid(
+                    &source,
+                    &format!(
+                        "spec: read-only folder {} {detail}",
+                        terminal_text(&folder.host.to_string_lossy())
+                    ),
+                )
+            };
+            // TOML strings are UTF-8. Only a canonical spelling can equal
+            // the real path a start requires.
+            let written = match folder
+                .host
+                .to_str()
+                .and_then(|host| host.strip_prefix("~/"))
+            {
+                Some(rest) if !Path::new(rest).is_absolute() => Path::new(rest),
+                Some(_) => return Err(refused("must not start with ~//")),
+                None if folder.host.is_absolute() => folder.host.as_path(),
+                None => return Err(refused("must be absolute or start with ~/")),
+            };
+            let canonical = |path: &Path| guest_path(path).as_os_str() == path.as_os_str();
+            if !canonical(written) || written.as_os_str().is_empty() {
+                return Err(refused(
+                    "needs a host with no `.` or `..`, repeated or trailing slash",
+                ));
+            }
+            if !canonical(&folder.guest) {
+                return Err(refused(
+                    "needs a guest with no `.` or `..`, repeated or trailing slash",
+                ));
+            }
+            if written != folder.host {
+                // HOME canonicalized as the project's startup roots hold it.
+                let home = env::home_dir().ok_or_else(|| {
+                    io::Error::other("HOME is not set and the uid has no passwd entry")
+                })?;
+                folder.host = dirs::resolve_host_path(&home)?.join(written);
+            }
+        }
+        let mut config = Self::from_project(root, dir, project, mount)?;
+        config.folders = folders;
+        Ok(config)
     }
 
     pub(crate) fn first_run_preview(root: &Path) -> io::Result<Self> {
@@ -350,6 +417,7 @@ impl Config {
         }
         Ok(Config {
             mount,
+            folders: Vec::new(),
             repository,
             path: dir.join("pinfold.toml"),
             project_profile,
@@ -375,30 +443,62 @@ impl Config {
     /// Refuse a project that holds what configures its boxes (see
     /// [`check_paths_outside`]).
     pub fn check_host_paths(&self, root: &Path) -> io::Result<()> {
-        check_paths_outside(root, Some(&self.profile), self.mount == ProjectMount::Share)
+        let share = self.mount == ProjectMount::Share;
+        check_paths_outside(root, root, Some(&self.profile), share)
     }
+}
+
+/// At a box start, before anything reads the folder's contents: its host
+/// must be its own real path, with no link a box could have planted to
+/// choose another folder. That path must be UTF-8, lie outside the project
+/// and clear every protected path, since the box could read pinfold's own state, the egress log included.
+pub(crate) fn admit_folder(root: &Path, host: &Path, profile: &Profile) -> io::Result<()> {
+    let refused = |detail: &str| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "spec: read-only folder {} {detail}",
+                terminal_text(&host.to_string_lossy())
+            ),
+        )
+    };
+    let real = fs::canonicalize(host).map_err(|error| refused(&error.to_string()))?;
+    if real != host {
+        return Err(refused(&format!(
+            "is not its real path {}; name that path",
+            terminal_text(&real.to_string_lossy())
+        )));
+    }
+    // The box layer checks the rest of the path's form, and the directory.
+    crate::pi::launch::utf8(host, "read-only folder")?;
+    if crate::core::mounts::source_beneath(host, &fs::canonicalize(root)?)? {
+        return Err(refused("lies inside the project"));
+    }
+    check_paths_outside(root, host, Some(profile), true)
 }
 
 /// The protected paths no configuration selects, checked before admission
 /// opens a lock: a project holding the lock directory would get lock files.
 /// The configured check still runs under the locks.
 pub(crate) fn check_roots_outside(root: &Path) -> io::Result<()> {
-    check_paths_outside(root, None, false)
+    check_paths_outside(root, root, None, false)
 }
 
-/// Refuse a project root that holds pinfold's own configuration, state or
+/// Refuse `checked`, the root of the project at `root` or one of its
+/// read-only folders, when it holds pinfold's own configuration, state or
 /// cache, the project's configuration, or what `profile` reads, before any
 /// project state is created: box content crosses into the project, so it
 /// must not reach them. Each file is named too, since resolving its
 /// directory does not follow a symlink below it.
 fn check_paths_outside(
     root: &Path,
+    checked: &Path,
     profile: Option<&Profile>,
     bidirectional: bool,
 ) -> io::Result<()> {
     let project = project_dir(&fs::canonicalize(root)?)?;
     crate::core::mounts::check_paths_outside(
-        root,
+        checked,
         profile,
         [
             project.join("pinfold.toml"),
@@ -440,8 +540,8 @@ struct Layer {
     /// A profile's file only; core resolves the chain it names.
     base: Option<String>,
     image: Option<String>,
-    /// Checked whole against the project mount, so any other value is
-    /// refused as `spec`.
+    /// Checked whole against the project mount and read-only folders, so
+    /// any other value is refused as `spec`.
     mounts: Option<toml::Value>,
     allow: Option<Vec<String>>,
     routes: Option<BTreeMap<String, Route>>,

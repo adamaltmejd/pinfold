@@ -10,7 +10,8 @@ use super::plan::{MountKind, Plan, guest_path};
 use super::profile::{Profile, Share};
 use crate::dirs;
 
-/// Reused by project admission; `extra` names its configuration files too.
+/// Reused by project admission, for the project root and each read-only
+/// folder; `extra` names its configuration files too.
 pub(crate) fn check_paths_outside(
     root: &Path,
     profile: Option<&Profile>,
@@ -25,7 +26,9 @@ fn check_extra_paths_outside(
     paths: impl IntoIterator<Item = PathBuf>,
     bidirectional: bool,
 ) -> io::Result<()> {
-    let root = fs::canonicalize(root)?;
+    // A read-only folder is checked before its box start, which refuses a
+    // missing one as `spec` naming it.
+    let root = dirs::resolve_host_path(root)?;
     for path in paths {
         if source_beneath(&path, &root)? || (bidirectional && source_beneath(&root, &path)?) {
             return Err(io::Error::new(
@@ -164,7 +167,7 @@ pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -
 }
 
 // realpath retains alternate-case spellings on some host filesystems.
-fn source_beneath(path: &Path, root: &Path) -> io::Result<bool> {
+pub(crate) fn source_beneath(path: &Path, root: &Path) -> io::Result<bool> {
     if path.starts_with(root) {
         return Ok(true);
     }

@@ -1,8 +1,11 @@
-//! Guarantee 48: a share reaches only its folder by path, and a project
-//! holding a protected path is refused.
+//! Guarantee 48: a share reaches only its folder by path, a read-only
+//! folder is read-only, and a project holding a protected path is refused.
 
+use std::collections::hash_map::RandomState;
 use std::fs;
+use std::hash::{BuildHasher, Hasher};
 use std::os::unix::fs::symlink;
+use std::path::Path;
 
 use e2e::{Project, TestEnv, default_image, tree};
 
@@ -109,8 +112,85 @@ fn a_share_reaches_only_its_folder_and_a_protected_path_is_refused() {
         projects.push(project);
     }
 
+    read_only_folder(&env, &projects[0]);
+
     #[cfg(target_os = "macos")]
     share_reaches_only_its_folder(&env, &projects[1]);
+}
+
+/// A read-only folder inside the state root is refused at the box start,
+/// before a box exists. With a fixture folder in its place, the same
+/// project's box reads it and cannot write it.
+// Sabotage (not run), refusal: in config.rs `admit_folder`, pass `false`
+// instead of `true` to `check_paths_outside`. The folder, a real directory
+// inside the state root that contains no protected path, then runs and
+// exits 0. This proves only the start check's direction "folder inside a
+// protected path".
+// Sabotage (not run), control: in `build_plan` only, push each folder
+// with `MountKind::Share`. On macOS the write then lands and the host
+// bytes differ; the read fails if the folder is dropped from the plan.
+fn read_only_folder(env: &TestEnv, project: &Project) {
+    // A configuration change applies only to a box not running.
+    let stop = project.pinfold(&["stop"]);
+    assert_eq!(stop.code, 0, "{stop:?}");
+    // A guest path and content no image holds.
+    let token = format!("{:016x}", RandomState::new().build_hasher().finish());
+    let guest = format!("/folder-{token}");
+    let content = format!("note {token}\n");
+    let folder = env.root().join("folder");
+    fs::create_dir(&folder).unwrap();
+    // A host must be its real path; on macOS the temporary root is not.
+    let folder = fs::canonicalize(&folder).unwrap();
+    fs::write(folder.join("note"), &content).unwrap();
+    let file = project.config_dir().join("pinfold.toml");
+    let kind = if cfg!(target_os = "macos") {
+        "share"
+    } else {
+        "disk"
+    };
+    // The settings `config edit` and the profile case left, and one folder.
+    let settings = |host: &Path| {
+        fs::write(
+            &file,
+            format!(
+                "profile = \"e2e-base\"\nmounts = [{{ host = \".\", kind = \"{kind}\" }}, {{ host = {:?}, guest = {guest:?} }}]\n",
+                host.to_str().unwrap()
+            ),
+        )
+        .unwrap();
+    };
+
+    // A real directory the earlier runs made inside the state root:
+    // refused, with no state written.
+    let inside = fs::canonicalize(env.state_home().join("pinfold/projects")).unwrap();
+    assert!(inside.is_dir(), "{inside:?}");
+    settings(&inside);
+    let before = tree(env.state_home());
+    let out = project.pinfold(&["--", "true"]);
+    assert_eq!(out.code, 125, "{out:?}");
+    assert!(
+        tokens(&out.stderr).any(|token| token == "host-path-in-project"),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(tree(env.state_home()), before);
+
+    // Control: the fixture folder in its place. The read prints the file;
+    // the write of bytes prints its errno, EROFS. Through a writable mount
+    // the bytes would reach the host file.
+    settings(&folder);
+    let out = project.pinfold(&[
+        "--",
+        "perl",
+        "-e",
+        "open(my $f, '<', \"$ARGV[0]/note\") or die \"read: $!\\n\"; print <$f>;
+         my $w;
+         if (open($w, '>>', \"$ARGV[0]/note\") and print {$w} \"box\\n\" and close($w)) { print \"written\\n\" } else { print 0 + $!, \"\\n\" }",
+        &guest,
+    ]);
+    assert_eq!(fs::read_to_string(folder.join("note")).unwrap(), content);
+    assert_eq!(out.code, 0, "{out:?}");
+    assert_eq!(out.stdout, format!("{content}30\n"));
 }
 
 /// In a running share, an outward symlink and paths outside it reach no

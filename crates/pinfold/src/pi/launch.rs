@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::io;
 use std::os::fd::BorrowedFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::runtime::Builder;
@@ -402,7 +402,7 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
         .or_insert(Env::Exact(utf8(guest, "project root")?.to_string()));
     let [home, project] = state::disk_names(id);
     let mut disks = vec![empty_writable_disk(home, Path::new(state::HOME))];
-    let mounts = match config.mount {
+    let mut mounts = match config.mount {
         ProjectMount::Disk => {
             disks.push(empty_writable_disk(project, guest));
             Vec::new()
@@ -413,6 +413,7 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
             kind: MountKind::Share,
         }],
     };
+    mounts.extend(config.folders.iter().cloned());
     Ok(Plan {
         profile: Some(config.profile.name.clone()),
         disks,
@@ -424,6 +425,37 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
         }),
         ..box_plan(config, id, image)?
     })
+}
+
+/// At a box start, refuse a folder destination at, inside or containing
+/// another's. The box layer refuses only equal destinations; a folder
+/// nested in the project or home would add a mount point there, on Apple
+/// in the host's project folder. Guests are canonical (configuration).
+pub(crate) fn check_folder_guests(config: &Config, root: &Path) -> io::Result<()> {
+    let mut taken = vec![
+        state::guest_root(config.mount, root).to_path_buf(),
+        PathBuf::from(state::HOME),
+    ];
+    if config.profile.share.is_some() {
+        taken.push(PathBuf::from("/opt/pinfold/profile"));
+    }
+    for folder in &config.folders {
+        if let Some(other) = taken
+            .iter()
+            .find(|other| folder.guest.starts_with(other) || other.starts_with(&folder.guest))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "spec: read-only folder guest {} overlaps {}",
+                    terminal_text(&folder.guest.to_string_lossy()),
+                    terminal_text(&other.to_string_lossy())
+                ),
+            ));
+        }
+        taken.push(folder.guest.clone());
+    }
+    Ok(())
 }
 
 /// The plan both a project box and a transient crossing box start from: the

@@ -435,6 +435,17 @@ as `config-changed`; stop the box to change it.
 For a single command, forward host variables with `PINFOLD_ENV_<NAME>`.
 It wins over `env`.
 
+To let the box read host files outside the project, such as notes or a
+dataset's documentation, add read-only folders after the project mount in
+the project's configuration. `host` is absolute or `~/…`, a real path
+with no links, outside the project; `guest` is where the box sees it.
+The box can read everything in the folder and send it to any allowed
+host. A change applies at the next box start.
+
+```toml
+mounts = [{ host = ".", kind = "share" }, { host = "~/notes/dataset", guest = "/notes" }]
+```
+
 ### GitHub access
 
 Give the box a token through `env` with `from`, as `GH_TOKEN` above, and

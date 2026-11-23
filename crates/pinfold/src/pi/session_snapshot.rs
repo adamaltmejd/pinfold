@@ -378,11 +378,14 @@ impl Snapshot {
 
     /// Resolve the project's configuration. A client reads each `from`
     /// value here, once, and a starting client its `op` values afterwards;
-    /// the owner passes the table its client sent.
+    /// the owner passes the table its client sent. Only a `start` touches
+    /// read-only folders on the host: a joining client compares them as
+    /// configured.
     pub(crate) fn resolve(
         root: &Path,
         expected_mount: Option<ProjectMount>,
         received: Option<Values>,
+        start: bool,
     ) -> io::Result<Resolved> {
         let roots = Roots::resolve()?;
         let context = Context::discover(root)?;
@@ -407,9 +410,16 @@ impl Snapshot {
         context.verify(config.mount)?;
         let id = state::project_id(root);
         let image = launch::resolve_image(&config, &id);
+        // A joining client is compared first: a changed folder list is
+        // `config-changed`, never this refusal.
+        if start {
+            launch::check_folder_guests(&config, root)?;
+        }
         let mut plan = launch::build_plan(&config, &id, root, &image)?;
         for mount in &mut plan.mounts {
-            mount.host = dirs::resolve_host_path(&mount.host)?;
+            if mount.kind == MountKind::Share {
+                mount.host = dirs::resolve_host_path(&mount.host)?;
+            }
         }
         for disk in &mut plan.disks {
             if let Some(from) = disk.from.as_mut() {
@@ -421,7 +431,20 @@ impl Snapshot {
         // equal snapshot names only sources its client checked.
         let check = received.is_none();
         let values = received.unwrap_or_else(|| Values::read(&plan));
-        crate::core::r#box::validate_project(&plan, check.then_some(&values), &config.profile)
+        // Only a start touches a folder on the host, and admits it before
+        // the box layer reads its contents. The snapshot holds each host as
+        // written, which a start requires to be its real path.
+        let mut checked = plan.clone();
+        if start {
+            for folder in &config.folders {
+                crate::config::admit_folder(root, &folder.host, &config.profile)?;
+            }
+        } else {
+            checked
+                .mounts
+                .retain(|mount| mount.kind != MountKind::Readonly);
+        }
+        crate::core::r#box::validate_project(&checked, check.then_some(&values), &config.profile)
             .map_err(io::Error::other)?;
         if !config.cpus.is_finite() {
             return Err(io::Error::other("spec-invalid: CPUs must be finite"));
