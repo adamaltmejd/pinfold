@@ -895,9 +895,28 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
     println!("pinfold clean: {action}");
     plan.print();
     if !dry_run {
-        plan.remove(runtime)?;
+        let (disk_count, unused) = (plan.disk_count, plan.unused);
+        let removed = plan.remove(runtime)?;
+        if disk_count > 0 {
+            if unused.is_none() {
+                println!("pinfold clean: disks kept (pinfold disk list)");
+            } else if removed == 0 {
+                println!(
+                    "pinfold clean: no idle project's disks removed; disks kept (pinfold disk list)"
+                );
+            } else {
+                println!(
+                    "pinfold clean: removed {} of idle projects; others kept (pinfold disk list)",
+                    disks_text(removed)
+                );
+            }
+        }
     }
     Ok(0)
+}
+
+fn disks_text(count: usize) -> String {
+    format!("{count} disk{}", if count == 1 { "" } else { "s" })
 }
 
 /// Disk categories and paths for one `clean` pass, measured before removal.
@@ -916,6 +935,7 @@ struct CleanPlan {
     project_disks: BTreeMap<String, Vec<String>>,
     /// Every disk's allocated bytes, a category of its own.
     disk_bytes: u64,
+    disk_count: usize,
     /// Recorded checkouts that are gone or moved; their state and disks
     /// stay until `--unused` or `disk rm`.
     moved: Vec<PathBuf>,
@@ -982,6 +1002,7 @@ impl CleanPlan {
             runs,
             project_disks,
             disk_bytes: disks.iter().map(|disk| disk.allocated).sum(),
+            disk_count: disks.len(),
             moved,
             unused,
         })
@@ -1008,19 +1029,39 @@ impl CleanPlan {
             human_size(self.build_cache_bytes)
         );
         println!("  project state: {}", human_size(self.project_state));
-        println!("  disks: {}", human_size(self.disk_bytes));
-        for root in &self.moved {
+        let disks = human_size(self.disk_bytes);
+        if self.disk_count == 0 {
+            println!("  disks: {disks}");
+        } else if self.unused.is_some() {
             println!(
-                "  checkout gone, state and disks kept: {}",
-                terminal_text(&root.to_string_lossy())
+                "  disks: {disks} in {}; --unused AGE removes those of projects not run for AGE (pinfold disk list)",
+                disks_text(self.disk_count)
             );
+            println!("    remove others with `pinfold disk rm NAME|--all`");
+        } else {
+            println!(
+                "  disks: {disks} in {}; clean keeps them (pinfold disk list)",
+                disks_text(self.disk_count)
+            );
+            println!(
+                "    remove with `pinfold clean --unused AGE` (projects not run for AGE) or `pinfold disk rm NAME|--all`"
+            );
+        }
+        // Under `--unused` an idle project's state and disks go too.
+        let moved = if self.unused.is_some() {
+            "checkout gone"
+        } else {
+            "checkout gone, state and disks kept"
+        };
+        for root in &self.moved {
+            println!("  {moved}: {}", terminal_text(&root.to_string_lossy()));
         }
     }
 
     /// Remove everything the plan measured, then the builds past each
     /// source's newest two. Image sizes are unmeasured: the runtime's image
-    /// list carries none.
-    fn remove(self, runtime: &dyn Runtime) -> io::Result<()> {
+    /// list carries none. Returns how many disks it removed.
+    fn remove(self, runtime: &dyn Runtime) -> io::Result<usize> {
         clean::prune_boxes(runtime, &self.boxes)?;
         clean::prune_leftover_states(runtime)?;
         if let Err(error) = image::service().purge_build_cache() {
@@ -1035,6 +1076,7 @@ impl CleanPlan {
             }
         }
         let mut disk_failure = None;
+        let mut removed = 0;
         if !locks.is_empty() {
             // All candidates stay locked through this one fresh snapshot.
             let live = clean::boxes(runtime)?.live_projects;
@@ -1046,12 +1088,16 @@ impl CleanPlan {
                     clean::remove_paths(vec![project.dir.clone()])?;
                     // A disk a box attaches stays; `disk::remove` checks.
                     for name in self.project_disks.get(&project.id).into_iter().flatten() {
-                        if let Err(error) = disk::remove(runtime, name) {
-                            let _ = writeln!(
-                                io::stderr(),
-                                "pinfold clean: disk {name:?}: {error}; kept"
-                            );
-                            disk_failure.get_or_insert(error);
+                        match disk::remove(runtime, name) {
+                            Ok(disk::Removal::Removed { existed: true }) => removed += 1,
+                            Ok(_) => {}
+                            Err(error) => {
+                                let _ = writeln!(
+                                    io::stderr(),
+                                    "pinfold clean: disk {name:?}: {error}; kept"
+                                );
+                                disk_failure.get_or_insert(error);
+                            }
                         }
                     }
                 }
@@ -1061,7 +1107,7 @@ impl CleanPlan {
         if let Err(error) = clean::keep_two_images(image::service(), None) {
             let _ = writeln!(io::stderr(), "pinfold clean: images: {error}; kept");
         }
-        disk_failure.map_or(Ok(()), Err)
+        disk_failure.map_or(Ok(removed), Err)
     }
 
     /// Whether `--unused` selects the project: not run for that long and no
