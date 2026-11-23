@@ -412,8 +412,13 @@ When `up` fails after it began creating, it removes what it made, prints one
 
 Every `up` ends its stdout with exactly one of `refused`, `failed` or
 `down`.
-A tag resolving to a different image during startup fails with
-`image-changed` in `detail` before `ready`.
+On Linux the box boots the image id `up` resolved, under a lease taken at
+resolution, so a moved tag cannot change what runs. On macOS the runtime is
+given the reference; a box it reports running a different image than the
+one resolved fails with `image-changed` in `detail` before `ready`. A
+project start whose image no longer matches its checked configuration fails
+the same way on both platforms. No test covers either check: each window
+lies inside one start, a timing race.
 
 `down` of an absent, empty or flag-like name other than `--help` and `-h`,
 which print help, exits 0, prints nothing and
