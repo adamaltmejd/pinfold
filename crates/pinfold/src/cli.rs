@@ -898,14 +898,17 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
         let (disk_count, unused) = (plan.disk_count, plan.unused);
         let removed = plan.remove(runtime)?;
         if disk_count > 0 {
-            let kept = disks_text(disk_count - removed);
-            if unused.is_some() {
+            if unused.is_none() {
+                println!("pinfold clean: disks kept (pinfold disk list)");
+            } else if removed == 0 {
                 println!(
-                    "pinfold clean: removed {} of idle projects; kept {kept} (pinfold disk list)",
-                    disks_text(removed)
+                    "pinfold clean: no idle project's disks removed; disks kept (pinfold disk list)"
                 );
             } else {
-                println!("pinfold clean: kept {kept}, not removed (pinfold disk list)");
+                println!(
+                    "pinfold clean: removed {} of idle projects; others kept (pinfold disk list)",
+                    disks_text(removed)
+                );
             }
         }
     }
@@ -1030,12 +1033,11 @@ impl CleanPlan {
         if self.disk_count == 0 {
             println!("  disks: {disks}");
         } else if self.unused.is_some() {
-            let idle: usize = self.project_disks.values().map(Vec::len).sum();
             println!(
-                "  disks: {disks} in {}; removes {idle} of idle projects, keeps the rest (pinfold disk list)",
+                "  disks: {disks} in {}; --unused AGE removes those of projects not run for AGE (pinfold disk list)",
                 disks_text(self.disk_count)
             );
-            println!("    remove any disk with `pinfold disk rm NAME|--all`");
+            println!("    remove others with `pinfold disk rm NAME|--all`");
         } else {
             println!(
                 "  disks: {disks} in {}; clean keeps them (pinfold disk list)",
@@ -1045,11 +1047,14 @@ impl CleanPlan {
                 "    remove with `pinfold clean --unused AGE` (projects not run for AGE) or `pinfold disk rm NAME|--all`"
             );
         }
+        // Under `--unused` an idle project's state and disks go too.
+        let moved = if self.unused.is_some() {
+            "checkout gone"
+        } else {
+            "checkout gone, state and disks kept"
+        };
         for root in &self.moved {
-            println!(
-                "  checkout gone, state and disks kept: {}",
-                terminal_text(&root.to_string_lossy())
-            );
+            println!("  {moved}: {}", terminal_text(&root.to_string_lossy()));
         }
     }
 
