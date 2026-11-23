@@ -1042,7 +1042,9 @@ network listener, no token: the socket identifies the box.
     most once a minute per box; a request on a lapsed token is refused and
     logged `login lapsed`. An ask that encounters the held login lock prints
     `login-busy` once on stderr before waiting. Lock acquisition and helper
-    exchange share a 30-second deadline. Cancellation kills and reaps the helper. Helper
+    exchange share a 30-second deadline. The helper runs in a process group of
+    its own; the exchange's end, cancellation included, kills that group and
+    reaps the helper. Helper
     stdout is bounded to 256 KiB total and 64 KiB per line; helper errors
     never include its output. The box gets `/etc/codex/config.toml`, mounted
     read-only, selecting a custom provider with `base_url =
