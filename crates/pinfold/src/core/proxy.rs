@@ -457,35 +457,24 @@ fn plain(
     request: &Plain,
     connection: &Connection,
 ) {
-    if request.expect == Some(false) {
-        return refuse(
+    let deny = |client: &mut UnixStream, code: u16, reason: &'static str| {
+        refuse(
             client,
             log,
             &request.host,
             Some(&request.method),
-            417,
-            "expectation unsupported",
-        );
+            code,
+            reason,
+        )
+    };
+    if request.expect == Some(false) {
+        return deny(client, 417, "expectation unsupported");
     }
     if request.port != 80 {
-        return refuse(
-            client,
-            log,
-            &request.host,
-            Some(&request.method),
-            403,
-            "port not allowed",
-        );
+        return deny(client, 403, "port not allowed");
     }
     if network::literal(&request.host).is_some() {
-        return refuse(
-            client,
-            log,
-            &request.host,
-            Some(&request.method),
-            403,
-            "ip literal",
-        );
+        return deny(client, 403, "ip literal");
     }
     let host = request.host.to_ascii_lowercase();
     if let Some(upstream) = rules.routes.get(&host) {
@@ -493,14 +482,7 @@ fn plain(
         return;
     }
     if !rules.allows(&host) {
-        return refuse(
-            client,
-            log,
-            &request.host,
-            Some(&request.method),
-            403,
-            "not allowlisted",
-        );
+        return deny(client, 403, "not allowlisted");
     }
     let Some(address) = resolve_checked(
         client,
@@ -550,6 +532,16 @@ fn route(
         });
         record(log, &request.host, "allowed", "route", Some(fields))
     };
+    let deny = |client: &mut UnixStream, code: u16, reason: &'static str| {
+        refuse(
+            client,
+            log,
+            &request.host,
+            Some(&request.method),
+            code,
+            reason,
+        )
+    };
     let login_policy = matches!(
         upstream,
         Upstream::Inject { login: true, .. } | Upstream::Codex { .. }
@@ -558,14 +550,7 @@ fn route(
         match login_removals(request) {
             Ok(remove) => remove,
             Err((status, reason)) => {
-                return refuse(
-                    client,
-                    log,
-                    &request.host,
-                    Some(&request.method),
-                    status,
-                    reason,
-                );
+                return deny(client, status, reason);
             }
         }
     } else {
@@ -579,14 +564,7 @@ fn route(
         Upstream::Codex { target, login } => match login.headers(&connection.control.cancelled) {
             Some(headers) => (target, &target.authority, Cow::Owned(headers)),
             None => {
-                return refuse(
-                    client,
-                    log,
-                    &request.host,
-                    Some(&request.method),
-                    403,
-                    "login lapsed",
-                );
+                return deny(client, 403, "login lapsed");
             }
         },
     };
@@ -787,16 +765,16 @@ fn parse_plain(
                 let members = header
                     .value
                     .split(|byte| *byte == b',')
-                    .map(|member| {
+                    .map(|mut member| {
                         // SP and HTAB only: other bytes, U+00A0 included,
                         // make another expectation.
-                        let blank = |byte: &u8| *byte == b' ' || *byte == b'\t';
-                        let start = member.iter().position(|b| !blank(b));
-                        let end = member.iter().rposition(|b| !blank(b));
-                        match (start, end) {
-                            (Some(start), Some(end)) => &member[start..=end],
-                            _ => &[][..],
+                        while let [b' ' | b'\t', rest @ ..] = member {
+                            member = rest;
                         }
+                        while let [rest @ .., b' ' | b'\t'] = member {
+                            member = rest;
+                        }
+                        member
                     })
                     .filter(|member| !member.is_empty());
                 let (mut any, mut all) = expect.unwrap_or((false, true));
