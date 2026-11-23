@@ -1521,11 +1521,11 @@ fn trim_builder() -> io::Result<()> {
     // The guest's ext4 trims freed blocks only once the journal has committed
     // their release; without the sync a trim just after a prune returns
     // little or nothing (#417). Sync only the root filesystem: a plain sync
-    // also waits on the builder's VirtioFS mounts, without bound. A failed
-    // sync still trims, and is reported as a failed trim.
-    let synced = output(&["container", "exec", "buildkit", "sync", "-f", "/"]);
-    output(&["container", "clean", "buildkit"])?;
-    synced.map(drop)
+    // also waits on the builder's VirtioFS mounts, without bound. The sync is
+    // best-effort: BusyBox does not report syncfs errors, and the trim's
+    // result is what counts.
+    let _ = output(&["container", "exec", "buildkit", "sync", "-f", "/"]);
+    output(&["container", "clean", "buildkit"]).map(drop)
 }
 
 impl ImageService for Apple {
