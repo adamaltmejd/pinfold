@@ -92,7 +92,7 @@ impl ProjectMount {
 # CPUs and memory for the box:
 # cpus = {DEFAULT_CPUS}
 # memory = \"{DEFAULT_MEMORY}\"
-# Variables in the box: a value, {{ from = \"VAR\" }} for the host's VAR, or {{ op = \"op://VAULT/ITEM/FIELD\" }}:
+# Variables in the box: a value, {{ from = \"VAR\" }} for the host's VAR, or {{ from = \"op://VAULT/ITEM/FIELD\" }} for 1Password:
 # env = {{ LANG = \"C.UTF-8\", API_KEY = {{ from = \"MY_API_KEY\" }} }}
 # A Containerfile beside this file builds the project's own image.
 

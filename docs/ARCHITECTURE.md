@@ -2196,8 +2196,9 @@ sets cannot be unset above it. A configured `HOME` is ignored:
 the project box sets it, as it does the always-applied names, and
 `config --json` omits it.
 
-A `from` value is read once per launch, from the environment of the
-client whose launch starts a new box; a joining or keeping client reads
+A `from` host variable is read once per launch, from the environment of
+the client whose launch starts a new box, and a 1Password reference once
+by that client (Process interface); a joining or keeping client reads
 its current values only for the admission comparison. A `from` name the
 box spec refuses (Process interface) refuses the start before any owner
 starts. A missing variable

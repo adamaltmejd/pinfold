@@ -413,8 +413,8 @@ See [Configuration](docs/ARCHITECTURE.md#configuration) for layers, keys and def
 
 A profile's `pinfold.toml` or the project's configuration sets the box's
 environment with `env`. A literal is plain configuration and shows in
-`pinfold config --json`; `from` reads the value from your shell when the box
-starts; pinfold never writes it down, and neither does the box runtime.
+`pinfold config --json`; `from` reads a host variable, or a 1Password
+reference (`from = "op://…"`), when the box starts; pinfold never writes it down, and neither does the box runtime.
 Every `env` value is readable by any process in the box, so credentials
 belong in a route ([GitHub access](#github-access)).
 
