@@ -448,6 +448,9 @@ the project mount is `kind = "disk"`.
 mounts = [{ host = ".", kind = "share" }, { host = "~/notes/dataset", guest = "/notes" }]
 ```
 
+On macOS a folder with `kind = "share"` is one the box can also write,
+such as an outbox you open in Finder while the box runs.
+
 For disposable Rust build outputs in guest memory:
 
 ```sh

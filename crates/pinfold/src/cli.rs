@@ -1532,7 +1532,12 @@ pub fn config(args: &[String]) -> io::Result<i32> {
     println!("Files     {}", project_files(config.mount, &root));
     for folder in &config.folders {
         println!(
-            "          Read-only: {} -> {}{}",
+            "          {}: {} -> {}{}",
+            if folder.kind == crate::core::plan::MountKind::Share {
+                "Shared"
+            } else {
+                "Read-only"
+            },
             terminal_text(&folder.host.to_string_lossy()),
             terminal_text(&folder.guest.to_string_lossy()),
             if cfg!(target_os = "linux") {
@@ -1661,7 +1666,7 @@ fn config_report(
             "id": project,
             "home": crate::pi::state::HOME,
             "mount": { "kind": config.mount, "host": utf8(root, "project root")?, "guest": utf8(crate::pi::state::guest_root(config.mount, root), "project root")? },
-            "folders": config.folders.iter().map(|folder| Ok(serde_json::json!({ "host": utf8(&folder.host, "read-only folder")?, "guest": utf8(&folder.guest, "read-only folder")?, "kind": "readonly" }))).collect::<io::Result<Vec<_>>>()?,
+            "folders": config.folders.iter().map(|folder| Ok(serde_json::json!({ "host": utf8(&folder.host, "folder")?, "guest": utf8(&folder.guest, "folder")?, "kind": folder.kind }))).collect::<io::Result<Vec<_>>>()?,
             "disks": { "home": home_disk, "project": if config.mount == crate::config::ProjectMount::Disk { Some(project_disk) } else { None } },
         },
     }))

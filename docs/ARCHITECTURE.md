@@ -69,15 +69,15 @@ deliberately grants access to selected host files.
 | No privilege | Box work runs as the host uid with an empty capability bounding set; read-only root, no setuid files. On Linux only the guest's PID 1 stays root (Always applied). |
 | VMM jail | On Linux the VMM runs as the user in a jail the box owner builds: it reaches only its own VM's files. |
 | Host files | Direct guest filesystem access reaches only declared mounts and disks. A writable share exposes its host files, Git metadata included, to modification. Share admission rejects the sources and destinations specified under Mounts. Disk crossing and explicit export retain their separate rules. |
-| Profiles and configuration | Directory admission excludes protected configuration and profile paths from projects, their read-only folders and shares (Configuration, Mounts). |
+| Profiles and configuration | Directory admission excludes protected configuration and profile paths from projects, their folders and shares (Configuration, Mounts). |
 
 Not protected:
-- A project's read-only folder (Configuration) exposes all its readable
+- A project's folder (Configuration) exposes all its readable
   contents to the box, which can send them to any allowed host. A folder
   whose path lies inside a directory another box can write, or under a
   home directory reached through such a directory, is chosen by that box.
   A bind mount of part of a project or a protected path is not recognized
-  as inside it.
+  as inside it. A share folder is also a share.
 - A share exposes all its readable contents, including ignored and untracked
   files, Git history and repository configuration. Allowed model endpoints
   can receive those contents. Working files have no protection against
@@ -1810,7 +1810,7 @@ its project.
   at `/project`, is created empty and is reused across owners; code enters
   it only through the box or an explicit push (Git). Git metadata directories and operational discovery errors never
   become non-Git projects. Independent nested repositories retain their own
-  project discovery. The project's read-only folders (Configuration)
+  project discovery. The project's folders (Configuration)
   appear at their guest paths.
 - **Git metadata:** For a share, pinfold reads Git metadata as data and never
   executes Git on the host. Main-root and linked-worktree topology, including
@@ -2125,23 +2125,26 @@ outside Git, `config edit` included, is refused as `not-git`.
 The project mount is required. `config edit` creates
 `mounts = [{ host = ".", kind = "share" }]` on macOS and
 `mounts = [{ host = ".", kind = "disk" }]` on Linux. macOS accepts either
-kind; Linux accepts only `disk`. Further entries are read-only folders,
+kind; Linux accepts only `disk`. Further entries are folders,
 `{ host = "PATH", guest = "/ABS/PATH" }`, with `kind = "readonly"` the
-default and the only kind accepted. `host` is absolute or `~/…`, which
+default. macOS also accepts `kind = "share"`; Linux refuses a share
+folder as `spec`. `host` is absolute or `~/…`, which
 expands under the canonical home; a relative host refuses as `spec`.
 `host` and `guest` must be canonical in form: no `.` or `..` component
 and no repeated or trailing slash, else `spec`. Each folder becomes a
-read-only mount of the project box (Mounts) at its host as written,
-which is its startup configuration. At each box start, before its
+mount of its kind in the project box (Mounts) at its host as written,
+which is its startup configuration; a share folder also passes share
+admission. At each box start, before its
 contents are read, the host must be its own real path, with no link in
 it (`spec`, naming the real path), UTF-8 (`path-not-utf8`), not at or
 inside the project root by device and inode (`spec`: a box can write
-the project, so a link there could choose the folder), and must not
-overlap a protected path (below); the box layer then checks it as a
+the project, so a link there could choose the folder), for a share
+folder not containing the project root by device and inode (`spec`),
+and must not overlap a protected path (below); the box layer then checks it as a
 mount host. A link swapped into a folder's path after a start is refused
 at the next start; a joining client does not touch folders on the host.
-On a macOS share project box preparation resolves the host again, which
-leaves a real path unchanged. A destination at, inside or containing
+On macOS a box with any share has preparation resolve the host again,
+which leaves a real path unchanged. A destination at, inside or containing
 the project's guest root, `/home/pinfold`, the profile's
 `/opt/pinfold/profile` or another folder's refuses as `spec` at a
 start. Other mount shapes refuse as `spec`. A change applies at the next
@@ -2152,11 +2155,11 @@ each start copies each folder into an image in the box's state, taking
 time and host disk space in proportion to its size.
 
 A project is refused as `host-path-in-project` when any of the protected
-paths listed below resolves inside it, or when a read-only folder of it
+paths listed below resolves inside it, or when a folder of it
 is, lies inside or contains one (a folder reached through a link refuses
 as `spec` first). This check applies before project
 state or configuration is created, whether or not the project is a Git
-checkout. A read-only folder is checked at each box start, before a
+checkout. A folder is checked at each box start, before a
 box or disk is created.
 
 Protected paths are pinfold's configuration, state or cache root, the
@@ -2169,7 +2172,7 @@ directory. Resolution follows symlinked ancestors
 too, including missing suffixes and a dangling profile share symlink:
 box content crosses into the project and must not reach them.
 `-- CMD`, `start`, the Git remote, `build` and `config edit` check it, and `doctor`
-reports it as a finding. `config edit` skips the read-only folders, so a
+reports it as a finding. `config edit` skips the folders, so a
 refused one can be edited out; `build`, the Git remote and `doctor`
 skip them too. Project clients perform admission checks before
 automatic maintenance or notices. Other working commands may already have
@@ -2227,7 +2230,7 @@ variable, without its value. Secrets belong in `from` or `op`.
 | `image` | — | — | Local image reference, independent of the profile; project overrides profile |
 | `allow` | `PINFOLD_ALLOW` | `api.anthropic.com`, `platform.claude.com`, `api.openai.com`, `auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`, `registry.npmjs.org`, `pi.dev` | Hosts the proxy lets through |
 | `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes: `name = "host:port"` for a host service, an injecting route `name = { to = "https://…", headers = { Authorization = { from = "VAR", prefix = "Bearer " } } }`, or a pi login route `name = { login = "pi", provider = "openrouter", from = "OPENROUTER_API_KEY" }` (see Egress proxy) |
-| `mounts` | — | — | The project mount, then read-only folders (above); project file only |
+| `mounts` | — | — | The project mount, then folders (above); project file only |
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
 | `env` | — | `{}` | The box's variables: `NAME = "literal"`, `NAME = { from = "VAR" }` read from the caller's environment at start, or `NAME = { op = "op://…" }` read from 1Password at start; the box spec's `env` (Process interface) |
@@ -2243,7 +2246,7 @@ An unknown key in the project's file or a profile's `pinfold.toml` is
 refused, naming the file and the key. `mounts` in a profile's file and
 `base` in the project's file are refused.
 
-`pinfold config` summarizes the project folder, mount, read-only folders, selected profile and
+`pinfold config` summarizes the project folder, mount, folders, selected profile and
 its base chain (with the profile the project's file names when
 `PINFOLD_PROFILE` overrides it), the selected profile's directory or that
 it is built in, the settings path, and the image and its availability.
@@ -2253,8 +2256,8 @@ unavailable. `doctor` shows the same profile and settings lines.
 configured box variable to its literal or its `{"from": VAR}`, a `PINFOLD_ENV_<NAME>`
 as `{"from": "PINFOLD_ENV_<NAME>"}`; the box's default `PINFOLD_PROJECT` is not listed. Its `project` reports its id, home path
 and `mount`, containing `kind`, canonical `host` and `guest` (Project mount).
-`project.folders` lists each read-only folder as `{host, guest, kind}`,
-`host` as configured with `~/` expanded, `kind` `readonly`.
+`project.folders` lists each folder as `{host, guest, kind}`,
+`host` as configured with `~/` expanded, `kind` `readonly` or `share`.
 `project.disks.home` names the persistent home disk. `project.disks.project`
 names the disk for a disk project and is null for a share. `config` is the
 project’s configuration file. `profile_chain` lists the selected profile,

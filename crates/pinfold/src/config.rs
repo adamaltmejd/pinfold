@@ -80,7 +80,7 @@ impl ProjectMount {
         format!(
             "{chosen}mounts = [{{ host = \".\", kind = \"{}\" }}]
 # kind: {kinds}.
-# Host folders (absolute or ~/, real paths with no links) the box can only read follow the project entry: {{ host = \"~/notes\", guest = \"/notes\" }}
+# Host folders (absolute or ~/, real paths with no links) the box can only read follow the project entry: {{ host = \"~/notes\", guest = \"/notes\" }}{folder_share}
 
 # Optional settings: uncomment a line to set it.
 {example}# Local image to run instead of the profile's (not with a Containerfile beside this file):
@@ -106,12 +106,17 @@ impl ProjectMount {
 # login = \"claude\"
 # from = \"CLAUDE_SETUP_TOKEN\"
 ",
-            self.as_str()
+            self.as_str(),
+            folder_share = if cfg!(target_os = "macos") {
+                "\n# A folder with kind = \"share\" is one the box can also write."
+            } else {
+                ""
+            }
         )
     }
 
-    /// The project mount, then each further entry as a read-only mount
-    /// whose host is as written.
+    /// The project mount, then each further entry as a folder mount whose
+    /// host is as written.
     fn parse(value: Option<&toml::Value>, source: &str) -> io::Result<(Self, Vec<Mount>)> {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -122,7 +127,7 @@ impl ProjectMount {
         let refused = || {
             invalid(
                 source,
-                "spec: mounts must start with [{ host = \".\", kind = \"share\" }] or [{ host = \".\", kind = \"disk\" }], then only read-only folders { host = \"PATH\", guest = \"/PATH\" }",
+                "spec: mounts must start with [{ host = \".\", kind = \"share\" }] or [{ host = \".\", kind = \"disk\" }], then only folders { host = \"PATH\", guest = \"/PATH\" }",
             )
         };
         let Some([first, rest @ ..]) = value.and_then(toml::Value::as_array).map(Vec::as_slice)
@@ -143,10 +148,16 @@ impl ProjectMount {
         }
         let mut folders = Vec::new();
         for entry in rest {
-            match entry.clone().try_into::<Mount>() {
-                Ok(folder) if folder.kind == MountKind::Readonly => folders.push(folder),
-                _ => return Err(refused()),
+            let Ok(folder) = entry.clone().try_into::<Mount>() else {
+                return Err(refused());
+            };
+            if folder.kind == MountKind::Share && cfg!(target_os = "linux") {
+                return Err(invalid(
+                    source,
+                    "spec: share mounts are unsupported on Linux",
+                ));
             }
+            folders.push(folder);
         }
         Ok((mount.kind, folders))
     }
@@ -312,7 +323,7 @@ impl Config {
                 invalid(
                     &source,
                     &format!(
-                        "spec: read-only folder {} {detail}",
+                        "spec: folder {} {detail}",
                         terminal_text(&folder.host.to_string_lossy())
                     ),
                 )
@@ -450,12 +461,15 @@ impl Config {
 /// must be its own real path, with no link a box could have planted to
 /// choose another folder. That path must be UTF-8, lie outside the project
 /// and clear every protected path, since the box could read pinfold's own state, the egress log included.
-pub(crate) fn admit_folder(root: &Path, host: &Path, profile: &Profile) -> io::Result<()> {
+/// A share folder must not contain the project either: through it a disk
+/// project's box would write the host checkout, bypassing Git.
+pub(crate) fn admit_folder(root: &Path, folder: &Mount, profile: &Profile) -> io::Result<()> {
+    let host = folder.host.as_path();
     let refused = |detail: &str| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
-                "spec: read-only folder {} {detail}",
+                "spec: folder {} {detail}",
                 terminal_text(&host.to_string_lossy())
             ),
         )
@@ -468,9 +482,13 @@ pub(crate) fn admit_folder(root: &Path, host: &Path, profile: &Profile) -> io::R
         )));
     }
     // The box layer checks the rest of the path's form, and the directory.
-    crate::pi::launch::utf8(host, "read-only folder")?;
-    if crate::core::mounts::source_beneath(host, &fs::canonicalize(root)?)? {
+    crate::pi::launch::utf8(host, "folder")?;
+    let project = fs::canonicalize(root)?;
+    if crate::core::mounts::source_beneath(host, &project)? {
         return Err(refused("lies inside the project"));
+    }
+    if folder.kind == MountKind::Share && crate::core::mounts::source_beneath(&project, host)? {
+        return Err(refused("is a share that contains the project"));
     }
     check_paths_outside(root, host, Some(profile), true)
 }
@@ -483,7 +501,7 @@ pub(crate) fn check_roots_outside(root: &Path) -> io::Result<()> {
 }
 
 /// Refuse `checked`, the root of the project at `root` or one of its
-/// read-only folders, when it holds pinfold's own configuration, state or
+/// folders, when it holds pinfold's own configuration, state or
 /// cache, the project's configuration, or what `profile` reads, before any
 /// project state is created: box content crosses into the project, so it
 /// must not reach them. Each file is named too, since resolving its
@@ -538,7 +556,7 @@ struct Layer {
     /// A profile's file only; core resolves the chain it names.
     base: Option<String>,
     image: Option<String>,
-    /// Checked whole against the project mount and read-only folders, so
+    /// Checked whole against the project mount and folders, so
     /// any other value is refused as `spec`.
     mounts: Option<toml::Value>,
     allow: Option<Vec<String>>,
