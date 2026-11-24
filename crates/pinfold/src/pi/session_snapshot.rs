@@ -378,7 +378,7 @@ impl Snapshot {
     /// Resolve the project's configuration. A client reads each `from`
     /// value here, once, and a starting client its `op` values afterwards;
     /// the owner passes the table its client sent. Only a `start` touches
-    /// read-only folders on the host: a joining client compares them as
+    /// folders on the host: a joining client compares them as
     /// configured.
     pub(crate) fn resolve(
         root: &Path,
@@ -415,7 +415,9 @@ impl Snapshot {
             launch::check_folder_guests(&config, root)?;
         }
         let mut plan = launch::build_plan(&config, &id, root, &image)?;
-        for mount in &mut plan.mounts {
+        // The folders are the plan's last mounts, held as written.
+        let project_mounts = plan.mounts.len() - config.folders.len();
+        for mount in &mut plan.mounts[..project_mounts] {
             if mount.kind == MountKind::Share {
                 mount.host = dirs::resolve_host_path(&mount.host)?;
             }
@@ -439,9 +441,7 @@ impl Snapshot {
                 crate::config::admit_folder(root, &folder.host, &config.profile)?;
             }
         } else {
-            checked
-                .mounts
-                .retain(|mount| mount.kind != MountKind::Readonly);
+            checked.mounts.truncate(project_mounts);
         }
         crate::core::r#box::validate_project(&checked, check.then_some(&values), &config.profile)
             .map_err(io::Error::other)?;

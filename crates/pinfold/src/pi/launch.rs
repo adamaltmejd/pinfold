@@ -444,7 +444,7 @@ pub(crate) fn check_folder_guests(config: &Config, root: &Path) -> io::Result<()
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "spec: read-only folder guest {} overlaps {}",
+                    "spec: folder guest {} overlaps {}",
                     terminal_text(&folder.guest.to_string_lossy()),
                     terminal_text(&other.to_string_lossy())
                 ),
