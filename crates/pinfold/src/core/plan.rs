@@ -97,9 +97,8 @@ pub struct Inject {
     pub headers: BTreeMap<String, Header>,
 }
 
-/// One injected header: `prefix` then the value of its [`Source`], or with
-/// `basic` the Basic credential for that user and the value. Only the
-/// variable's name or the reference is ever written down.
+/// One injected header: `prefix` then the value of its [`Source`]. Only
+/// the variable's name or the reference is ever written down.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Header {
@@ -110,12 +109,6 @@ pub struct Header {
         skip_serializing_if = "Option::is_none"
     )]
     pub prefix: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub basic: Option<String>,
 }
 
 /// Where a secret's value comes from, as a `from` key names it: a
@@ -228,18 +221,6 @@ impl Inject {
                     "route header {name:?}: its prefix holds CR, LF or NUL"
                 )));
             }
-            if let Some(user) = &header.basic {
-                if header.prefix.is_some() {
-                    return Err(invalid(format!(
-                        "route header {name:?}: takes a prefix or basic, not both"
-                    )));
-                }
-                if user.is_empty() || user.contains(|c: char| c == ':' || c.is_ascii_control()) {
-                    return Err(invalid(format!(
-                        "route header {name:?}: its basic user is empty or holds : or a control character"
-                    )));
-                }
-            }
         }
         Ok(target)
     }
@@ -275,10 +256,7 @@ impl Inject {
                     source.name()
                 )));
             }
-            let value = match &header.basic {
-                Some(user) => format!("Basic {}", base64(format!("{user}:{value}").as_bytes())),
-                None => format!("{}{value}", header.prefix.as_deref().unwrap_or_default()),
-            };
+            let value = format!("{}{value}", header.prefix.as_deref().unwrap_or_default());
             headers.push((name.clone(), value));
         }
         Ok((target, headers))
@@ -382,6 +360,7 @@ impl Login {
         let default = match self.login.as_str() {
             "claude" => "https://api.anthropic.com",
             "codex" => "https://chatgpt.com",
+            "github" => "https://github.com",
             "pi" => self.pi_provider()?.origin,
             login => return Err(invalid(format!("login {login:?} is not supported"))),
         };
@@ -397,6 +376,30 @@ impl Login {
     /// Whether this is a pi login, whose box gets pinfold's pi extension.
     pub fn is_pi(&self) -> bool {
         self.login == "pi"
+    }
+
+    /// Whether this is a github login, served at [`GITHUB_NAMES`] rather
+    /// than its own name.
+    pub fn is_github(&self) -> bool {
+        self.login == "github"
+    }
+
+    /// The proxy names this route serves, each with the origin it dials
+    /// and the path put before each request's. Holds no credential.
+    pub fn served<'a>(
+        &'a self,
+        route: &'a str,
+    ) -> Result<Vec<(&'a str, &'a str, &'static str)>, String> {
+        let origin = self.origin()?;
+        if !self.is_github() {
+            return Ok(vec![(route, origin, "")]);
+        }
+        let [git_name, api_name] = GITHUB_NAMES;
+        let api = match self.to {
+            Some(_) => (api_name, origin, "/api/v3"),
+            None => (api_name, "https://api.github.com", ""),
+        };
+        Ok(vec![(git_name, origin, ""), api])
     }
 
     /// Whether the proxy takes this login's headers from the host's Codex
@@ -463,13 +466,10 @@ impl Login {
         })
     }
 
-    /// claude's or pi's dialed target and credential header, from `values`.
-    /// The target and the value rules are [`Inject::resolve`]'s.
-    pub fn resolve(
-        &self,
-        route: &str,
-        values: &Values,
-    ) -> Result<(Target, Vec<(String, String)>), String> {
+    /// claude's, github's or pi's served names, each with its dialed target
+    /// and credential header, from `values`. The target and the value rules
+    /// are [`Inject::resolve`]'s.
+    pub fn resolve(&self, route: &str, values: &Values) -> Result<Vec<Served>, String> {
         let (header, prefix) = if self.is_pi() {
             match self.pi_provider()?.credential {
                 PiCredential::Key { header, prefix, .. } => (header, prefix),
@@ -477,6 +477,8 @@ impl Login {
                     return Err("its token comes from the host's Codex login".to_string());
                 }
             }
+        } else if self.is_github() {
+            ("Authorization", "")
         } else {
             ("Authorization", "Bearer ")
         };
@@ -500,12 +502,49 @@ impl Login {
                 Header {
                     from: source.name().to_string(),
                     prefix: (!prefix.is_empty()).then(|| prefix.to_string()),
-                    basic: None,
                 },
             )]),
         };
-        inject.resolve(route, values)
+        let (_, headers) = inject.resolve(route, values)?;
+        if self.is_github() && headers.is_empty() {
+            return Err(values.missing(&source));
+        }
+        let mut served = Vec::new();
+        for (name, origin, base_path) in self.served(route)? {
+            let headers = match headers.first() {
+                Some((_, token)) if self.is_github() && name == GITHUB_NAMES[0] => {
+                    let basic = base64(format!("x-access-token:{token}").as_bytes());
+                    vec![(header.to_string(), format!("Basic {basic}"))]
+                }
+                Some((_, token)) if self.is_github() => {
+                    vec![(header.to_string(), format!("Bearer {token}"))]
+                }
+                _ => headers.clone(),
+            };
+            served.push(Served {
+                name: name.to_string(),
+                // `inject.resolve` checked `to`; GitHub's API origin parses.
+                target: parse_target(origin).expect("a checked login origin"),
+                base_path,
+                headers,
+            });
+        }
+        Ok(served)
     }
+}
+
+/// A github login's proxy names, git's then the API's. Fixed: `gh` speaks
+/// plain HTTP only to `github.localhost`, an undocumented `gh` behaviour.
+pub const GITHUB_NAMES: [&str; 2] = ["github.localhost", "api.github.localhost"];
+
+/// One proxy name a login route serves: where it dials, the path put
+/// before each request's, and the credential headers. No `Debug`: the
+/// headers hold a credential.
+pub struct Served {
+    pub name: String,
+    pub target: Target,
+    pub base_path: &'static str,
+    pub headers: Vec<(String, String)>,
 }
 
 /// The host values a plan's sources name, keyed by source. The process
@@ -988,10 +1027,16 @@ impl Plan {
             let mut pi_providers = BTreeSet::new();
             let mut route_names = BTreeSet::new();
             for (name, route) in &egress.routes {
-                if !route_names.insert(name.to_ascii_lowercase()) {
-                    return Err(invalid(format!(
-                        "route {name:?} duplicates a name ignoring ASCII case"
-                    )));
+                let served = match route {
+                    Route::Login(login) => login.served(name)?,
+                    _ => vec![(name.as_str(), "", "")],
+                };
+                for (name, _, _) in served {
+                    if !route_names.insert(name.to_ascii_lowercase()) {
+                        return Err(invalid(format!(
+                            "route {name:?} duplicates a name ignoring ASCII case"
+                        )));
+                    }
                 }
                 match route {
                     Route::Address(address) => {
@@ -1025,6 +1070,15 @@ impl Plan {
                             return Err(invalid(format!(
                                 "login route {name:?} is a second {} login route",
                                 login.login
+                            )));
+                        }
+                        if login.is_github()
+                            && let Some((variable, _)) = login::GITHUB_ENV
+                                .iter()
+                                .find(|(variable, _)| self.env.contains_key(*variable))
+                        {
+                            return Err(invalid(format!(
+                                "env {variable} is set by the github login route {name:?}"
                             )));
                         }
                     }

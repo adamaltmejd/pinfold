@@ -49,15 +49,11 @@ fn base64(text: &str) -> String {
         .collect()
 }
 
-/// The user of the injecting route's `basic` header. With the Claude
-/// login's length, its Basic credential holds `+` and `/` and ends in `==`.
-const BASIC_USER: &str = "??>???e2e-userab";
-
-/// The fixed start of the Basic credential of [`BASIC_USER`] and any
-/// route credential: whole base64 groups of `BASIC_USER:pfsecretroute`.
+/// The fixed start of the GitHub route's Basic credential for any route
+/// credential: whole base64 groups of `x-access-token:pfsecretroute`.
 fn basic_start() -> String {
-    let text = format!("{BASIC_USER}:pfsecretroute");
-    base64(&text)[..text.len() / 3 * 4].to_string()
+    let text = "x-access-token:pfsecretroute";
+    base64(text)[..text.len() / 3 * 4].to_string()
 }
 
 /// The labels of the `(value, label)` pairs whose value `text` holds,
@@ -320,6 +316,8 @@ fn credentials_stay_on_the_host() {
     let env = TestEnv::new("credentials");
     let project = Project::new(&env, "credentials");
     let inject = Fixture::start(418);
+    // One origin for both GitHub names, served as GitHub Enterprise Server.
+    let github = Fixture::start(418);
     let (claude_reply, pi_reply) = (format!("claude-{}", random()), format!("pi-{}", random()));
     // A model fixture answers only a POST whose body holds its prompt.
     let (claude_prompt, pi_prompt) = (
@@ -339,19 +337,19 @@ fn credentials_stay_on_the_host() {
     let from = format!("pfsecretfrom{}", random());
     let penv = format!("pfsecretpenv{}", random());
     let op_env = format!("pfsecretop{}", random());
-    // The second injected header's Basic credential, encoded by the host.
-    let basic = base64(&format!("{BASIC_USER}:{claude_login}"));
+    // The GitHub route's Git credential, encoded by the host.
+    let basic = base64(&format!("x-access-token:{claude_login}"));
     let secrets = [
         (injected.as_str(), "injected"),
         (claude_login.as_str(), "claude login"),
         (pi_login.as_str(), "pi login"),
-        (basic.as_str(), "basic"),
+        (basic.as_str(), "github basic"),
         (from.as_str(), "from"),
         (penv.as_str(), "PINFOLD_ENV_"),
         (op_env.as_str(), "op"),
     ];
     let routes = &secrets[..4];
-    // The Claude login route and a second injected header read one
+    // The Claude and GitHub login routes read one
     // 1Password reference, an env entry another, from a stand-in `op`
     // first on PATH. It refuses any other reference, printing a decoy.
     let (claude_reference, env_reference) = ("op://e2e/claude/token", "op://e2e/env/value");
@@ -380,11 +378,13 @@ fn credentials_stay_on_the_host() {
                  E2E_OP = {{ from = \"{env_reference}\" }}\n\
                  E2E_LITERAL = \"{literal}\"\n\
                  [routes]\n\
-                 \"inject.internal\" = {{ to = \"http://{}\", headers = {{ \"X-E2E-Key\" = {{ from = \"E2E_INJECTED\", prefix = \"Key \" }}, \"X-E2E-Op\" = {{ from = \"{claude_reference}\", basic = \"{BASIC_USER}\" }} }} }}\n\
+                 \"inject.internal\" = {{ to = \"http://{}\", headers = {{ \"X-E2E-Key\" = {{ from = \"E2E_INJECTED\", prefix = \"Key \" }} }} }}\n\
                  \"claude.login\" = {{ login = \"claude\", from = \"{claude_op}\", to = \"http://{}\" }}\n\
+                 \"github.login\" = {{ login = \"github\", from = \"{claude_reference}\", to = \"http://{}\" }}\n\
                  \"openrouter.login\" = {{ login = \"pi\", provider = \"openrouter\", from = \"E2E_PI_LOGIN\", to = \"http://{}\" }}\n",
                 inject.route(),
                 claude.route(),
+                github.route(),
                 pi.route(),
             ),
         )
@@ -494,11 +494,92 @@ fn credentials_stay_on_the_host() {
         requests[0].header("x-e2e-key") == [format!("Key {injected}")],
         "x-e2e-key is not the host's value alone"
     );
-    // Sabotage (run): in core/plan.rs's `Inject::resolve`, send the value
-    // after `Basic ` unencoded. x-e2e-op then holds the raw value.
+
+    let log = env.state_home().join("pinfold/runs");
+    let decisions = || -> Vec<serde_json::Value> {
+        let mut lines = Vec::new();
+        for run in fs::read_dir(&log).unwrap() {
+            let path = run.unwrap().path().join("egress.jsonl");
+            if let Ok(text) = fs::read_to_string(path) {
+                lines.extend(json_lines(&text));
+            }
+        }
+        lines
+    };
+
+    // The GitHub route replaces the guest's own mixed-case Authorization
+    // and drops its X-Api-Key on both names. Git reaches the route through
+    // the generated rewrite of a github.com remote; the fixture's 418 fails
+    // the command.
+    // Sabotage (run): in core/plan.rs's `Login::resolve`, put the github
+    // token after `Basic ` unencoded. The Git request then holds the raw
+    // value.
+    // Sabotage (run): in proxy.rs's `Rules`, serve the github names with
+    // `login: false`. X-Api-Key then reaches the fixture, and the
+    // `access_token` query is forwarded: curl prints 418, not 403.
+    assert_eq!(
+        ask(
+            "GIT_TERMINAL_PROMPT=0 git -c http.extraHeader='AuTHorization: Bearer pfbox-g' \
+             -c http.extraHeader='X-Api-Key: pfbox-gk' \
+             ls-remote https://github.com/e2e/repo.git >/dev/null 2>&1; echo ran"
+        ),
+        ["ran"]
+    );
+    let github_api = "-H 'AuTHorization: Bearer pfbox-h' -H 'X-Api-Key: pfbox-hk' \
+                      'http://api.github.localhost/user";
+    let before = decisions().len();
+    assert_eq!(
+        ask(&curl(&format!("{github_api}?access_token=x'"))),
+        ["403"]
+    );
+    let lines = decisions()[before..].to_vec();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(
+        (
+            &lines[0]["host"],
+            &lines[0]["decision"],
+            &lines[0]["reason"]
+        ),
+        (
+            &serde_json::json!("api.github.localhost"),
+            &serde_json::json!("refused"),
+            &serde_json::json!("login credential query")
+        ),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(
+        github.requests().len(),
+        1,
+        "the refused query reached the fixture"
+    );
+    // Control: the same request with an ordinary query, whose bytes arrive
+    // unchanged under `/api/v3`.
+    // Sabotage (run): in proxy.rs's `forward`, drop `base_path`. The API
+    // request then arrives at /user.
+    assert_eq!(ask(&curl(&format!("{github_api}?per_page=2'"))), ["418"]);
+    let requests = github.requests();
+    let targets: Vec<&str> = requests
+        .iter()
+        .map(|request| request.target.as_str())
+        .collect();
+    assert_eq!(
+        targets,
+        [
+            "/e2e/repo.git/info/refs?service=git-upload-pack",
+            "/api/v3/user?per_page=2"
+        ]
+    );
     assert!(
-        requests[0].header("x-e2e-op") == [format!("Basic {basic}")],
-        "x-e2e-op is not the 1Password value's Basic credential"
+        credential_fields(&requests[0]) == ["authorization"]
+            && requests[0].header("authorization") == [format!("Basic {basic}")],
+        "the Git request's credential fields {:?} are not the host's Basic credential alone",
+        credential_fields(&requests[0])
+    );
+    assert!(
+        only_bearer(&requests[1], &claude_login),
+        "credential fields at the GitHub API: {:?}",
+        credential_fields(&requests[1])
     );
 
     // Through the Pi login route the guest's mixed-case duplicates of
@@ -513,17 +594,6 @@ fn credentials_stay_on_the_host() {
          -H 'x-api-key: pfbox-c' -H 'X-API-KEY: pfbox-d' \
          -H 'X-E2E-Nominated: pfbox-n'"
     );
-    let log = env.state_home().join("pinfold/runs");
-    let decisions = || -> Vec<serde_json::Value> {
-        let mut lines = Vec::new();
-        for run in fs::read_dir(&log).unwrap() {
-            let path = run.unwrap().path().join("egress.jsonl");
-            if let Ok(text) = fs::read_to_string(path) {
-                lines.extend(json_lines(&text));
-            }
-        }
-        lines
-    };
     let before = decisions().len();
     assert_eq!(
         ask(&curl(&format!("{forged} '{completions}?api_key=pfbox-e'"))),
@@ -666,8 +736,8 @@ fn credentials_stay_on_the_host() {
         found.iter().any(|word| word == "pfsecretroutecanary"),
         "the canary is not found"
     );
-    // Sabotage (named): in core/box.rs, write only the resolved `X-E2E-Op`
-    // header value to a box-readable file. Upstream headers stay correct;
+    // Sabotage (named): in core/box.rs, write only the GitHub route's
+    // resolved Basic header value to a box-readable file. Upstream headers stay correct;
     // only this search finds it.
     assert_eq!(
         exposed(&found.join("\n"), routes),
@@ -778,7 +848,7 @@ fn credentials_stay_on_the_host() {
         label: "literal".to_string(),
     });
     // Sabotage (named): in core/box.rs's `launch_record`, add only the
-    // resolved `X-E2E-Op` header value. Upstream headers stay correct; only
+    // GitHub route's resolved Basic header value. Upstream headers stay correct; only
     // the Basic needle finds it.
     let prefixes = [
         PREFIX.to_string(),

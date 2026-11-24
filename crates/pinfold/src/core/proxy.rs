@@ -179,9 +179,11 @@ enum Upstream {
     /// authority stays the Host header.
     Address(Target),
     /// An injecting route's target and its headers, values already read.
-    /// Static login routes apply the login credential policy.
+    /// Static login routes apply the login credential policy. `base_path`
+    /// goes before each request's path.
     Inject {
         target: Target,
+        base_path: &'static str,
         headers: Vec<(String, String)>,
         login: bool,
     },
@@ -217,6 +219,7 @@ impl Rules {
                         inject.resolve(name, values).map_err(io::Error::other)?;
                     Upstream::Inject {
                         target,
+                        base_path: "",
                         headers,
                         login: false,
                     }
@@ -226,14 +229,21 @@ impl Rules {
                     login: codex.clone().expect("up resolves a Codex login's token"),
                 },
                 Route::Login(login) => {
-                    let (target, headers) = login.resolve(name, values).map_err(|error| {
+                    let served = login.resolve(name, values).map_err(|error| {
                         io::Error::other(format!("{} login route {name:?}: {error}", login.login))
                     })?;
-                    Upstream::Inject {
-                        target,
-                        headers,
-                        login: true,
+                    for served in served {
+                        routes.insert(
+                            served.name.to_ascii_lowercase(),
+                            Upstream::Inject {
+                                target: served.target,
+                                base_path: served.base_path,
+                                headers: served.headers,
+                                login: true,
+                            },
+                        );
                     }
+                    continue;
                 }
             };
             routes.insert(name.to_ascii_lowercase(), upstream);
@@ -503,6 +513,7 @@ fn plain(
         dial(address, connection).map(DeadlineStream::new),
         request,
         &request.authority,
+        "",
         &[],
         &[],
         &mut |_| Ok(()),
@@ -556,13 +567,21 @@ fn route(
     } else {
         Vec::new()
     };
-    let (target, host, headers) = match upstream {
-        Upstream::Address(target) => (target, &request.authority, Cow::Borrowed(&[][..])),
+    let (target, host, base_path, headers) = match upstream {
+        Upstream::Address(target) => (target, &request.authority, "", Cow::Borrowed(&[][..])),
         Upstream::Inject {
-            target, headers, ..
-        } => (target, &target.authority, Cow::Borrowed(headers.as_slice())),
+            target,
+            base_path,
+            headers,
+            ..
+        } => (
+            target,
+            &target.authority,
+            *base_path,
+            Cow::Borrowed(headers.as_slice()),
+        ),
         Upstream::Codex { target, login } => match login.headers(&connection.control.cancelled) {
-            Some(headers) => (target, &target.authority, Cow::Owned(headers)),
+            Some(headers) => (target, &target.authority, "", Cow::Owned(headers)),
             None => {
                 return deny(client, 403, "login lapsed");
             }
@@ -578,6 +597,7 @@ fn route(
             server,
             request,
             host,
+            base_path,
             &headers,
             &remove,
             &mut report,
@@ -601,6 +621,7 @@ fn route(
         server,
         request,
         host,
+        base_path,
         &headers,
         &remove,
         &mut report,
@@ -916,8 +937,8 @@ fn query_decode(value: &str) -> Option<Vec<u8>> {
     Some(decoded)
 }
 
-/// Forward one parsed request with `host` as its Host header, then its
-/// Content-Length body, and stream the response back until the upstream
+/// Forward one parsed request with `host` as its Host header and
+/// `base_path` before its path, then its Content-Length body, and stream the response back until the upstream
 /// closes; a failed dial (`None`) is answered 502. `report` gets the
 /// upstream's status code once its status line has arrived, or `None` when
 /// the exchange ends first. One request per
@@ -926,11 +947,13 @@ fn query_decode(value: &str) -> Option<Vec<u8>> {
 /// no upstream half-close: over TLS a close_notify before the response
 /// would end the exchange, and the server's close ends the response, with
 /// or without its own close_notify.
+#[allow(clippy::too_many_arguments)]
 fn forward(
     client: &mut UnixStream,
     server: Option<impl Read + Write>,
     request: &Plain,
     host: &str,
+    base_path: &str,
     inject: &[(String, String)],
     remove: &[&str],
     report: &mut dyn FnMut(Option<u16>) -> io::Result<()>,
@@ -943,7 +966,7 @@ fn forward(
     let mut head = Vec::with_capacity(256);
     write!(
         head,
-        "{} {} HTTP/1.{}\r\n",
+        "{} {base_path}{} HTTP/1.{}\r\n",
         request.method, request.target, request.version
     )?;
     write!(head, "Host: {host}\r\n")?;

@@ -514,8 +514,8 @@ The box spec `up` reads from stdin:
   multiline values remain intact. The runtime executable is found on the
   host's `PATH`, never the spec's.
 - A `from` value starting with `op://` is a 1Password reference, wherever
-  `from` names a secret: an env entry, an injecting header, a claude or
-  pi login route. A reference holds no control character (below 0x20, or
+  `from` names a secret: an env entry, an injecting header, a claude,
+  github or pi login route. A reference holds no control character (below 0x20, or
   0x7f) and is at most 1024 bytes; a malformed one, and an explicit null
   `from`, are refused as `spec`, naming only the key. Only the process
   that starts the box reads a reference, and only after every check that needs no value:
@@ -643,10 +643,14 @@ cleanup removes the run's directory:
 The record never holds an env value, a header name,
 value or prefix, a login token, argv or command output. `env` lists the
 names of the variables the box got, never their values: the declared ones,
-pinfold's own default `PINFOLD_ALLOW` and, for a project box,
-`PINFOLD_PROJECT` (Process interface).
+pinfold's own default `PINFOLD_ALLOW`, a github login route's variables
+(Egress proxy) and, for a project box, `PINFOLD_PROJECT` (Process interface).
 Always-applied names and Apple-generated Git configuration names are
-omitted unless the caller declared them. A route's `to` is its `host:port` or origin.
+omitted unless the caller declared them. `routes` keys each name the proxy
+serves: a github login route appears as `github.localhost` and
+`api.github.localhost`, not its own name. A route's `to` is its
+`host:port`, or its origin and any path the proxy puts before each
+request's.
 The record is what this run applied at start; a later change to config leaves it as it is.
 
 The terminal record is written once, after teardown, before the owner
@@ -713,7 +717,7 @@ run ...` (or `events`); it may never have existed or have been removed
 - `NODE_USE_ENV_PROXY=1`.
 - On Apple, shares add `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and
   `GIT_CONFIG_VALUE_n` for exact guest-root `safe.directory` entries,
-  appended to the caller's declared Git configuration.
+  appended to the box's declared Git configuration.
 - Apple adds: `--network none`, `--cap-drop ALL`, `--read-only`. PID 1 runs
   as the host uid and sets `no_new_privs` on itself first; failing to set
   it fails startup. The guest kernel boots with
@@ -973,15 +977,10 @@ network listener, no token: the socket identifies the box.
   environment of the process that starts the box: `box up`'s own, or a
   project box's starting client (Configuration); a missing variable
   refuses the start. A header's `from` may be a 1Password reference,
-  read by that process (Process interface). A header may name
-  `"basic": USER` instead of `prefix`: the proxy sets it to `Basic ` plus
-  standard base64, padded, of `USER:` and `$VAR`. `basic` with a `prefix`
-  key, even an empty one, and a `basic` that is empty or holds `:` or a
-  control character (below 0x20, or 0x7f), are refused as `spec`, naming
-  only the key. An `https`
+  read by that process (Process interface). An `https`
   target is resolved and checked like an allowlisted host; an `http` target
-  is a host service. The value, plain or encoded, never reaches argv, the
-  box, the spec or the log. The box can use the credential but not read
+  is a host service. The value never reaches argv, the box, the spec or
+  the log. The box can use the credential but not read
   it, unless `to` echoes request headers back. Header names that frame the request (`Host`,
   `Content-Length`, `Expect`, hop-by-hop) are refused.
 - **Login routes:** a route whose value is `{ "login": AGENT }` carries
@@ -1028,9 +1027,29 @@ network listener, no token: the socket identifies the box.
   - `claude`: `{ "login": "claude", "from": VAR }`, where `$VAR` is a
     `claude setup-token` token read once at start like an injecting route's.
     The route goes to `https://api.anthropic.com` with `Authorization:
-    Bearer`. `from` may be a 1Password reference, here and for pi.
+    Bearer`. `from` may be a 1Password reference, here and for github
+    and pi.
     Claude's managed settings set `ANTHROPIC_BASE_URL=http://<route>`,
     a placeholder `CLAUDE_CODE_OAUTH_TOKEN`, and blank `ANTHROPIC_API_KEY`.
+  - `github`: `{ "login": "github", "from": VAR }`, where `$VAR` is a
+    GitHub token read once at start like an injecting route's. The route
+    is served at two fixed names, not its own, since `gh` sends plain HTTP
+    only to `github.localhost` (undocumented `gh` behaviour):
+    `github.localhost` goes to `https://github.com` with `Authorization:
+    Basic` and standard base64, padded, of `x-access-token:` and `$VAR`
+    (Git smart HTTP); `api.github.localhost` goes to
+    `https://api.github.com` with `Authorization: Bearer` (REST and
+    GraphQL). Either name colliding with another route is refused as
+    `spec`. A `to` names one origin serving Git at its root and the API
+    under `/api/v3`, so `api.github.localhost/PATH` goes to
+    `TO/api/v3/PATH` and GraphQL to `TO/api/v3/graphql`: a test-fixture
+    convention, not full GitHub Enterprise Server compatibility. The box's
+    environment gets `GH_HOST=github.localhost`, `GH_TOKEN` and
+    `GH_ENTERPRISE_TOKEN` set to a placeholder, and `GIT_CONFIG_COUNT`,
+    `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n` setting
+    `url.http://github.localhost/.insteadOf` to `https://github.com/` and
+    to `git@github.com:`; no file is mounted. A caller env entry naming
+    any of these variables is refused as `spec`, naming it.
   - `codex`: `{ "login": "codex" }` uses the host's own Codex login, in
     whatever store Codex keeps it. The proxy gets the access token from
     the pinned host helper (Pinned artifacts): `codex-app-server` with the
@@ -1064,7 +1083,7 @@ network listener, no token: the socket identifies the box.
     helper is asked once at start. A missing or other
     P, `from` with `openai-codex`, or two routes for one pi provider
     (`anthropic` and `anthropic-subscription` are both pi's `anthropic`)
-    is refused as `spec`, and so is `provider` on a claude or codex login
+    is refused as `spec`, and so is `provider` on any other login
     route.
 
     | P | pi provider | Origin | Header set |
@@ -2232,7 +2251,7 @@ variable, without its value. Secrets belong in `from`.
 | `base` | — | — | The profile this one builds on (Profiles); profile file only |
 | `image` | — | — | Local image reference, independent of the profile; project overrides profile |
 | `allow` | `PINFOLD_ALLOW` | `api.anthropic.com`, `platform.claude.com`, `api.openai.com`, `auth.openai.com`, `chatgpt.com`, `openrouter.ai`, `opencode.ai`, `registry.npmjs.org`, `pi.dev` | Hosts the proxy lets through |
-| `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes: `name = "host:port"` for a host service, an injecting route `name = { to = "https://…", headers = { Authorization = { from = "VAR", prefix = "Bearer " } } }`, or a pi login route `name = { login = "pi", provider = "openrouter", from = "OPENROUTER_API_KEY" }` (see Egress proxy) |
+| `routes` | `PINFOLD_ROUTES` | `{}` | Proxy routes: `name = "host:port"` for a host service, an injecting route `name = { to = "https://…", headers = { Authorization = { from = "VAR", prefix = "Bearer " } } }`, a pi login route `name = { login = "pi", provider = "openrouter", from = "OPENROUTER_API_KEY" }`, or a github login route `name = { login = "github", from = "op://…" }` (see Egress proxy) |
 | `mounts` | — | — | The project mount, then folders (above); project file only |
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
@@ -2370,7 +2389,7 @@ cut rows.
 | 10 | **Disk-project branches and tags cross only through the Git remote.** A fetch writes box branches only under `refs/remotes/box/*` and adds only new tags; it never moves or deletes the host's own branches or tags, except as the threat model lists. A push lands only in the box's `refs/remotes/host/*` and its tags. Crossing carries no hook or configuration. | (a) A box that writes its own listing names a branch at a host-only commit. `git fetch box` fails naming that branch, no ref under `refs/remotes/box/` changes, and `.git/objects` is unchanged. So does a bundle whose pack also carries an unreachable tag of a tag of a missing commit, failing naming that commit; and, with the host a partial clone of a local promisor, a listing that names the branch at a commit only the promisor holds and a bundle naming it as a prerequisite. (b) Separately, a valid listing carries a tag named like a host tag at another object. After `git fetch --force --tags --prune --prune-tags box`, every host tag is where it was. The box then commits hooks under every client-side name, `core.hooksPath`, `.husky/` and `.githooks/`; the host fetches, merges and checks out twice, and nothing planted runs. With `push.followTags`, `git push box main` lands main only in the box's `refs/remotes/host/main` and its annotated tags as box tags, and changes no box working-tree file; after it and after a repeat, the host's `refs/remotes/box/main` is the box's own main. A fresh start leaves the project disk empty and the host's `.git/config` byte-identical; the first push creates the box repository. Control: a host hook runs, and a legitimate branch and new tag land under `refs/remotes/box/*` and `refs/tags/*`. |
 | 11 | **Disks persist and attach exclusively.** A disk outlives its box. One box at a time writes it, and a disk left unclean is not read until a writable run recovers it. | Two writable `up`s race for one new disk: exactly one runs, and the other is refused `disk-in-use`. After the writer's owner is SIGKILLed, a read-only attachment is refused `disk-in-use` while the dead box's claim stands; once `box prune` retires it, the same attachment is refused `disk-unclean` until a writable run ends. `disk rm` of an attached disk is refused `disk-in-use`. Control: a file one box writes is read by the next box that attaches the disk. |
 | 15 | **Cleanup removes only what pinfold made, and never a live project.** `clean` never removes a live project's state or disks, or host files, and `clean --dry-run` removes nothing. | A kept project with a live box and no clients, beside an idle project, and an artifact version no pin names. `clean --dry-run` from a state root whose daily pass is due keeps that version. `clean --idle 0s` removes the idle project's state and disk and keeps the live one's: a write still reads back through its box. The idle project's checkout tree and configuration file are unchanged. Control: the idle project's disk and the unpinned version are gone. |
-| 26 | **Credentials stay on the host.** pinfold adds a route's credential at the proxy and never puts it in the box; an upstream that returns it can still hand it back (threat model). A `from` variable's, 1Password reference's or `PINFOLD_ENV_` value reaches the box's environment, never host argv, the runtime's records or a file pinfold writes. | One box with an injecting route, a Claude login route and a Pi `openrouter` login route, each pointed at a host fixture that echoes no credential, plus a `from` variable, a 1Password reference env entry and a `PINFOLD_ENV_` value. A stand-in `op` first on the client's PATH gives the Claude route's token, which a second injected header names too with `basic`, and the env entry's value; it is asked once for each reference. Before the session, a launch whose configuration differs from the session's only in the Claude route's reference, one the stand-in refuses (printing a decoy on stdout and stderr), exits 125 with empty stdout, its stderr naming the reference and not holding the decoy, the stand-in logged that reference, and `box list` shows no box for the project. Through the injecting route the guest sends its own value for the injected header, in another letter case; the fixture receives only the host's, and the second header `Basic` and the host's own base64 of its user, `:` and the reference's value. Through the Pi login route the guest sends mixed-case duplicate `Authorization` and `X-Api-Key` fields; the fixture receives only the host credential, and an off-list field no `Connection` field names arrives unchanged. A later request whose `Connection` field nominates that field and `Authorization` delivers the host credential without the nominated field. A `?api_key=` query on that login route gets 403 `login credential query` and no upstream request. No route credential, plain or as that Basic value, is in the box's environment, any file it can read, its home disk or the egress log. On the host no secret, plain, hex or as that Basic value, is in any file under the state, config or cache roots or in any process argv; on Apple, neither in `container inspect`, the container's directory nor the box's new volumes. A configuration literal is in its own file and no other file under those roots. Control: the same login request without the query succeeds in the same box; the box search finds a canary on the home disk, and `ps` finds the session's argv canary; the `from` variable's, the reference's and the `PINFOLD_ENV_` values arrive in the box's environment; the session that differs only in the refused reference starts; Claude and Pi each complete one fixture exchange through their generated configuration. |
+| 26 | **Credentials stay on the host.** pinfold adds a route's credential at the proxy and never puts it in the box; an upstream that returns it can still hand it back (threat model). A `from` variable's, 1Password reference's or `PINFOLD_ENV_` value reaches the box's environment, never host argv, the runtime's records or a file pinfold writes. | One box with an injecting route, a Claude login route, a GitHub login route and a Pi `openrouter` login route, each pointed at a host fixture that echoes no credential, plus a `from` variable, a 1Password reference env entry and a `PINFOLD_ENV_` value. A stand-in `op` first on the client's PATH gives the Claude route's token, which the GitHub route names too, and the env entry's value; it is asked once for each reference. Before the session, a launch whose configuration differs from the session's only in the Claude route's reference, one the stand-in refuses (printing a decoy on stdout and stderr), exits 125 with empty stdout, its stderr naming the reference and not holding the decoy, the stand-in logged that reference, and `box list` shows no box for the project. Through the injecting route the guest sends its own value for the injected header, in another letter case; the fixture receives only the host's. The guest sends its own mixed-case `Authorization` and an `X-Api-Key` through both GitHub names: a Git request made through the generated Git configuration arrives with its `?service=` query and only `Basic` and the host's own base64 of `x-access-token:` and the reference's value, and an API request arrives under `/api/v3` with its query unchanged and only `Bearer` and the value. An `?access_token=` query on the API name gets 403 `login credential query` and no upstream request. Through the Pi login route the guest sends mixed-case duplicate `Authorization` and `X-Api-Key` fields; the fixture receives only the host credential, and an off-list field no `Connection` field names arrives unchanged. A later request whose `Connection` field nominates that field and `Authorization` delivers the host credential without the nominated field. A `?api_key=` query on that login route gets 403 `login credential query` and no upstream request. No route credential, plain or as that Basic value, is in the box's environment, any file it can read, its home disk or the egress log. On the host no secret, plain, hex or as that Basic value, is in any file under the state, config or cache roots or in any process argv; on Apple, neither in `container inspect`, the container's directory nor the box's new volumes. A configuration literal is in its own file and no other file under those roots. Control: the same login request without the query succeeds in the same box; the box search finds a canary on the home disk, and `ps` finds the session's argv canary; the `from` variable's, the reference's and the `PINFOLD_ENV_` values arrive in the box's environment; the session that differs only in the refused reference starts; Claude and Pi each complete one fixture exchange through their generated configuration. |
 | 38 | **Every egress decision is recorded, or the box stops.** Each run has its own egress log and launch record. The launch record is the policy applied at start. | The live egress log is padded to one byte below its 128 MiB cap. The next route request stops the owner with `audit-log` and exit 1, and the log's length is unchanged. Control: in a second run of the same name under another allowlist and memory, an allowed and a refused request each appear once in that run's log, and the first run's log still holds only its own; `inspect` answers with no runtime on PATH. Each run's launch record names the allowlist, routes, cpus and memory it applied, and env names without values. |
 | 43 | **The VMM reaches only its own box.** Linux only. Each VMM runs as the user in its own jail and sees only its own box's files. | Two boxes up, one with a detached owner. Each VMM process is the user's, with `CapBnd` 0 and `NoNewPrivs` 1, in user, mount, PID, network, IPC and UTS namespaces of its own. Through `/proc/PID/root` it sees its own disk and not the other box's; no directory from the home is mounted in it; its jail holds no socket but those in its own vsock socket directory, so no project session or shutdown control socket; every descriptor it holds is in its jail, `/dev/null` or an anonymous kernel object. Control: its own disk is visible, and SIGKILL of the owner ends the VM. |
 | 44 | **Linux image work stays in its own VM.** Linux only. A build's RUN steps have no network but the production proxy, which lets out only allowed hosts and audits each decision. | In one build, a RUN step's direct connection to a public address, bypassing the proxy, fails; through the proxy `api.github.com` answers while `example.com` gets a 403, with the denial in the build's egress log. Control: the same build with `--allow example.com` reaches it. |
