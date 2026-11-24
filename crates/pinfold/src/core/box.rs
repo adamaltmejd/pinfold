@@ -971,6 +971,11 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
                     .unwrap_or_default()
                     .into_iter()
                     .map(|(name, origin, base_path)| {
+                        let origin = if base_path.is_empty() {
+                            origin
+                        } else {
+                            origin.trim_end_matches('/')
+                        };
                         ("login", name, format!("{origin}{base_path}"))
                     })
                     .collect(),
