@@ -377,11 +377,11 @@ fn credentials_stay_on_the_host() {
                 "{saved}allow = []\n\
                  [env]\n\
                  E2E_FROM = {{ from = \"E2E_FROM_SOURCE\" }}\n\
-                 E2E_OP = {{ op = \"{env_reference}\" }}\n\
+                 E2E_OP = {{ from = \"{env_reference}\" }}\n\
                  E2E_LITERAL = \"{literal}\"\n\
                  [routes]\n\
-                 \"inject.internal\" = {{ to = \"http://{}\", headers = {{ \"X-E2E-Key\" = {{ from = \"E2E_INJECTED\", prefix = \"Key \" }}, \"X-E2E-Op\" = {{ op = \"{claude_reference}\", basic = \"{BASIC_USER}\" }} }} }}\n\
-                 \"claude.login\" = {{ login = \"claude\", op = \"{claude_op}\", to = \"http://{}\" }}\n\
+                 \"inject.internal\" = {{ to = \"http://{}\", headers = {{ \"X-E2E-Key\" = {{ from = \"E2E_INJECTED\", prefix = \"Key \" }}, \"X-E2E-Op\" = {{ from = \"{claude_reference}\", basic = \"{BASIC_USER}\" }} }} }}\n\
+                 \"claude.login\" = {{ login = \"claude\", from = \"{claude_op}\", to = \"http://{}\" }}\n\
                  \"openrouter.login\" = {{ login = \"pi\", provider = \"openrouter\", from = \"E2E_PI_LOGIN\", to = \"http://{}\" }}\n",
                 inject.route(),
                 claude.route(),

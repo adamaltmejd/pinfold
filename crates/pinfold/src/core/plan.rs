@@ -74,21 +74,14 @@ pub struct Login {
     /// pi's provider, one of [`PI_PROVIDERS`]; only pi names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// The variable the token is read from, by name only, or the 1Password
-    /// reference in `op`. claude and pi need one; codex takes neither: its
-    /// token comes from the host helper.
+    /// The token's [`Source`]. claude and pi need one; codex takes none:
+    /// its token comes from the host helper.
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     pub from: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub op: Option<String>,
     /// The origin to dial instead of the harness's own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
@@ -104,24 +97,13 @@ pub struct Inject {
     pub headers: BTreeMap<String, Header>,
 }
 
-/// One injected header: `prefix` then the value of its source, `from` or
-/// `op`, or with `basic` the Basic credential for that user and the value.
-/// Only the variable's name or the reference is ever written down.
+/// One injected header: `prefix` then the value of its [`Source`], or with
+/// `basic` the Basic credential for that user and the value. Only the
+/// variable's name or the reference is ever written down.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Header {
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub from: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub op: Option<String>,
+    pub from: String,
     #[serde(
         default,
         deserialize_with = "present",
@@ -136,17 +118,13 @@ pub struct Header {
     pub basic: Option<String>,
 }
 
-/// Where a secret's value comes from: a host variable (`from`) or a
-/// 1Password reference (`op`). A [`Values`] table is keyed by it, so a
-/// variable named like a reference is still a variable.
+/// Where a secret's value comes from, as a `from` key names it: a
+/// 1Password reference when it starts with `op://`, else a host variable.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Source {
     From(String),
     Op(String),
 }
-
-const BOTH: &str = "takes a from variable or an op reference, not both";
-const NEITHER: &str = "needs a from variable or an op reference";
 
 /// A key that is present holds a string: an explicit null is refused,
 /// never read as absent.
@@ -185,46 +163,19 @@ fn env_entries<'de, D: serde::Deserializer<'de>>(
     deserializer.deserialize_map(Visitor)
 }
 
-/// Refuse, naming the entry, an env entry or injecting header in
-/// configuration that names both `from` and `op` or neither. Configuration
-/// load calls this, so a `PINFOLD_ENV_` variable replacing the entry cannot
-/// hide it. Login routes are checked at launch, as before `op`.
-pub(crate) fn check_declared(
-    env: &BTreeMap<String, Env>,
-    routes: &BTreeMap<String, Route>,
-) -> Result<(), String> {
-    let env = env
-        .iter()
-        .filter_map(|(name, value)| Some((format!("env {name:?}"), value.source()?)));
-    let headers = routes
-        .values()
-        .filter_map(|route| match route {
-            Route::Inject(inject) => Some(&inject.headers),
-            _ => None,
-        })
-        .flatten()
-        .map(|(name, header)| (format!("route header {name:?}"), header.source()));
-    for (entry, source) in env.chain(headers) {
-        if let Err(error @ (BOTH | NEITHER)) = source {
-            return Err(format!("{entry}: {error}"));
-        }
-    }
-    Ok(())
-}
-
 impl Source {
-    /// The declared source, or why it cannot be read: exactly one of
-    /// `from` and `op`, each well formed.
-    fn declared(from: Option<&str>, op: Option<&str>) -> Result<Source, &'static str> {
-        match (from, op) {
-            (Some(_), Some(_)) => Err(BOTH),
-            (None, None) => Err(NEITHER),
-            (Some(from), None) if valid_from(from) => Ok(Source::From(from.to_string())),
-            (Some(_), None) => Err("its from variable is empty or holds = or NUL"),
-            (None, Some(op)) if valid_op(op) => Ok(Source::Op(op.to_string())),
-            (None, Some(_)) => Err(
-                "its op reference must start with op://, hold no control character and be at most 1024 bytes",
-            ),
+    /// A `from` key's source, or why it cannot be read.
+    pub(crate) fn declared(from: &str) -> Result<Source, &'static str> {
+        if from.starts_with("op://") {
+            if valid_op(from) {
+                Ok(Source::Op(from.to_string()))
+            } else {
+                Err("its 1Password reference holds a control character or exceeds 1024 bytes")
+            }
+        } else if valid_from(from) {
+            Ok(Source::From(from.to_string()))
+        } else {
+            Err("its from variable is empty or holds = or NUL")
         }
     }
 
@@ -238,7 +189,7 @@ impl Source {
 
 impl Header {
     pub fn source(&self) -> Result<Source, &'static str> {
-        Source::declared(self.from.as_deref(), self.op.as_deref())
+        Source::declared(&self.from)
     }
 }
 
@@ -474,14 +425,17 @@ impl Login {
 
     /// The token's source; `None` for a login on the host's Codex login.
     pub fn source(&self) -> Option<Result<Source, &'static str>> {
-        (!self.uses_host_codex())
-            .then(|| Source::declared(self.from.as_deref(), self.op.as_deref()))
+        (!self.uses_host_codex()).then(|| {
+            self.from
+                .as_deref()
+                .map_or(Err("needs a from source"), Source::declared)
+        })
     }
 
     /// Check a login route without reading the environment: this build
-    /// serves the login, only pi names a provider, `from` and `op` are
-    /// absent for a login on the host's Codex login and one is present
-    /// otherwise, and `to` parses like an injecting route's.
+    /// serves the login, only pi names a provider, `from` is absent for a
+    /// login on the host's Codex login and present otherwise, and `to`
+    /// parses like an injecting route's.
     fn check(&self, route: &str) -> Result<(), String> {
         self.target()?;
         if !self.is_pi() && self.provider.is_some() {
@@ -490,8 +444,8 @@ impl Login {
             )));
         }
         match self.source() {
-            None if self.from.is_some() || self.op.is_some() => Err(invalid(format!(
-                "login route {route:?} takes no from variable or op reference: its token comes from the host's Codex login"
+            None if self.from.is_some() => Err(invalid(format!(
+                "login route {route:?} takes no from source: its token comes from the host's Codex login"
             ))),
             None => Ok(()),
             Some(source) => source
@@ -544,8 +498,7 @@ impl Login {
             headers: BTreeMap::from([(
                 header.to_string(),
                 Header {
-                    from: self.from.clone(),
-                    op: self.op.clone(),
+                    from: source.name().to_string(),
                     prefix: (!prefix.is_empty()).then(|| prefix.to_string()),
                     basic: None,
                 },
@@ -565,8 +518,8 @@ pub struct Values {
     /// Each reference whose read failed, with the cause, which names no
     /// value and none of op's output.
     failed: BTreeMap<String, String>,
-    /// Whether the `op` references were read. Until then validation checks
-    /// `from` sources alone, as without `op`.
+    /// Whether the 1Password references were read. Until then validation
+    /// checks host variables alone.
     op_read: bool,
 }
 
@@ -777,14 +730,8 @@ fn digits(number: &str) -> Option<u64> {
 pub enum Env {
     /// A literal value from the spec.
     Exact(String),
-    /// `{ "from": "NAME" }` or `{ "op": "op://…" }`: the caller's value,
-    /// passed by its source only. Validation refuses both or neither.
-    Secret {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        from: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        op: Option<String>,
-    },
+    /// `{ "from": SOURCE }`: the caller's value, passed by its source only.
+    Secret { from: String },
 }
 
 impl Env {
@@ -792,7 +739,7 @@ impl Env {
     pub fn source(&self) -> Option<Result<Source, &'static str>> {
         match self {
             Env::Exact(_) => None,
-            Env::Secret { from, op } => Some(Source::declared(from.as_deref(), op.as_deref())),
+            Env::Secret { from } => Some(Source::declared(from)),
         }
     }
 }
@@ -804,7 +751,7 @@ impl<'de> Deserialize<'de> for Env {
             type Value = Env;
 
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a string or an object with only a from or op key")
+                formatter.write_str("a string or an object with only a from key")
             }
 
             fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Env, E> {
@@ -815,14 +762,11 @@ impl<'de> Deserialize<'de> for Env {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
                 struct Secret {
-                    #[serde(default, deserialize_with = "present")]
-                    from: Option<String>,
-                    #[serde(default, deserialize_with = "present")]
-                    op: Option<String>,
+                    from: String,
                 }
-                let Secret { from, op } =
+                let Secret { from } =
                     Secret::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(Env::Secret { from, op })
+                Ok(Env::Secret { from })
             }
         }
         deserializer.deserialize_any(Visitor)
@@ -1264,7 +1208,7 @@ fn valid_from(name: &str) -> bool {
 }
 
 /// A 1Password secret reference `op read` takes as one argument.
-pub(crate) fn valid_op(reference: &str) -> bool {
+fn valid_op(reference: &str) -> bool {
     reference.starts_with("op://")
         && !reference.chars().any(|c| c.is_ascii_control())
         && reference.len() <= 1024
