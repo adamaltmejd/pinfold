@@ -62,7 +62,9 @@ fn host_uid() -> String {
 fn nothing_can_gain_privileges() {
     // Sabotage (run): on Apple, drop `--cap-drop ALL` from `container run`
     // in runtime/apple.rs. The grandchild's CapBnd is then the runtime's
-    // default set, not 0.
+    // default set, not 0. On Linux, drop `drop_bounding(0)` from
+    // `become_box_user` in init/firecracker.rs: CapBnd is then PID 1's full
+    // set. Each block below names its own.
     // The plain child and unshare(0) are the positive controls.
     let image = default_image();
     let env = TestEnv::new("privilege");
@@ -97,6 +99,8 @@ fn nothing_can_gain_privileges() {
     assert_eq!(seen["NoNewPrivs"], "1", "{}", out.stdout);
     // Control: a plain child runs, and unshare itself works without a new
     // user namespace; with one it fails on the namespace limit of 0.
+    // Sabotage: drop the `user/max_user_namespaces` write from `prepare` in
+    // init/firecracker.rs. `unshare user` then returns 0.
     assert_eq!(seen["plain"], "0", "{}", out.stdout);
     assert_eq!(seen["unshare 0"], "0", "{}", out.stdout);
     assert_eq!(seen["unshare user"], ENOSPC, "{}", out.stdout);
@@ -104,6 +108,9 @@ fn nothing_can_gain_privileges() {
     // No image-provided setuid or setgid file that box work can reach:
     // each directory it cannot list it cannot search either (EACCES),
     // so nothing below one can be executed.
+    // Sabotage: drop the `find / -xdev -perm /6000` line from the bundled
+    // profile/default/Containerfile. The scan then prints `setid` lines.
+    // On the Mac, delete the reused profile-default image first.
     let scan = |root: &str| {
         let out = env.exec(&name, &["perl", "-e", SETID_SCAN, root]);
         assert_eq!(out.code, 0, "the scan of {root}: {out:?}");
@@ -126,6 +133,9 @@ fn nothing_can_gain_privileges() {
     assert_eq!(scan("/tmp"), "setid /tmp/setid\ndone\n");
 
     // The root refuses a write as read-only; the tmpfs `/tmp` takes it.
+    // Sabotage: on Apple, drop `--read-only` from `container run`; on Linux,
+    // drop `MS_RDONLY` from the root's remount in init/firecracker.rs. The
+    // first write then fails with EACCES, not EROFS.
     let write = |path: &str| {
         let out = env.exec(
             &name,
@@ -144,6 +154,11 @@ fn nothing_can_gain_privileges() {
 
     // On Linux PID 1 keeps only CAP_SYS_ADMIN (bit 21), and the exec
     // service, PID 1's child that started this command, holds nothing.
+    // Sabotage: drop the keep-only-CAP_SYS_ADMIN step from `boot` in
+    // init/firecracker.rs, and PID 1 keeps every set. For the service, set
+    // `PR_SET_KEEPCAPS` before `setresuid` in `become_box_user` and drop
+    // `set_capabilities(None)`: the service keeps CapPrm, which exec clears
+    // for the grandchild above, so only this block sees it.
     #[cfg(target_os = "linux")]
     {
         let probe = |pid: &str| {
@@ -174,6 +189,9 @@ fn nothing_can_gain_privileges() {
 
     // A second box boots another kernel: a different boot_id, and on Linux
     // neither is the host's.
+    // Sabotage: in `exec` in runtime/firecracker/mod.rs, open the first
+    // box's sockets whatever the name. Every check above still passes;
+    // the two boot_ids then match.
     let other = box_name("privilege-other");
     let _other = env.up(&json!({ "name": other, "image": image }));
     let boot_id = |name: &str| {
