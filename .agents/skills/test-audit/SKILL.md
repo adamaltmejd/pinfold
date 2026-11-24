@@ -11,9 +11,11 @@ assertion block, because a test is a guarantee row.
 
 ## At approval: the candidate touches a test
 
-Four answers, from the diff and the ticket. A missing one sends the
+Five answers, from the diff and the ticket. A missing one sends the
 candidate back.
 
+0. Why the behavior is critical (AGENTS.md, Critical behavior only). A
+   new row that is not goes back as no test.
 1. Which guarantee row. A new test needs a new row; a bug extends its
    row's test.
 2. Which change to the binary makes it fail, named in the test's comment.

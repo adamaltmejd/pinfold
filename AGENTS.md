@@ -66,10 +66,17 @@ runner. Rows 15, 43 and 44 are tested on Linux only.
 - **A fixed list.** One test per guarantee in ARCHITECTURE.md, named for it
   (`box_has_no_route_to_host`, not `test_network_3`). A new test needs a new
   guarantee. A bug is a scenario its guarantee was missing: the fix extends
-  that test and adds none. A bug no guarantee covers is a missing
-  guarantee, so a spec change. Nothing tests argv shapes, file layout, help
-  text or log wording; a reason is a spec-named token, and the prose around
-  it is never asserted.
+  that test and adds none. A critical bug no guarantee covers is a missing
+  guarantee, so a spec change; any other bug is fixed without a test.
+  Nothing tests argv shapes, file layout, help text or log wording; a
+  reason is a spec-named token, and the prose around it is never asserted.
+- **Critical behavior only.** A guarantee earns a row, and so a test, only
+  when its break would be silent and costly: a weakened control, lost or
+  exposed data, or a wrong result the user would trust. A break the user
+  sees at once, as a crash or a clear error, gets no row; nor does
+  convenience behavior. The list stays small: a new row should replace or
+  merge an old one where it can, and a row that no longer meets this bar
+  is deleted with its test.
 - **The hardest case.** A test's scenario is where the guarantee's mechanism
   is most likely to give: a race, a second run, a nested or reordered
   input. Not the first case that passes.
