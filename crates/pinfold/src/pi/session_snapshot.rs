@@ -164,6 +164,11 @@ struct Header {
     from: Option<String>,
     op: Option<String>,
     prefix: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "plan::present",
+        skip_serializing_if = "Option::is_none"
+    )]
     basic: Option<String>,
 }
 

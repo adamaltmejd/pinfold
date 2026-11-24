@@ -49,11 +49,12 @@ fn base64(text: &str) -> String {
         .collect()
 }
 
-/// The user of the injecting route's `basic` header.
-const BASIC_USER: &str = "e2e-user";
+/// The user of the injecting route's `basic` header. With the Claude
+/// login's length, its Basic credential holds `+` and `/` and ends in `==`.
+const BASIC_USER: &str = "??>???e2e-userab";
 
 /// The fixed start of the Basic credential of [`BASIC_USER`] and any
-/// route credential: whole base64 groups of `e2e-user:pfsecretroute`.
+/// route credential: whole base64 groups of `BASIC_USER:pfsecretroute`.
 fn basic_start() -> String {
     let text = format!("{BASIC_USER}:pfsecretroute");
     base64(&text)[..text.len() / 3 * 4].to_string()
@@ -107,9 +108,9 @@ fn only_bearer(request: &Request, login: &str) -> bool {
         && request.header("authorization") == [format!("Bearer {login}")]
 }
 
-/// Every needle starts with this, plain or hex, or with [`basic_start`],
-/// so a file is searched for three short strings, not for each needle. Its
-/// hex form has no letters.
+/// Every needle starts with this or with [`basic_start`], plain or hex, so
+/// a file is searched for four short strings, not for each needle. Its hex
+/// form has no letters.
 const PREFIX: &str = "pfsecret";
 
 /// A value to find in host files, plain or hex, and the label a failure
@@ -664,6 +665,9 @@ fn credentials_stay_on_the_host() {
         found.iter().any(|word| word == "pfsecretroutecanary"),
         "the canary is not found"
     );
+    // Sabotage (named): in core/box.rs, pass each resolved route header's
+    // value to the box as an env variable. Upstream headers stay correct;
+    // this finds `basic`.
     assert_eq!(
         exposed(&found.join("\n"), routes),
         Vec::<String>::new(),
@@ -772,7 +776,15 @@ fn credentials_stay_on_the_host() {
         bytes: literal.clone().into_bytes(),
         label: "literal".to_string(),
     });
-    let prefixes = [PREFIX.to_string(), hex(PREFIX), basic_start()];
+    // Sabotage (named): in core/box.rs's `launch_record`, add each resolved
+    // route header's value. Upstream headers stay correct; this finds
+    // `basic`.
+    let prefixes = [
+        PREFIX.to_string(),
+        hex(PREFIX),
+        basic_start(),
+        hex(&basic_start()),
+    ];
     let mut found = BTreeSet::new();
     for root in roots {
         sweep(&root, &prefixes, &needles, &mut found);

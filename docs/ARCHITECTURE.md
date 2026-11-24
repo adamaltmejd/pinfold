@@ -978,9 +978,10 @@ network listener, no token: the socket identifies the box.
   refuses the start. A header may name `"op": REFERENCE` instead of
   `from`, read by that process (Process interface). A header may name
   `"basic": USER` instead of `prefix`: the proxy sets it to `Basic ` plus
-  standard base64, padded, of `USER:` and `$VAR`. `basic` with `prefix`,
-  and a `basic` that is empty or holds `:` or a control character (below
-  0x20, or 0x7f), are refused as `spec`, naming only the key. An `https`
+  standard base64, padded, of `USER:` and `$VAR`. `basic` with a `prefix`
+  key, even an empty one, and a `basic` that is empty or holds `:` or a
+  control character (below 0x20, or 0x7f), are refused as `spec`, naming
+  only the key. An `https`
   target is resolved and checked like an allowlisted host; an `http` target
   is a host service. The value, plain or encoded, never reaches argv, the
   box, the spec or the log. The box can use the credential but not read

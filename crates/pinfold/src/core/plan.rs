@@ -122,8 +122,12 @@ pub struct Header {
         skip_serializing_if = "Option::is_none"
     )]
     pub op: Option<String>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub prefix: String,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub prefix: Option<String>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -144,9 +148,11 @@ pub enum Source {
 const BOTH: &str = "takes a from variable or an op reference, not both";
 const NEITHER: &str = "needs a from variable or an op reference";
 
-/// A `from` or `op` key that is present holds a string: an explicit null
-/// is refused, never read as absent.
-fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+/// A key that is present holds a string: an explicit null is refused,
+/// never read as absent.
+pub(crate) fn present<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
     String::deserialize(deserializer).map(Some)
 }
 
@@ -262,13 +268,17 @@ impl Inject {
             header
                 .source()
                 .map_err(|error| invalid(format!("route header {name:?}: {error}")))?;
-            if header.prefix.contains(['\r', '\n', '\0']) {
+            if header
+                .prefix
+                .as_ref()
+                .is_some_and(|prefix| prefix.contains(['\r', '\n', '\0']))
+            {
                 return Err(invalid(format!(
                     "route header {name:?}: its prefix holds CR, LF or NUL"
                 )));
             }
             if let Some(user) = &header.basic {
-                if !header.prefix.is_empty() {
+                if header.prefix.is_some() {
                     return Err(invalid(format!(
                         "route header {name:?}: takes a prefix or basic, not both"
                     )));
@@ -316,7 +326,7 @@ impl Inject {
             }
             let value = match &header.basic {
                 Some(user) => format!("Basic {}", base64(format!("{user}:{value}").as_bytes())),
-                None => format!("{}{value}", header.prefix),
+                None => format!("{}{value}", header.prefix.as_deref().unwrap_or_default()),
             };
             headers.push((name.clone(), value));
         }
@@ -536,7 +546,7 @@ impl Login {
                 Header {
                     from: self.from.clone(),
                     op: self.op.clone(),
-                    prefix: prefix.to_string(),
+                    prefix: (!prefix.is_empty()).then(|| prefix.to_string()),
                     basic: None,
                 },
             )]),

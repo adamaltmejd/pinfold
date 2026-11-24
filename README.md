@@ -415,12 +415,13 @@ A profile's `pinfold.toml` or the project's configuration sets the box's
 environment with `env`. A literal is plain configuration and shows in
 `pinfold config --json`; `from` reads the value from your shell when the box
 starts; pinfold never writes it down, and neither does the box runtime.
-Use `from` for anything secret:
+Every `env` value is readable by any process in the box, so credentials
+belong in a route ([GitHub access](#github-access)).
 
 ```toml
 [env]
 GIT_AUTHOR_NAME = "my-agent"
-GH_TOKEN = { from = "MY_AGENT_GH_TOKEN" }
+GIT_AUTHOR_EMAIL = { from = "MY_AGENT_EMAIL" }
 ```
 
 The project's names replace the profile's one by one, and the profile's
@@ -480,8 +481,9 @@ it needs.
 
 `gh` speaks plain HTTP to `github.localhost` through an undocumented
 local-development case; a `gh` release could drop it, and then `gh` fails
-loudly. Release downloads redirect to other hosts, such as
-`objects.githubusercontent.com`, which need `allow`.
+loudly. Release asset downloads from private repositories are not
+supported through the routes; public ones need the redirect hosts, such as
+`objects.githubusercontent.com`, in `allow`.
 
 ## Limits
 
