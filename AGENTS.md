@@ -74,9 +74,12 @@ runner. Rows 15, 43 and 44 are tested on Linux only.
   when its break would be silent and costly: a weakened control, lost or
   exposed data, or a wrong result the user would trust. A break the user
   sees at once, as a crash or a clear error, gets no row; nor does
-  convenience behavior. The list stays small: a new row should replace or
-  merge an old one where it can, and a row that no longer meets this bar
-  is deleted with its test.
+  convenience behavior. A missing refusal is silent, so a control (Always
+  applied, the proxy rules, the threat model's controls) always keeps its
+  row. The bar applies to rows; a row's positive control is part of its
+  proof. The list stays small: a new row replaces or merges an old one
+  where it can, and a row that no longer meets the bar is cut, with its
+  test, as a spec change.
 - **The hardest case.** A test's scenario is where the guarantee's mechanism
   is most likely to give: a race, a second run, a nested or reordered
   input. Not the first case that passes.
