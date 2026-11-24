@@ -8,11 +8,11 @@ use std::collections::hash_map::RandomState;
 use std::ffi::{c_int, c_void};
 use std::fs;
 use std::hash::{BuildHasher, Hasher};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use e2e::{
     COMMAND, Client, Fixture, Project, READER, Request, TestEnv, default_image, first_on_path,
@@ -28,6 +28,38 @@ fn hex(text: &str) -> String {
     text.bytes().map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// Standard base64 of `text`, from the host's `base64`, fed on stdin.
+fn base64(text: &str) -> String {
+    let mut child = Command::new("base64")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("base64");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(text.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "base64 exit {}", out.status);
+    String::from_utf8(out.stdout)
+        .unwrap()
+        .split_whitespace()
+        .collect()
+}
+
+/// The user of the injecting route's `basic` header. With the Claude
+/// login's length, its Basic credential holds `+` and `/` and ends in `==`.
+const BASIC_USER: &str = "??>???e2e-userab";
+
+/// The fixed start of the Basic credential of [`BASIC_USER`] and any
+/// route credential: whole base64 groups of `BASIC_USER:pfsecretroute`.
+fn basic_start() -> String {
+    let text = format!("{BASIC_USER}:pfsecretroute");
+    base64(&text)[..text.len() / 3 * 4].to_string()
+}
+
 /// The labels of the `(value, label)` pairs whose value `text` holds,
 /// plain or hex in either case: a failure names the value, never prints
 /// it or the text around it.
@@ -35,7 +67,7 @@ fn exposed(text: &str, values: &[(&str, &str)]) -> Vec<String> {
     let text = text.to_ascii_lowercase();
     let mut labels = Vec::new();
     for (value, label) in values {
-        if text.contains(value) {
+        if text.contains(&value.to_ascii_lowercase()) {
             labels.push(label.to_string());
         }
         if text.contains(&hex(value)) {
@@ -76,8 +108,9 @@ fn only_bearer(request: &Request, login: &str) -> bool {
         && request.header("authorization") == [format!("Bearer {login}")]
 }
 
-/// Every needle starts with this, plain or hex, so a file is searched for
-/// two short strings, not for each needle. Its hex form has no letters.
+/// Every needle starts with this or with [`basic_start`], plain or hex, so
+/// a file is searched for four short strings, not for each needle. Its hex
+/// form has no letters.
 const PREFIX: &str = "pfsecret";
 
 /// A value to find in host files, plain or hex, and the label a failure
@@ -108,14 +141,19 @@ const ENXIO: i32 = 6;
 /// Add `(file, label)` for every needle in every regular file at or under
 /// `path`. Symlinks are not followed and a file that goes mid-walk (a live
 /// box's socket or lock) is skipped; any other failure fails the test.
-fn sweep(path: &Path, needles: &[Needle], found: &mut BTreeSet<(PathBuf, String)>) {
+fn sweep(
+    path: &Path,
+    prefixes: &[String],
+    needles: &[Needle],
+    found: &mut BTreeSet<(PathBuf, String)>,
+) {
     let kind = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata.file_type(),
         Err(error) if error.kind() == ErrorKind::NotFound => return,
         Err(error) => panic!("stat {}: {error}", path.display()),
     };
     if kind.is_file() {
-        scan(path, needles, found);
+        scan(path, prefixes, needles, found);
     }
     if !kind.is_dir() {
         return;
@@ -127,7 +165,7 @@ fn sweep(path: &Path, needles: &[Needle], found: &mut BTreeSet<(PathBuf, String)
     };
     for entry in entries {
         match entry {
-            Ok(entry) => sweep(&entry.path(), needles, found),
+            Ok(entry) => sweep(&entry.path(), prefixes, needles, found),
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => panic!("read {}: {error}", path.display()),
         }
@@ -160,7 +198,12 @@ fn extents(file: &fs::File, path: &Path) -> Vec<(u64, u64)> {
     }
 }
 
-fn scan(path: &Path, needles: &[Needle], found: &mut BTreeSet<(PathBuf, String)>) {
+fn scan(
+    path: &Path,
+    prefixes: &[String],
+    needles: &[Needle],
+    found: &mut BTreeSet<(PathBuf, String)>,
+) {
     let file = match fs::File::options()
         .read(true)
         .custom_flags(O_NOFOLLOW)
@@ -170,7 +213,6 @@ fn scan(path: &Path, needles: &[Needle], found: &mut BTreeSet<(PathBuf, String)>
         Err(error) if error.kind() == ErrorKind::NotFound => return,
         Err(error) => panic!("open {}: {error}", path.display()),
     };
-    let prefixes = [PREFIX.to_string(), hex(PREFIX)];
     let longest = needles
         .iter()
         .map(|needle| needle.bytes.len())
@@ -192,7 +234,7 @@ fn scan(path: &Path, needles: &[Needle], found: &mut BTreeSet<(PathBuf, String)>
                 Err(error) => panic!("read {}: {error}", path.display()),
             }
             at += take as u64;
-            for prefix in &prefixes {
+            for prefix in prefixes {
                 let mut from = 0;
                 while from < window.len() {
                     let rest = &window[from..];
@@ -289,22 +331,26 @@ fn credentials_stay_on_the_host() {
 
     // Every value starts with PREFIX, which the host sweep looks for; every
     // route credential with `pfsecretroute`, so the box can be searched for
-    // that without being told a credential.
+    // that, and for its Basic form's fixed start, without being told a
+    // credential.
     let injected = format!("pfsecretrouteinject{}", random());
     let claude_login = format!("pfsecretrouteclaude{}", random());
     let pi_login = format!("pfsecretroutepi{}", random());
     let from = format!("pfsecretfrom{}", random());
     let penv = format!("pfsecretpenv{}", random());
     let op_env = format!("pfsecretop{}", random());
+    // The second injected header's Basic credential, encoded by the host.
+    let basic = base64(&format!("{BASIC_USER}:{claude_login}"));
     let secrets = [
         (injected.as_str(), "injected"),
         (claude_login.as_str(), "claude login"),
         (pi_login.as_str(), "pi login"),
+        (basic.as_str(), "basic"),
         (from.as_str(), "from"),
         (penv.as_str(), "PINFOLD_ENV_"),
         (op_env.as_str(), "op"),
     ];
-    let routes = &secrets[..3];
+    let routes = &secrets[..4];
     // The Claude login route and a second injected header read one
     // 1Password reference, an env entry another, from a stand-in `op`
     // first on PATH. It refuses any other reference, printing a decoy.
@@ -334,7 +380,7 @@ fn credentials_stay_on_the_host() {
                  E2E_OP = {{ op = \"{env_reference}\" }}\n\
                  E2E_LITERAL = \"{literal}\"\n\
                  [routes]\n\
-                 \"inject.internal\" = {{ to = \"http://{}\", headers = {{ \"X-E2E-Key\" = {{ from = \"E2E_INJECTED\", prefix = \"Key \" }}, \"X-E2E-Op\" = {{ op = \"{claude_reference}\" }} }} }}\n\
+                 \"inject.internal\" = {{ to = \"http://{}\", headers = {{ \"X-E2E-Key\" = {{ from = \"E2E_INJECTED\", prefix = \"Key \" }}, \"X-E2E-Op\" = {{ op = \"{claude_reference}\", basic = \"{BASIC_USER}\" }} }} }}\n\
                  \"claude.login\" = {{ login = \"claude\", op = \"{claude_op}\", to = \"http://{}\" }}\n\
                  \"openrouter.login\" = {{ login = \"pi\", provider = \"openrouter\", from = \"E2E_PI_LOGIN\", to = \"http://{}\" }}\n",
                 inject.route(),
@@ -448,9 +494,11 @@ fn credentials_stay_on_the_host() {
         requests[0].header("x-e2e-key") == [format!("Key {injected}")],
         "x-e2e-key is not the host's value alone"
     );
+    // Sabotage (run): in core/plan.rs's `Inject::resolve`, send the value
+    // after `Basic ` unencoded. x-e2e-op then holds the raw value.
     assert!(
-        requests[0].header("x-e2e-op") == [claude_login.as_str()],
-        "x-e2e-op is not the 1Password value"
+        requests[0].header("x-e2e-op") == [format!("Basic {basic}")],
+        "x-e2e-op is not the 1Password value's Basic credential"
     );
 
     // Through the Pi login route the guest's mixed-case duplicates of
@@ -596,11 +644,14 @@ fn credentials_stay_on_the_host() {
         "printf pfsecretroutecanary > \"$HOME/e2e-canary\"; set -- /dev/shm; \
          for d in /* /.[!.]* /..?*; do case $d in /proc|/sys|/dev) continue ;; esac; \
          [ -e \"$d\" ] && [ ! -L \"$d\" ] && set -- \"$@\" \"$d\"; done; \
-         words=$(grep -rhoai -D skip -e 'pfsecretroute[0-9a-z]*' -e '{}[0-9a-f]*' \"$@\" \
+         words=$(grep -rhoai -D skip -e 'pfsecretroute[0-9a-z]*' -e '{}[0-9a-f]*' \
+         -e '{}[0-9a-z+/=]*' -e '{}[0-9a-f]*' \"$@\" \
          2>/tmp/e2e-grep-errors); status=$?; printf '%s\\n' \"$words\" | sort -u; \
          grep -v -e ': Permission denied$' -e ': No such device or address$' \
          /tmp/e2e-grep-errors | sed 's/^/error /'; echo \"grep $status\"",
-        hex("pfsecretroute")
+        hex("pfsecretroute"),
+        basic_start(),
+        hex(&basic_start()),
     ));
     let errors: Vec<&String> = found
         .iter()
@@ -615,6 +666,9 @@ fn credentials_stay_on_the_host() {
         found.iter().any(|word| word == "pfsecretroutecanary"),
         "the canary is not found"
     );
+    // Sabotage (named): in core/box.rs, write only the resolved `X-E2E-Op`
+    // header value to a box-readable file. Upstream headers stay correct;
+    // only this search finds it.
     assert_eq!(
         exposed(&found.join("\n"), routes),
         Vec::<String>::new(),
@@ -723,9 +777,18 @@ fn credentials_stay_on_the_host() {
         bytes: literal.clone().into_bytes(),
         label: "literal".to_string(),
     });
+    // Sabotage (named): in core/box.rs's `launch_record`, add only the
+    // resolved `X-E2E-Op` header value. Upstream headers stay correct; only
+    // the Basic needle finds it.
+    let prefixes = [
+        PREFIX.to_string(),
+        hex(PREFIX),
+        basic_start(),
+        hex(&basic_start()),
+    ];
     let mut found = BTreeSet::new();
     for root in roots {
-        sweep(&root, &needles, &mut found);
+        sweep(&root, &prefixes, &needles, &mut found);
     }
     found.retain(|(path, label)| {
         !(is_box_disk(path, &disks)

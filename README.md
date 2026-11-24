@@ -415,12 +415,13 @@ A profile's `pinfold.toml` or the project's configuration sets the box's
 environment with `env`. A literal is plain configuration and shows in
 `pinfold config --json`; `from` reads the value from your shell when the box
 starts; pinfold never writes it down, and neither does the box runtime.
-Use `from` for anything secret:
+Every `env` value is readable by any process in the box, so credentials
+belong in a route ([GitHub access](#github-access)).
 
 ```toml
 [env]
 GIT_AUTHOR_NAME = "my-agent"
-GH_TOKEN = { from = "MY_AGENT_GH_TOKEN" }
+GIT_AUTHOR_EMAIL = { from = "MY_AGENT_EMAIL" }
 ```
 
 The project's names replace the profile's one by one, and the profile's
@@ -462,10 +463,29 @@ project’s actual cwd; commit them for disk-project crossing.
 
 ### GitHub access
 
-Give the box a token through `env` with `from`, as `GH_TOKEN` above, and
-allow `api.github.com` (the `adam` profile does). Prefer a fine-grained
-token scoped to the one repository the box works on, with only the
-permissions it needs. Every process in the box can read the token.
+Keep the token at the proxy with two injecting routes. `git` needs Basic
+auth, `gh` a Bearer token:
+
+```toml
+[env]
+GH_HOST = "github.localhost"
+GH_TOKEN = "placeholder"
+
+[routes]
+"github.localhost" = { to = "https://github.com", headers = { Authorization = { from = "MY_AGENT_GH_TOKEN", basic = "x-access-token" } } }
+"api.github.localhost" = { to = "https://api.github.com", headers = { Authorization = { from = "MY_AGENT_GH_TOKEN", prefix = "Bearer " } } }
+```
+
+In the image's Git configuration, set
+`url."http://github.localhost/".insteadOf = "https://github.com/"`.
+The box can use the token but never read it. Prefer a fine-grained token
+scoped to the one repository the box works on, with only the permissions
+it needs.
+
+`gh` speaks plain HTTP to `github.localhost` through an undocumented
+local-development case; a `gh` release could drop it, and then `gh` fails
+loudly. `gh release download` is not supported through the routes: it requests
+`https://api.github.com` directly.
 
 ## Limits
 
