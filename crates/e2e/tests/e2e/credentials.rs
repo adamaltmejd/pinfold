@@ -645,12 +645,13 @@ fn credentials_stay_on_the_host() {
          for d in /* /.[!.]* /..?*; do case $d in /proc|/sys|/dev) continue ;; esac; \
          [ -e \"$d\" ] && [ ! -L \"$d\" ] && set -- \"$@\" \"$d\"; done; \
          words=$(grep -rhoai -D skip -e 'pfsecretroute[0-9a-z]*' -e '{}[0-9a-f]*' \
-         -e '{}[0-9a-z+/=]*' \"$@\" \
+         -e '{}[0-9a-z+/=]*' -e '{}[0-9a-f]*' \"$@\" \
          2>/tmp/e2e-grep-errors); status=$?; printf '%s\\n' \"$words\" | sort -u; \
          grep -v -e ': Permission denied$' -e ': No such device or address$' \
          /tmp/e2e-grep-errors | sed 's/^/error /'; echo \"grep $status\"",
         hex("pfsecretroute"),
         basic_start(),
+        hex(&basic_start()),
     ));
     let errors: Vec<&String> = found
         .iter()
@@ -665,9 +666,9 @@ fn credentials_stay_on_the_host() {
         found.iter().any(|word| word == "pfsecretroutecanary"),
         "the canary is not found"
     );
-    // Sabotage (named): in core/box.rs, pass each resolved route header's
-    // value to the box as an env variable. Upstream headers stay correct;
-    // this finds `basic`.
+    // Sabotage (named): in core/box.rs, write only the resolved `X-E2E-Op`
+    // header value to a box-readable file. Upstream headers stay correct;
+    // only this search finds it.
     assert_eq!(
         exposed(&found.join("\n"), routes),
         Vec::<String>::new(),
@@ -776,9 +777,9 @@ fn credentials_stay_on_the_host() {
         bytes: literal.clone().into_bytes(),
         label: "literal".to_string(),
     });
-    // Sabotage (named): in core/box.rs's `launch_record`, add each resolved
-    // route header's value. Upstream headers stay correct; this finds
-    // `basic`.
+    // Sabotage (named): in core/box.rs's `launch_record`, add only the
+    // resolved `X-E2E-Op` header value. Upstream headers stay correct; only
+    // the Basic needle finds it.
     let prefixes = [
         PREFIX.to_string(),
         hex(PREFIX),

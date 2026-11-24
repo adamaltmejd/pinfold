@@ -481,9 +481,8 @@ it needs.
 
 `gh` speaks plain HTTP to `github.localhost` through an undocumented
 local-development case; a `gh` release could drop it, and then `gh` fails
-loudly. Release asset downloads from private repositories are not
-supported through the routes; public ones need the redirect hosts, such as
-`objects.githubusercontent.com`, in `allow`.
+loudly. `gh release download` is not supported through the routes: it requests
+`https://api.github.com` directly.
 
 ## Limits
 
