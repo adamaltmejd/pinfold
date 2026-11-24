@@ -14,7 +14,7 @@ const NAMESPACES: [&str; 6] = ["user", "mnt", "pid", "net", "ipc", "uts"];
 fn the_vmm_reaches_only_its_own_box() {
     // Sabotage (run): drop `CLONE_NEWIPC` from the clone flags in
     // core/runtime/firecracker/jail.rs. Each VMM then shares the host's
-    // IPC namespace.
+    // IPC namespace. Each block below names its own.
     // Each VMM seeing its own disks, and the detached owner's SIGKILL
     // ending its VMM, are the positive controls.
     let image = default_image();
@@ -79,6 +79,8 @@ fn the_vmm_reaches_only_its_own_box() {
     let host_sockets = sockets_under(&roots);
     for (vmm, own, other) in [(&a_vmm, &a_disks, &b_disks), (&b_vmm, &b_disks, &a_disks)] {
         // The user's, with no capabilities and no way to gain privilege.
+        // Sabotage: drop `set_no_new_privs` from `restrict` in jail.rs.
+        // NoNewPrivs is then 0.
         let status = vmm.status();
         for field in ["Uid", "Gid"] {
             let ids: Vec<&str> = status[field].split_whitespace().collect();
@@ -100,6 +102,8 @@ fn the_vmm_reaches_only_its_own_box() {
         }
 
         // Through its root: its own disks and not the other box's.
+        // Sabotage: add a read-only bind of `<state>/pinfold/disks` to
+        // `Plan::jail`'s binds. The other box's disk is then in the tree.
         let seen = vmm.tree();
         let inodes: BTreeSet<(u64, u64)> = seen.iter().map(|entry| entry.inode).collect();
         for path in own {
@@ -123,6 +127,9 @@ fn the_vmm_reaches_only_its_own_box() {
         // a device of its own, so it is not exempted. The one directory
         // allowed is the vsock socket directory, identified below: where
         // /tmp is on the home's filesystem, it is on that device too.
+        // Sabotage: add a read-only bind of the kernel's directory to
+        // `Plan::jail`'s binds. It holds no disk or socket, so only this
+        // block sees it.
         let home_dev = fs::metadata(&home).unwrap().dev();
         let mountinfo = fs::read_to_string(format!("/proc/{}/mountinfo", vmm.pid)).unwrap();
         let mut from_home = BTreeSet::new();
@@ -155,6 +162,9 @@ fn the_vmm_reaches_only_its_own_box() {
         // project's session and shutdown control sockets and the other
         // box's vsock sockets among them, shares a device and inode with
         // anything in the jail.
+        // Sabotage: bind `c.sock` in `self.vsock` instead of
+        // `self.directory` in runtime/sockets.rs. The control socket is
+        // then in the jail under a name that is not a vsock listener's.
         let bound = vmm.bound();
         let listening: Vec<&PathBuf> = bound
             .iter()
@@ -214,6 +224,9 @@ fn the_vmm_reaches_only_its_own_box() {
         // Every descriptor the VMM holds is in its jail, the spec's
         // `/dev/null` standard descriptors, a socket bound in its vsock
         // directory, or an anonymous kernel object.
+        // Sabotage: in `exec_ready` in jail.rs, clear close-on-exec on every
+        // descriptor above stderr instead of setting it. The VMM then
+        // inherits the owner's files, the image lease lock among them.
         let null = inode(Path::new("/dev/null"));
         let in_vsock: BTreeSet<&str> = bound
             .iter()
@@ -251,6 +264,8 @@ fn the_vmm_reaches_only_its_own_box() {
     }
 
     // Control: SIGKILL of the detached owner ends its VM.
+    // Sabotage: drop `set_pdeathsig` from `enter` in jail.rs. The VMM then
+    // outlives its owner and `wait_gone` times out.
     let kill = leftover.kill();
     assert_eq!(kill.code, 0, "kill the project owner: {kill:?}");
     b_below.wait_gone();
