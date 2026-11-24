@@ -110,6 +110,7 @@ fn nothing_can_gain_privileges() {
     // so nothing below one can be executed.
     // Sabotage: drop the `find / -xdev -perm /6000` line from the bundled
     // profile/default/Containerfile. The scan then prints `setid` lines.
+    // On the Mac, delete the reused profile-default image first.
     let scan = |root: &str| {
         let out = env.exec(&name, &["perl", "-e", SETID_SCAN, root]);
         assert_eq!(out.code, 0, "the scan of {root}: {out:?}");
@@ -134,7 +135,7 @@ fn nothing_can_gain_privileges() {
     // The root refuses a write as read-only; the tmpfs `/tmp` takes it.
     // Sabotage: on Apple, drop `--read-only` from `container run`; on Linux,
     // drop `MS_RDONLY` from the root's remount in init/firecracker.rs. The
-    // first write then returns 0.
+    // first write then fails with EACCES, not EROFS.
     let write = |path: &str| {
         let out = env.exec(
             &name,
@@ -188,8 +189,9 @@ fn nothing_can_gain_privileges() {
 
     // A second box boots another kernel: a different boot_id, and on Linux
     // neither is the host's.
-    // Sabotage: let `up` run a second box's work in the first box's running
-    // VM. Every check above still passes; the two boot_ids then match.
+    // Sabotage: in `exec` in runtime/firecracker/mod.rs, open the first
+    // box's sockets whatever the name. Every check above still passes;
+    // the two boot_ids then match.
     let other = box_name("privilege-other");
     let _other = env.up(&json!({ "name": other, "image": image }));
     let boot_id = |name: &str| {
