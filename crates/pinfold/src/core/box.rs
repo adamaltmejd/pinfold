@@ -1156,6 +1156,13 @@ fn prepare_logins(plan: &mut Plan, state_dir: &Path, destinations: &[PathBuf]) -
     plan.env
         .entry("PINFOLD_ALLOW".to_owned())
         .or_insert(Env::Exact(allow));
+    // `validate` refused a caller entry for any of these names.
+    if logins.iter().any(|(_, login)| login.is_github()) {
+        for (name, value) in login::GITHUB_ENV {
+            plan.env
+                .insert(name.to_owned(), Env::Exact(value.to_owned()));
+        }
+    }
     for destination in destinations {
         let (name, file, contents) = if destination == Path::new(login::CLAUDE_CONFIG_DIR) {
             let (route, _) = logins

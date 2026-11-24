@@ -360,6 +360,19 @@ pub fn claude_config(route: &str) -> String {
     .to_string()
 }
 
+/// The box environment a github login route sets: `gh` at the route with
+/// placeholder tokens, and Git's GitHub URLs rewritten to the route.
+pub const GITHUB_ENV: [(&str, &str); 8] = [
+    ("GH_HOST", "github.localhost"),
+    ("GH_TOKEN", LOGIN_PLACEHOLDER),
+    ("GH_ENTERPRISE_TOKEN", LOGIN_PLACEHOLDER),
+    ("GIT_CONFIG_COUNT", "2"),
+    ("GIT_CONFIG_KEY_0", "url.http://github.localhost/.insteadOf"),
+    ("GIT_CONFIG_VALUE_0", "https://github.com/"),
+    ("GIT_CONFIG_KEY_1", "url.http://github.localhost/.insteadOf"),
+    ("GIT_CONFIG_VALUE_1", "git@github.com:"),
+];
+
 /// The single autoload entry under the writable home; sibling extensions remain.
 pub const PI_LOGIN_DIR: &str = ".pi/agent/extensions/pinfold-login";
 
