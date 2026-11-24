@@ -506,9 +506,9 @@ fn credentials_stay_on_the_host() {
     assert_eq!(
         ask(
             "GIT_TERMINAL_PROMPT=0 git -c http.extraHeader='AuTHorization: Bearer pfbox-g' \
-             ls-remote https://github.com/e2e/repo.git >/dev/null 2>&1; echo done"
+             ls-remote https://github.com/e2e/repo.git >/dev/null 2>&1; echo ran"
         ),
-        ["done"]
+        ["ran"]
     );
     assert_eq!(
         ask(&curl(
