@@ -129,7 +129,7 @@ fn a_projects_sessions_share_one_box() {
             &file,
             format!(
                 "{saved}allow = [\"{allow}\"]\nenv = {{ E2E_SESSION = {{ from = \"{SOURCE}\" }}, \
-                 E2E_SESSION_OP = {{ op = \"{reference}\" }} }}\n"
+                 E2E_SESSION_OP = {{ from = \"{reference}\" }} }}\n"
             ),
         )
         .unwrap();

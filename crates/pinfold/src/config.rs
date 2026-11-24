@@ -575,11 +575,6 @@ impl Layer {
             toml::from_slice(bytes).map_err(|error| invalid(source, &error.to_string()))?;
         let input: toml::Table =
             toml::from_slice(bytes).map_err(|error| invalid(source, &error.to_string()))?;
-        crate::core::plan::check_declared(
-            layer.env.as_ref().unwrap_or(&BTreeMap::new()),
-            layer.routes.as_ref().unwrap_or(&BTreeMap::new()),
-        )
-        .map_err(|error| invalid(source, &error))?;
         layer.route_declarations =
             input
                 .get("routes")
@@ -669,9 +664,9 @@ fn env_overrides() -> io::Result<Vec<(String, Env)>> {
                 "a variable's name is not valid UTF-8",
             ));
         };
-        let from = Some(name.to_string());
+        let from = name.to_string();
         let name = name["PINFOLD_ENV_".len()..].to_string();
-        found.push((name, Env::Secret { from, op: None }));
+        found.push((name, Env::Secret { from }));
     }
     Ok(found)
 }

@@ -303,7 +303,7 @@ pub trait Runtime: Sync {
 }
 
 /// The box's environment in order, a later entry winning: the spec's, a
-/// `from` or `op` entry's value from `values` under the entry's key, then the
+/// `from` entry's value from `values` under the entry's key, then the
 /// always-applied variables.
 fn guest_vars(plan: &Plan, values: &Values) -> Vec<(String, OsString)> {
     let mut vars: Vec<(String, OsString)> = plan

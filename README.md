@@ -160,12 +160,12 @@ login = "claude"
 from = "CLAUDE_SETUP_TOKEN"
 ```
 
-Or read it from 1Password with `op` in place of `from`:
+Or read it from 1Password, with a reference in `from`:
 
 ```toml
 [routes.anthropic]
 login = "claude"
-op = "op://Private/Claude setup token/credential"
+from = "op://Private/Claude setup token/credential"
 ```
 
 The 1Password CLI (`op`) must be installed and signed in. Only the launch

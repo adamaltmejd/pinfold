@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::config::{Config, ProjectMount};
 use crate::core::image::service;
 use crate::core::login::MAX_OP_VALUE;
-use crate::core::plan::{self, Env, MountKind, Plan, Source, Values, memory_mib, valid_op};
+use crate::core::plan::{self, Env, MountKind, Plan, Source, Values, memory_mib};
 use crate::core::profile::Share;
 use crate::dirs;
 use crate::pi::{context::Context, launch, state};
@@ -161,8 +161,7 @@ struct Inject {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Header {
-    from: Option<String>,
-    op: Option<String>,
+    from: String,
     prefix: Option<String>,
     #[serde(
         default,
@@ -178,7 +177,6 @@ struct Login {
     login: String,
     provider: Option<String>,
     from: Option<String>,
-    op: Option<String>,
     to: Option<String>,
 }
 
@@ -287,9 +285,11 @@ impl Snapshot {
         let decode = |source: Source, value: Option<&Bytes>| {
             let value = crate::init::decode_hex(value.ok_or_else(invalid)?.0.as_bytes())?;
             let valid = match &source {
-                Source::From(name) => !name.is_empty() && !name.contains(['=', '\0']),
+                Source::From(name) => {
+                    matches!(Source::declared(name), Ok(Source::From(_)))
+                }
                 Source::Op(reference) => {
-                    valid_op(reference)
+                    matches!(Source::declared(reference), Ok(Source::Op(_)))
                         && !value.is_empty()
                         && value.len() <= MAX_OP_VALUE
                         && std::str::from_utf8(&value).is_ok()
@@ -316,9 +316,11 @@ impl Snapshot {
                 EnvSource::Exact {} | EnvSource::Op { .. } => None,
             });
         // Exactly the declared references, each once.
-        let references: std::collections::BTreeSet<&String> =
-            op.0.iter().map(|(reference, _)| reference).collect();
-        let declared_op: std::collections::BTreeSet<&String> = self
+        let references: std::collections::BTreeSet<&str> =
+            op.0.iter()
+                .map(|(reference, _)| reference.as_str())
+                .collect();
+        let declared_op: std::collections::BTreeSet<&str> = self
             .routes
             .values()
             .flat_map(|declaration| match declaration {
@@ -326,13 +328,14 @@ impl Snapshot {
                     .headers
                     .iter()
                     .flatten()
-                    .filter_map(|(_, header)| header.op.as_ref())
+                    .map(|(_, header)| header.from.as_str())
                     .collect(),
-                Declaration::Login(login) => login.op.iter().collect(),
+                Declaration::Login(login) => login.from.as_deref().into_iter().collect(),
                 Declaration::Address(_) => Vec::new(),
             })
+            .filter(|from| matches!(Source::declared(from), Ok(Source::Op(_))))
             .chain(self.env_names.values().filter_map(|source| match source {
-                EnvSource::Op { reference } => Some(reference),
+                EnvSource::Op { reference } => Some(reference.as_str()),
                 EnvSource::Exact {} | EnvSource::From { .. } => None,
             }))
             .collect();
@@ -343,28 +346,26 @@ impl Snapshot {
             op.0.iter()
                 .map(|(reference, value)| decode(Source::Op(reference.clone()), Some(value)));
         let values: BTreeMap<_, _> = routes.chain(env).chain(op).collect::<io::Result<_>>()?;
-        let has = |from: &Option<String>, op: &Option<String>| match (from, op) {
-            (Some(from), None) => values.contains_key(&Source::From(from.clone())),
-            (None, Some(reference)) => values.contains_key(&Source::Op(reference.clone())),
-            _ => false,
-        };
+        let has =
+            |from: &str| Source::declared(from).is_ok_and(|source| values.contains_key(&source));
         let declared = self.routes.values().all(|declaration| match declaration {
             Declaration::Inject(inject) => inject
                 .headers
                 .iter()
                 .flatten()
-                .all(|(_, header)| has(&header.from, &header.op)),
+                .all(|(_, header)| has(&header.from)),
             Declaration::Login(login) => {
-                let neither = login.from.is_none() && login.op.is_none();
                 let host_codex = plan::Login {
                     login: login.login.clone(),
                     provider: login.provider.clone(),
                     from: None,
-                    op: None,
                     to: None,
                 }
                 .uses_host_codex();
-                neither || (!host_codex && has(&login.from, &login.op))
+                match &login.from {
+                    None => true,
+                    Some(from) => !host_codex && has(from),
+                }
             }
             Declaration::Address(_) => true,
         }) && self.env_names.iter().all(|(name, source)| match source {
