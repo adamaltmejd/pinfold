@@ -48,8 +48,8 @@ queries:
 ## Findings
 
 - With `GH_HOST=github.localhost`, `gh` sent plain HTTP to the route:
-  `gh api user` appears in the log as `GET /user` on
-  `api.github.localhost`, and `GH_DEBUG=api` showed GraphQL going to
+  `gh api user` returned `aa-agent`, the egress log recorded `GET /user`
+  on `api.github.localhost`, and `GH_DEBUG=api` showed GraphQL going to
   `http://api.github.localhost/graphql`. This is a special case in
   `gh`'s client for that host name. It lets `gh` use a route with no
   TLS interception.
@@ -63,9 +63,9 @@ queries:
   `GET …/info/refs` and differ only by the `service` query. The spike
   observed the fetch POST and exercised push discovery and a dry run,
   not a push transfer.
-- `gh`'s GraphQL requests share one path, `POST /graphql`. Their bodies
-  name repositories by owner and name or refer to objects by node ID, so
-  restricting them by repository means reading and resolving the body.
+- `gh`'s GraphQL requests share one path, `POST /graphql`. The method
+  and path alone cannot identify which repositories a GraphQL request
+  accesses.
   A fine-grained token can enforce read-only and per-repository limits on
   GitHub's side when it is configured that way; the spike recorded
   neither the token's settings nor a denial testing them. Method and path
