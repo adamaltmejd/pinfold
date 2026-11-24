@@ -11,15 +11,17 @@ assertion block, because a test is a guarantee row.
 
 ## At approval: the candidate touches a test
 
-Four answers, from the diff and the ticket. A missing one sends the
+Five answers, from the diff and the ticket. A missing one sends the
 candidate back.
 
-1. Which guarantee row. A new test needs a new row; a bug extends its
+1. Why the behavior is critical (AGENTS.md, Critical behavior only). If
+   it is not, the candidate drops the test.
+2. Which guarantee row. A new test needs a new row; a bug extends its
    row's test.
-2. Which change to the binary makes it fail, named in the test's comment.
-3. Why the row's existing blocks do not already catch that failure, and
+3. Which change to the binary makes it fail, named in the test's comment.
+4. Why the row's existing blocks do not already catch that failure, and
    whether this is the row's hardest case.
-4. Which outside source gives each expected value.
+5. Which outside source gives each expected value.
 
 Do not run the sabotage by hand. Review the comment's named change to
 the binary as the test's failure proof.
@@ -44,6 +46,8 @@ One line per block that fails the bar, no hedging:
 - `promise:` the name or comment claims more than the scenario exercises.
 - `seam:` a helper in `lib.rs`, or anything in the binary, that only this
   block needs.
+- `minor:` the whole row fails Critical behavior only (AGENTS.md).
+  Disposition: a spec question for Adam.
 
 Disposition is `delete`, or `rewrite` when the block is the row's only
 proof of a contract. The agent ends with `<N> blocks, <M> to delete.` or
