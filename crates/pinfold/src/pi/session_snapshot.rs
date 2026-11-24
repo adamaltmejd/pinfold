@@ -438,7 +438,7 @@ impl Snapshot {
         let mut checked = plan.clone();
         if start {
             for folder in &config.folders {
-                crate::config::admit_folder(root, &folder.host, &config.profile)?;
+                crate::config::admit_folder(root, folder, &config.profile)?;
             }
         } else {
             checked.mounts.truncate(project_mounts);

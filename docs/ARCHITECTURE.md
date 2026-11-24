@@ -2138,8 +2138,9 @@ admission. At each box start, before its
 contents are read, the host must be its own real path, with no link in
 it (`spec`, naming the real path), UTF-8 (`path-not-utf8`), not at or
 inside the project root by device and inode (`spec`: a box can write
-the project, so a link there could choose the folder), and must not
-overlap a protected path (below); the box layer then checks it as a
+the project, so a link there could choose the folder), for a share
+folder not containing the project root by device and inode (`spec`),
+and must not overlap a protected path (below); the box layer then checks it as a
 mount host. A link swapped into a folder's path after a start is refused
 at the next start; a joining client does not touch folders on the host.
 On macOS a box with any share has preparation resolve the host again,

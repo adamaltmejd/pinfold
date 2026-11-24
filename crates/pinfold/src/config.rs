@@ -461,7 +461,10 @@ impl Config {
 /// must be its own real path, with no link a box could have planted to
 /// choose another folder. That path must be UTF-8, lie outside the project
 /// and clear every protected path, since the box could read pinfold's own state, the egress log included.
-pub(crate) fn admit_folder(root: &Path, host: &Path, profile: &Profile) -> io::Result<()> {
+/// A share folder must not contain the project either: through it a disk
+/// project's box would write the host checkout, bypassing Git.
+pub(crate) fn admit_folder(root: &Path, folder: &Mount, profile: &Profile) -> io::Result<()> {
+    let host = folder.host.as_path();
     let refused = |detail: &str| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -480,8 +483,12 @@ pub(crate) fn admit_folder(root: &Path, host: &Path, profile: &Profile) -> io::R
     }
     // The box layer checks the rest of the path's form, and the directory.
     crate::pi::launch::utf8(host, "folder")?;
-    if crate::core::mounts::source_beneath(host, &fs::canonicalize(root)?)? {
+    let project = fs::canonicalize(root)?;
+    if crate::core::mounts::source_beneath(host, &project)? {
         return Err(refused("lies inside the project"));
+    }
+    if folder.kind == MountKind::Share && crate::core::mounts::source_beneath(&project, host)? {
+        return Err(refused("is a share that contains the project"));
     }
     check_paths_outside(root, host, Some(profile), true)
 }
