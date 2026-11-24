@@ -459,10 +459,29 @@ project’s actual cwd; commit them for disk-project crossing.
 
 ### GitHub access
 
-Give the box a token through `env` with `from`, as `GH_TOKEN` above, and
-allow `api.github.com` (the `adam` profile does). Prefer a fine-grained
-token scoped to the one repository the box works on, with only the
-permissions it needs. Every process in the box can read the token.
+Keep the token at the proxy with two injecting routes. `git` needs Basic
+auth, `gh` a Bearer token:
+
+```toml
+[env]
+GH_HOST = "github.localhost"
+GH_TOKEN = "placeholder"
+
+[routes]
+"github.localhost" = { to = "https://github.com", headers = { Authorization = { from = "MY_AGENT_GH_TOKEN", basic = "x-access-token" } } }
+"api.github.localhost" = { to = "https://api.github.com", headers = { Authorization = { from = "MY_AGENT_GH_TOKEN", prefix = "Bearer " } } }
+```
+
+In the image's Git configuration, set
+`url."http://github.localhost/".insteadOf = "https://github.com/"`.
+The box can use the token but never read it. Prefer a fine-grained token
+scoped to the one repository the box works on, with only the permissions
+it needs.
+
+`gh` speaks plain HTTP to `github.localhost` through an undocumented
+local-development case; a `gh` release could drop it, and then `gh` fails
+loudly. Release downloads redirect to other hosts, such as
+`objects.githubusercontent.com`, which need `allow`.
 
 ## Limits
 

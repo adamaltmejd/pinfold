@@ -105,7 +105,8 @@ pub struct Inject {
 }
 
 /// One injected header: `prefix` then the value of its source, `from` or
-/// `op`. Only the variable's name or the reference is ever written down.
+/// `op`, or with `basic` the Basic credential for that user and the value.
+/// Only the variable's name or the reference is ever written down.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Header {
@@ -123,6 +124,12 @@ pub struct Header {
     pub op: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prefix: String,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub basic: Option<String>,
 }
 
 /// Where a secret's value comes from: a host variable (`from`) or a
@@ -260,6 +267,18 @@ impl Inject {
                     "route header {name:?}: its prefix holds CR, LF or NUL"
                 )));
             }
+            if let Some(user) = &header.basic {
+                if !header.prefix.is_empty() {
+                    return Err(invalid(format!(
+                        "route header {name:?}: takes a prefix or basic, not both"
+                    )));
+                }
+                if user.is_empty() || user.contains(|c: char| c == ':' || c.is_ascii_control()) {
+                    return Err(invalid(format!(
+                        "route header {name:?}: its basic user is empty or holds : or a control character"
+                    )));
+                }
+            }
         }
         Ok(target)
     }
@@ -288,7 +307,6 @@ impl Inject {
                     )));
                 }
             };
-            let value = format!("{}{value}", header.prefix);
             // A line break or NUL would let the value frame its own headers.
             if value.contains(['\r', '\n', '\0']) {
                 return Err(invalid(format!(
@@ -296,6 +314,10 @@ impl Inject {
                     source.name()
                 )));
             }
+            let value = match &header.basic {
+                Some(user) => format!("Basic {}", base64(format!("{user}:{value}").as_bytes())),
+                None => format!("{}{value}", header.prefix),
+            };
             headers.push((name.clone(), value));
         }
         Ok((target, headers))
@@ -515,6 +537,7 @@ impl Login {
                     from: self.from.clone(),
                     op: self.op.clone(),
                     prefix: prefix.to_string(),
+                    basic: None,
                 },
             )]),
         };
@@ -1315,6 +1338,26 @@ pub(crate) fn valid_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+}
+
+/// Standard base64 with padding.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &byte)| n | u32::from(byte) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() {
+                ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
 }
 
 fn invalid(message: impl fmt::Display) -> String {

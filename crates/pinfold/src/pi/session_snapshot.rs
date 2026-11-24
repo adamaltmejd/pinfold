@@ -164,6 +164,7 @@ struct Header {
     from: Option<String>,
     op: Option<String>,
     prefix: Option<String>,
+    basic: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
