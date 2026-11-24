@@ -961,18 +961,27 @@ async fn start(
 fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json::Value {
     let runtime = runtime();
     let egress = plan.egress.as_ref().map(|egress| {
-        let routes: serde_json::Map<String, serde_json::Value> = egress
-            .routes
-            .iter()
-            .map(|(name, route)| {
-                let (kind, to) = match route {
-                    Route::Address(address) => ("host-service", address.as_str()),
-                    Route::Inject(inject) => ("injecting", inject.to.as_str()),
-                    Route::Login(login) => ("login", login.origin().unwrap_or_default()),
-                };
-                (name.clone(), serde_json::json!({ "kind": kind, "to": to }))
-            })
-            .collect();
+        let mut routes = serde_json::Map::new();
+        for (name, route) in &egress.routes {
+            let served = match route {
+                Route::Address(address) => vec![("host-service", name.as_str(), address.clone())],
+                Route::Inject(inject) => vec![("injecting", name.as_str(), inject.to.clone())],
+                Route::Login(login) => login
+                    .served(name)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(name, origin, base_path)| {
+                        ("login", name, format!("{origin}{base_path}"))
+                    })
+                    .collect(),
+            };
+            for (kind, name, to) in served {
+                routes.insert(
+                    name.to_owned(),
+                    serde_json::json!({ "kind": kind, "to": to }),
+                );
+            }
+        }
         serde_json::json!({ "allow": &egress.allow, "routes": routes })
     });
     let mounts: Vec<serde_json::Value> = plan

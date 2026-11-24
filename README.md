@@ -480,7 +480,9 @@ the one repository the box works on, with only the permissions it needs.
 `gh` speaks plain HTTP to `github.localhost` through an undocumented
 local-development case; a `gh` release could drop it, and then `gh` fails
 loudly. `gh release download` is not supported through the route: it
-requests `https://api.github.com` directly.
+requests `https://api.github.com` directly. Nor is `gh api --paginate`
+past the first page: it follows absolute `api.github.com` links, which
+are refused.
 
 ## Limits
 

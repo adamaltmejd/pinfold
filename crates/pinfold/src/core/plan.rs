@@ -384,13 +384,22 @@ impl Login {
         self.login == "github"
     }
 
-    /// The proxy names this route serves.
-    pub fn names<'a>(&self, route: &'a str) -> Vec<&'a str> {
-        if self.is_github() {
-            GITHUB_NAMES.to_vec()
-        } else {
-            vec![route]
+    /// The proxy names this route serves, each with the origin it dials
+    /// and the path put before each request's. Holds no credential.
+    pub fn served<'a>(
+        &'a self,
+        route: &'a str,
+    ) -> Result<Vec<(&'a str, &'a str, &'static str)>, String> {
+        let origin = self.origin()?;
+        if !self.is_github() {
+            return Ok(vec![(route, origin, "")]);
         }
+        let [git_name, api_name] = GITHUB_NAMES;
+        let api = match self.to {
+            Some(_) => (api_name, origin, "/api/v3"),
+            None => (api_name, "https://api.github.com", ""),
+        };
+        Ok(vec![(git_name, origin, ""), api])
     }
 
     /// Whether the proxy takes this login's headers from the host's Codex
@@ -496,46 +505,31 @@ impl Login {
                 },
             )]),
         };
-        let (target, headers) = inject.resolve(route, values)?;
-        if !self.is_github() {
-            return Ok(vec![Served {
-                name: route.to_string(),
-                target,
-                base_path: "",
-                headers,
-            }]);
-        }
-        let Some((_, token)) = headers.first() else {
+        let (_, headers) = inject.resolve(route, values)?;
+        if self.is_github() && headers.is_empty() {
             return Err(values.missing(&source));
-        };
-        let (api, base_path) = match self.to {
-            Some(_) => (target.clone(), "/api/v3"),
-            None => (
-                parse_target("https://api.github.com").expect("GitHub's API origin"),
-                "",
-            ),
-        };
-        let [git_name, api_name] = GITHUB_NAMES;
-        Ok(vec![
-            Served {
-                name: git_name.to_string(),
-                target,
-                base_path: "",
-                headers: vec![(
-                    header.to_string(),
-                    format!(
-                        "Basic {}",
-                        base64(format!("x-access-token:{token}").as_bytes())
-                    ),
-                )],
-            },
-            Served {
-                name: api_name.to_string(),
-                target: api,
+        }
+        let mut served = Vec::new();
+        for (name, origin, base_path) in self.served(route)? {
+            let headers = match headers.first() {
+                Some((_, token)) if self.is_github() && name == GITHUB_NAMES[0] => {
+                    let basic = base64(format!("x-access-token:{token}").as_bytes());
+                    vec![(header.to_string(), format!("Basic {basic}"))]
+                }
+                Some((_, token)) if self.is_github() => {
+                    vec![(header.to_string(), format!("Bearer {token}"))]
+                }
+                _ => headers.clone(),
+            };
+            served.push(Served {
+                name: name.to_string(),
+                // `inject.resolve` checked `to`; GitHub's API origin parses.
+                target: parse_target(origin).expect("a checked login origin"),
                 base_path,
-                headers: vec![(header.to_string(), format!("Bearer {token}"))],
-            },
-        ])
+                headers,
+            });
+        }
+        Ok(served)
     }
 }
 
@@ -1034,10 +1028,10 @@ impl Plan {
             let mut route_names = BTreeSet::new();
             for (name, route) in &egress.routes {
                 let served = match route {
-                    Route::Login(login) => login.names(name),
-                    _ => vec![name.as_str()],
+                    Route::Login(login) => login.served(name)?,
+                    _ => vec![(name.as_str(), "", "")],
                 };
-                for name in served {
+                for (name, _, _) in served {
                     if !route_names.insert(name.to_ascii_lowercase()) {
                         return Err(invalid(format!(
                             "route {name:?} duplicates a name ignoring ASCII case"

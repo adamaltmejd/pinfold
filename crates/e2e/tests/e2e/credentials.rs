@@ -495,33 +495,81 @@ fn credentials_stay_on_the_host() {
         "x-e2e-key is not the host's value alone"
     );
 
+    let log = env.state_home().join("pinfold/runs");
+    let decisions = || -> Vec<serde_json::Value> {
+        let mut lines = Vec::new();
+        for run in fs::read_dir(&log).unwrap() {
+            let path = run.unwrap().path().join("egress.jsonl");
+            if let Ok(text) = fs::read_to_string(path) {
+                lines.extend(json_lines(&text));
+            }
+        }
+        lines
+    };
+
     // The GitHub route replaces the guest's own mixed-case Authorization
-    // on both names. Git reaches the route through the generated rewrite
-    // of a github.com remote; the fixture's 418 fails the command.
+    // and drops its X-Api-Key on both names. Git reaches the route through
+    // the generated rewrite of a github.com remote; the fixture's 418 fails
+    // the command.
     // Sabotage (run): in core/plan.rs's `Login::resolve`, put the github
     // token after `Basic ` unencoded. The Git request then holds the raw
     // value.
-    // Sabotage (run): in proxy.rs's `forward`, drop `base_path`. The API
-    // request then arrives at /user.
+    // Sabotage (run): in proxy.rs's `Rules`, serve the github names with
+    // `login: false`. X-Api-Key then reaches the fixture, and the
+    // `access_token` query is forwarded: curl prints 418, not 403.
     assert_eq!(
         ask(
             "GIT_TERMINAL_PROMPT=0 git -c http.extraHeader='AuTHorization: Bearer pfbox-g' \
+             -c http.extraHeader='X-Api-Key: pfbox-gk' \
              ls-remote https://github.com/e2e/repo.git >/dev/null 2>&1; echo ran"
         ),
         ["ran"]
     );
+    let github_api = "-H 'AuTHorization: Bearer pfbox-h' -H 'X-Api-Key: pfbox-hk' \
+                      'http://api.github.localhost/user";
+    let before = decisions().len();
     assert_eq!(
-        ask(&curl(
-            "-H 'AuTHorization: Bearer pfbox-h' http://api.github.localhost/user"
-        )),
-        ["418"]
+        ask(&curl(&format!("{github_api}?access_token=x'"))),
+        ["403"]
     );
+    let lines = decisions()[before..].to_vec();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert_eq!(
+        (
+            &lines[0]["host"],
+            &lines[0]["decision"],
+            &lines[0]["reason"]
+        ),
+        (
+            &serde_json::json!("api.github.localhost"),
+            &serde_json::json!("refused"),
+            &serde_json::json!("login credential query")
+        ),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(
+        github.requests().len(),
+        1,
+        "the refused query reached the fixture"
+    );
+    // Control: the same request with an ordinary query, whose bytes arrive
+    // unchanged under `/api/v3`.
+    // Sabotage (run): in proxy.rs's `forward`, drop `base_path`. The API
+    // request then arrives at /user.
+    assert_eq!(ask(&curl(&format!("{github_api}?per_page=2'"))), ["418"]);
     let requests = github.requests();
-    let paths: Vec<&str> = requests
+    let targets: Vec<&str> = requests
         .iter()
-        .map(|request| request.target.split('?').next().unwrap_or_default())
+        .map(|request| request.target.as_str())
         .collect();
-    assert_eq!(paths, ["/e2e/repo.git/info/refs", "/api/v3/user"]);
+    assert_eq!(
+        targets,
+        [
+            "/e2e/repo.git/info/refs?service=git-upload-pack",
+            "/api/v3/user?per_page=2"
+        ]
+    );
     assert!(
         credential_fields(&requests[0]) == ["authorization"]
             && requests[0].header("authorization") == [format!("Basic {basic}")],
@@ -546,17 +594,6 @@ fn credentials_stay_on_the_host() {
          -H 'x-api-key: pfbox-c' -H 'X-API-KEY: pfbox-d' \
          -H 'X-E2E-Nominated: pfbox-n'"
     );
-    let log = env.state_home().join("pinfold/runs");
-    let decisions = || -> Vec<serde_json::Value> {
-        let mut lines = Vec::new();
-        for run in fs::read_dir(&log).unwrap() {
-            let path = run.unwrap().path().join("egress.jsonl");
-            if let Ok(text) = fs::read_to_string(path) {
-                lines.extend(json_lines(&text));
-            }
-        }
-        lines
-    };
     let before = decisions().len();
     assert_eq!(
         ask(&curl(&format!("{forged} '{completions}?api_key=pfbox-e'"))),
