@@ -516,7 +516,9 @@ fn credentials_stay_on_the_host() {
     // value.
     // Sabotage (run): in proxy.rs's `Rules`, serve the github names with
     // `login: false`. X-Api-Key then reaches the fixture, and the
-    // `access_token` query is forwarded: curl prints 418, not 403.
+    // credential query is forwarded: curl prints 418, not 403.
+    // The query hides `access_token` behind a `;` separator, a percent
+    // escape, mixed case and `_`, each of which the proxy must undo.
     assert_eq!(
         ask(
             "GIT_TERMINAL_PROMPT=0 git -c http.extraHeader='AuTHorization: Bearer pfbox-g' \
@@ -528,8 +530,9 @@ fn credentials_stay_on_the_host() {
     let github_api = "-H 'AuTHorization: Bearer pfbox-h' -H 'X-Api-Key: pfbox-hk' \
                       'http://api.github.localhost/user";
     let before = decisions().len();
+    let upstream = github.requests().len();
     assert_eq!(
-        ask(&curl(&format!("{github_api}?access_token=x'"))),
+        ask(&curl(&format!("{github_api}?per_page=2;Access%5Ftoken=x'"))),
         ["403"]
     );
     let lines = decisions()[before..].to_vec();
@@ -550,7 +553,7 @@ fn credentials_stay_on_the_host() {
     );
     assert_eq!(
         github.requests().len(),
-        1,
+        upstream,
         "the refused query reached the fixture"
     );
     // Control: the same request with an ordinary query, whose bytes arrive
