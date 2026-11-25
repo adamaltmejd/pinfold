@@ -120,7 +120,11 @@ fn disks_persist_and_attach_exclusively() {
     drop(env.up(&spec(&reader, &disk, true)));
     let (code, lines) = rm(&env);
     assert_eq!(code, 0, "{lines:?}");
-    assert_eq!(lines[0]["event"], "removed", "{lines:?}");
+    assert_eq!(
+        (&lines[0]["event"], &lines[0]["existed"]),
+        (&json!("removed"), &json!(true)),
+        "{lines:?}"
+    );
 }
 
 fn mode(path: &Path) -> u32 {

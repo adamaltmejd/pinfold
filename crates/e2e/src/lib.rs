@@ -905,7 +905,7 @@ impl BoxUp {
     pub fn ended(mut self) -> (Value, i32) {
         let deadline = Instant::now() + COMMAND;
         let last = self
-            .drain(COMMAND)
+            .drain(deadline.saturating_duration_since(Instant::now()))
             .unwrap_or_else(|| panic!("box up {} did not end", self.name));
         // The owner stays in the guard until its `down` line is parsed, so a
         // panic here still gets recovery and keeps the roots.
