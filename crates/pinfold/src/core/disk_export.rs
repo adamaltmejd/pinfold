@@ -4,12 +4,14 @@ use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::fs::{self, File};
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 use super::r#box::{Box, Shutdown, Signals, UpError};
@@ -146,28 +148,27 @@ impl Staging {
                 .unwrap_or(Path::new(".")),
         )?;
         let parent = File::open(&parent_path)?;
-        let mut metadata = std::mem::MaybeUninit::<nix::libc::stat>::uninit();
         // A symlink is an existing destination too. The dirfd pins its parent.
-        if unsafe {
-            nix::libc::fstatat(
-                parent.as_raw_fd(),
-                destination_name.as_ptr(),
-                metadata.as_mut_ptr(),
-                nix::libc::AT_SYMLINK_NOFOLLOW,
-            )
-        } == 0
-        {
-            return Err(io::Error::other(
-                "destination-exists: export destination already exists",
-            ));
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::NotFound {
-            return Err(error);
+        match nix::sys::stat::fstatat(
+            &parent,
+            destination_name.as_c_str(),
+            nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+        ) {
+            Ok(_) => {
+                return Err(io::Error::other(
+                    "destination-exists: export destination already exists",
+                ));
+            }
+            Err(nix::errno::Errno::ENOENT) => {}
+            Err(error) => return Err(error.into()),
         }
         let name = format!(".pinfold-export-{}", super::random_hex()?);
         let staging_name = cstring(name.as_bytes())?;
-        checked(unsafe { nix::libc::mkdirat(parent.as_raw_fd(), staging_name.as_ptr(), 0o700) })?;
+        nix::sys::stat::mkdirat(
+            &parent,
+            staging_name.as_c_str(),
+            Mode::from_bits_truncate(0o700),
+        )?;
         let path = parent_path.join(&name);
         let root = match open_dir(&parent, &staging_name) {
             Ok(root) => root,
@@ -249,17 +250,13 @@ fn checked(result: i32) -> io::Result<i32> {
 }
 
 fn open_dir(parent: &File, name: &CString) -> io::Result<File> {
-    let fd = checked(unsafe {
-        nix::libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            nix::libc::O_RDONLY
-                | nix::libc::O_DIRECTORY
-                | nix::libc::O_NOFOLLOW
-                | nix::libc::O_CLOEXEC,
-        )
-    })?;
-    Ok(unsafe { File::from_raw_fd(fd) })
+    let fd = nix::fcntl::openat(
+        parent,
+        name.as_c_str(),
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )?;
+    Ok(File::from(fd))
 }
 
 fn entry_parent(
@@ -346,9 +343,9 @@ async fn receive(
         let (parent, name) = entry_parent(root, &path, &directories)?;
         match tag {
             STREAM_DIR => {
-                checked(unsafe { nix::libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o755) })?;
+                nix::sys::stat::mkdirat(&parent, name.as_c_str(), Mode::from_bits_truncate(0o755))?;
                 let directory = open_dir(&parent, &name)?;
-                checked(unsafe { nix::libc::fchmod(directory.as_raw_fd(), 0o755) })?;
+                nix::sys::stat::fchmod(&directory, Mode::from_bits_truncate(0o755))?;
                 directories.insert(path);
             }
             STREAM_SYMLINK => {
@@ -358,13 +355,7 @@ async fn receive(
                 if metadata > METADATA_BYTES {
                     return Err(io::Error::other("limit: export metadata"));
                 }
-                checked(unsafe {
-                    nix::libc::symlinkat(
-                        cstring(&target)?.as_ptr(),
-                        parent.as_raw_fd(),
-                        name.as_ptr(),
-                    )
-                })?;
+                nix::unistd::symlinkat(cstring(&target)?.as_c_str(), &parent, name.as_c_str())?;
             }
             _ => {
                 let size = input.read_u64().await?;
@@ -372,39 +363,31 @@ async fn receive(
                     .checked_add(size)
                     .filter(|size| *size <= CONTENT_BYTES)
                     .ok_or_else(|| io::Error::other("limit: export content"))?;
-                let mode = if tag == STREAM_EXECUTABLE {
+                let mode = Mode::from_bits_truncate(if tag == STREAM_EXECUTABLE {
                     0o755
                 } else {
                     0o644
-                };
-                let fd = checked(unsafe {
-                    nix::libc::openat(
-                        parent.as_raw_fd(),
-                        name.as_ptr(),
-                        nix::libc::O_WRONLY
-                            | nix::libc::O_CREAT
-                            | nix::libc::O_EXCL
-                            | nix::libc::O_NOFOLLOW
-                            | nix::libc::O_CLOEXEC,
-                        mode,
-                    )
-                })?;
-                let file = unsafe { File::from_raw_fd(fd) };
-                checked(unsafe { nix::libc::fchmod(file.as_raw_fd(), mode) })?;
-                *active_file = Some(tokio::fs::File::from_std(file));
+                });
+                let file = File::from(nix::fcntl::openat(
+                    &parent,
+                    name.as_c_str(),
+                    OFlag::O_WRONLY
+                        | OFlag::O_CREAT
+                        | OFlag::O_EXCL
+                        | OFlag::O_NOFOLLOW
+                        | OFlag::O_CLOEXEC,
+                    mode,
+                )?);
+                nix::sys::stat::fchmod(&file, mode)?;
+                let file = active_file.insert(tokio::fs::File::from_std(file));
                 let mut remaining = size;
                 let mut buffer = [0; 16384];
                 while remaining > 0 {
                     let length = remaining.min(buffer.len() as u64) as usize;
                     input.read_exact(&mut buffer[..length]).await?;
-                    active_file
-                        .as_mut()
-                        .expect("active export file")
-                        .write_all(&buffer[..length])
-                        .await?;
+                    file.write_all(&buffer[..length]).await?;
                     remaining -= length as u64;
                 }
-                let file = active_file.as_mut().expect("active export file");
                 file.flush().await?;
                 file.sync_all().await?;
                 drop(

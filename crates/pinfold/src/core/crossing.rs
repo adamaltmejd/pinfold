@@ -975,14 +975,13 @@ fn receive(
     let mut stdin = child.stdin.take();
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
-    if let Some(pipe) = &stdin {
-        super::pipe::nonblocking(pipe, "crossing")?;
-    }
-    if let Some(pipe) = &stdout {
-        super::pipe::nonblocking(pipe, "crossing")?;
-    }
-    if let Some(pipe) = &stderr {
-        super::pipe::nonblocking(pipe, "crossing")?;
+    let pipes = [
+        stdin.as_ref().map(AsFd::as_fd),
+        stdout.as_ref().map(AsFd::as_fd),
+        stderr.as_ref().map(AsFd::as_fd),
+    ];
+    for pipe in pipes.into_iter().flatten() {
+        super::pipe::nonblocking(&pipe, "crossing")?;
     }
     let mut receiver = Receiver::new(bundle, width, prefixes)?;
     let mut failed = None;
