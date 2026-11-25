@@ -16,6 +16,8 @@ use nix::libc;
 /// A generation directory's sockets, and those in its `v` directory.
 const SOCKETS: [&str; 2] = ["c.sock", "p.sock"];
 const VSOCKETS: [&str; 3] = ["v.sock", "v.sock_1000", "v.sock_3128"];
+/// A generation directory's entries.
+const ENTRIES: &[&[u8]] = &[b"generation", b"c.sock", b"p.sock", b"v"];
 
 #[derive(Clone)]
 pub struct Sockets {
@@ -230,10 +232,7 @@ impl Sockets {
         check_identity(&self.host, self.path.file_name().unwrap(), &self.directory)?;
         check_identity(&self.directory, OsStr::new("v"), &self.vsock)?;
         check_generation(&self.directory, &self.generation)?;
-        check_entries(
-            &self.directory,
-            &[b"generation", b"c.sock", b"p.sock", b"v"],
-        )?;
+        check_entries(&self.directory, ENTRIES)?;
         check_entries(&self.vsock, &VSOCKETS.map(str::as_bytes))?;
         for (directory, leaves) in [
             (&self.directory, &SOCKETS[..]),
@@ -521,7 +520,7 @@ fn recoverable(
         Some(marker) if full_name && marker.len() < 64 => {}
         _ => return Err(failure("socket generation is unverifiable")),
     }
-    check_entries(&directory, &[b"generation", b"c.sock", b"p.sock", b"v"])?;
+    check_entries(&directory, ENTRIES)?;
     for socket in SOCKETS {
         check_socket(&directory, OsStr::new(socket), true, false)?;
     }

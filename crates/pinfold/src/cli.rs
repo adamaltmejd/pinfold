@@ -470,7 +470,15 @@ fn refused_box(refusal: &Refusal) -> i32 {
 fn exec(args: &[String]) -> io::Result<i32> {
     let (name, tty, argv) = parse_exec(args)?;
     let runtime = runtime();
-    let Some(_dispatch) = exec_admission(runtime, "exec", &name)? else {
+    let Some(box_) = found(runtime, "exec", &name)? else {
+        return Ok(3);
+    };
+    let lock = match box_.labels.get(crate::core::ownership::GENERATION_LABEL) {
+        Some(generation) => crate::core::ownership::exec_lock(&name, generation)?,
+        None => None,
+    };
+    let Some(_dispatch) = lock else {
+        eprintln!("pinfold box exec: box {name:?} has not completed startup");
         return Ok(3);
     };
     // A TTY only makes sense when both ends are terminals; `--tty` forces it
@@ -508,24 +516,6 @@ fn found(runtime: &dyn Runtime, verb: &str, name: &str) -> io::Result<Option<Box
         eprintln!("pinfold box {verb}: no box named {name:?}");
     }
     Ok(found)
-}
-
-fn exec_admission(
-    runtime: &dyn Runtime,
-    verb: &str,
-    name: &str,
-) -> io::Result<Option<nix::fcntl::Flock<fs::File>>> {
-    let Some(box_) = found(runtime, verb, name)? else {
-        return Ok(None);
-    };
-    let lock = match box_.labels.get(crate::core::ownership::GENERATION_LABEL) {
-        Some(generation) => crate::core::ownership::exec_lock(name, generation)?,
-        None => None,
-    };
-    if lock.is_none() {
-        eprintln!("pinfold box {verb}: box {name:?} has not completed startup");
-    }
-    Ok(lock)
 }
 
 fn list(args: &[String]) -> io::Result<i32> {
@@ -570,7 +560,7 @@ fn prune(args: &[String]) -> io::Result<i32> {
             return Err(error);
         }
     };
-    let removed = clean::prune_boxes(runtime, &boxes)?;
+    let removed = clean::prune_boxes(runtime, &boxes);
     clean::prune_leftover_states(runtime)?;
     for dead in &removed {
         println!(
@@ -1057,7 +1047,7 @@ impl CleanPlan {
     /// source's newest two. Image sizes are unmeasured: the runtime's image
     /// list carries none. Returns how many disks it removed.
     fn remove(self, runtime: &dyn Runtime) -> io::Result<usize> {
-        clean::prune_boxes(runtime, &self.boxes)?;
+        clean::prune_boxes(runtime, &self.boxes);
         clean::prune_leftover_states(runtime)?;
         if let Err(error) = image::service().purge_build_cache() {
             let _ = writeln!(io::stderr(), "pinfold clean: build cache: {error}; kept");
@@ -1320,7 +1310,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         println!("Kernel    {}", terminal_text(&kernel));
     }
     if let Ok((_, config)) = &project {
-        print_profile(config, 10)?;
+        print_profile(config)?;
     }
     if let Some(image) = image {
         println!("Image     {}", terminal_text(&image));
@@ -1366,8 +1356,9 @@ fn profile_override(config: &Config) -> String {
 }
 
 /// The selected profile's chain, top first, where the profile lives, and
-/// the settings file over it; labels padded to `width`.
-fn print_profile(config: &Config, width: usize) -> io::Result<()> {
+/// the settings file over it; labels padded to `WIDTH`.
+fn print_profile(config: &Config) -> io::Result<()> {
+    const WIDTH: usize = 10;
     let profile = &config.profile;
     let chain: Vec<String> = profile
         .links()
@@ -1376,7 +1367,7 @@ fn print_profile(config: &Config, width: usize) -> io::Result<()> {
         .map(|link| terminal_text(&link.name))
         .collect();
     println!(
-        "{:width$}{}{}",
+        "{:WIDTH$}{}{}",
         "Profile",
         chain.join(" → "),
         profile_override(config)
@@ -1399,9 +1390,9 @@ fn print_profile(config: &Config, width: usize) -> io::Result<()> {
             terminal_text(&profile.name)
         ),
     };
-    println!("{:width$}{place}", "");
+    println!("{:WIDTH$}{place}", "");
     println!(
-        "{:width$}{} (this project only; overrides the profile)",
+        "{:WIDTH$}{} (this project only; overrides the profile)",
         "Settings",
         terminal_text(&config.path.to_string_lossy())
     );
@@ -1547,7 +1538,7 @@ pub fn config(args: &[String]) -> io::Result<i32> {
             }
         );
     }
-    print_profile(&config, 10)?;
+    print_profile(&config)?;
     let availability = match report["image_built"].as_bool() {
         Some(true) => "available locally",
         Some(false) => "missing",

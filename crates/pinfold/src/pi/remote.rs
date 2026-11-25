@@ -6,11 +6,9 @@
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
-
-use nix::fcntl::{FcntlArg, FdFlag, fcntl};
 
 use crate::core::crossing::{self, CrossingError, Fetched, Refs};
 use crate::core::plan::valid_name;
@@ -63,16 +61,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                     },
                 )?
                 .map_err(|error| io::Error::other(describe(&error)))?;
-                // Git reads a listing's object ids as SHA-1 unless told.
-                let mut listing = format!(":object-format {}\n", object_format()?);
-                for (name, oid) in &landing.refs {
-                    listing.push_str(&format!("{oid} {name}\n"));
-                    // Git follows an annotated tag only by its commit.
-                    if let Some(commit) = landing.peeled.get(name) {
-                        listing.push_str(&format!("{commit} {name}^{{}}\n"));
-                    }
-                }
-                listing.push('\n');
+                let listing = listing(&landing.refs, &landing.peeled)?;
                 fetched = Some(landing);
                 send(&mut output, &listing)?;
             }
@@ -96,12 +85,7 @@ pub fn run(args: &[String]) -> io::Result<i32> {
                 (held, tags) = pushed
                     .into_iter()
                     .partition(|(name, _)| name.starts_with("refs/remotes/host/"));
-                let mut listing = format!(":object-format {}\n", object_format()?);
-                for (name, oid) in &tags {
-                    listing.push_str(&format!("{oid} {name}\n"));
-                }
-                listing.push('\n');
-                send(&mut output, &listing)?;
+                send(&mut output, &listing(&tags, &Refs::new())?)?;
             }
             line if line.starts_with("fetch ") => {
                 while !read_line(&mut input)?.is_empty() {}
@@ -368,6 +352,21 @@ fn check(root: &Path, remote: &str, address: &str) -> io::Result<()> {
 }
 
 /// The repository's object format, as `git rev-parse` names it.
+/// A `list` reply: `refs` with each annotated tag's `peeled` commit.
+fn listing(refs: &Refs, peeled: &Refs) -> io::Result<String> {
+    // Git reads a listing's object ids as SHA-1 unless told.
+    let mut listing = format!(":object-format {}\n", object_format()?);
+    for (name, oid) in refs {
+        listing.push_str(&format!("{oid} {name}\n"));
+        // Git follows an annotated tag only by its commit.
+        if let Some(commit) = peeled.get(name) {
+            listing.push_str(&format!("{commit} {name}^{{}}\n"));
+        }
+    }
+    listing.push('\n');
+    Ok(listing)
+}
+
 fn object_format() -> io::Result<String> {
     rev_parse("--show-object-format", "the object format")
 }
@@ -411,16 +410,11 @@ fn config(root: &Path, args: &[&str]) -> io::Result<Option<String>> {
 /// `/dev/null` and standard output stderr, so nothing pinfold or a child
 /// prints reaches the protocol.
 fn protocol() -> io::Result<(File, File)> {
-    let input = File::from(cloexec(nix::unistd::dup(io::stdin())?)?);
-    let output = File::from(cloexec(nix::unistd::dup(io::stdout())?)?);
+    let input = File::from(io::stdin().as_fd().try_clone_to_owned()?);
+    let output = File::from(io::stdout().as_fd().try_clone_to_owned()?);
     nix::unistd::dup2_stdin(File::open("/dev/null")?)?;
     nix::unistd::dup2_stdout(io::stderr())?;
     Ok((input, output))
-}
-
-fn cloexec(fd: OwnedFd) -> io::Result<OwnedFd> {
-    fcntl(&fd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
-    Ok(fd)
 }
 
 /// One protocol line without its newline; empty at the end of input.

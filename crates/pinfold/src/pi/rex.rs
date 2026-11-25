@@ -17,8 +17,8 @@ use tokio::time::{Instant, sleep, sleep_until, timeout_at};
 use crate::core::r#box::Signals;
 use crate::core::ownership;
 use crate::core::process::{AsyncCommandGuard, Listener};
+use crate::core::runtime::runtime;
 use crate::core::runtime::sockets::HostSocket;
-use crate::core::runtime::{ExecContext, runtime};
 use crate::init::REX_SOCKET;
 use crate::pi::session::forward_diagnostics;
 use crate::pi::session_wire as wire;
@@ -147,7 +147,8 @@ impl Rex {
         };
         tokio::select! {
             biased;
-            _ = closed(&mut closing) => None,
+            // The sender lives in `self`, so the wait never fails.
+            _ = closing.wait_for(|closing| *closing) => None,
             status = work => status,
         }
     }
@@ -164,12 +165,6 @@ impl Rex {
     }
 }
 
-async fn closed(closing: &mut watch::Receiver<bool>) {
-    if closing.wait_for(|closing| *closing).await.is_err() {
-        std::future::pending::<()>().await;
-    }
-}
-
 impl State {
     /// Check for `rex` in the box, then the app's Remote Control, then
     /// relay. A relay is kept while its server runs and Remote Control
@@ -182,12 +177,17 @@ impl State {
         {
             self.shut().await;
         }
-        if self.relay.is_none()
-            && !self
-                .succeeds(&["rex", "--autostart=false", "version"])
-                .await
-        {
-            return Status::Absent;
+        if self.relay.is_none() {
+            let present = match self
+                .command(&["rex", "--autostart=false", "version"])
+                .spawn_guarded()
+            {
+                Ok(mut child) => wait_success(&mut child, Instant::now() + HELPER_DEADLINE).await,
+                Err(_) => false,
+            };
+            if !present {
+                return Status::Absent;
+            }
         }
         if !remote_control_off().await {
             self.shut().await;
@@ -201,35 +201,20 @@ impl State {
 
     /// `argv` in this generation's box, through init. stdio is null
     /// unless the caller pipes it.
-    fn command(&self, argv: &[&str]) -> io::Result<Command> {
+    fn command(&self, argv: &[&str]) -> Command {
         let argv: Vec<String> = argv.iter().map(|word| word.to_string()).collect();
-        let mut command = Command::from(runtime().exec_command(
-            &self.name,
-            &self.init,
-            &ExecContext::default(),
-            &argv,
-        )?);
+        let mut command = Command::from(runtime().exec_command(&self.name, &self.init, &argv));
         command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true);
-        Ok(command)
+        command
     }
 
-    fn dial(&self) -> io::Result<Command> {
+    fn dial(&self) -> Command {
         let init = self.init.to_string_lossy().into_owned();
         self.command(&[&init, "init", "rex-dial"])
-    }
-
-    async fn succeeds(&self, argv: &[&str]) -> bool {
-        let Ok(mut child) = self
-            .command(argv)
-            .and_then(|mut command| command.spawn_guarded())
-        else {
-            return false;
-        };
-        wait_success(&mut child, Instant::now() + HELPER_DEADLINE).await
     }
 
     /// Start the guest server, wait until it accepts, read Remote Control
@@ -238,7 +223,7 @@ impl State {
         let listen = format!("unix://{REX_SOCKET}");
         let Ok(mut server) = self
             .command(&["rex", "server", "run", "--listen", &listen])
-            .and_then(|mut command| command.spawn_guarded())
+            .spawn_guarded()
         else {
             return Status::Failed;
         };
@@ -267,7 +252,7 @@ impl State {
         if !remote_control_off().await {
             return Err(Status::RemoteControl);
         }
-        let dial = self.dial().map_err(|_| Status::Failed)?;
+        let dial = self.dial();
         let (socket, listener) = HostSocket::bind(&self.leaf).map_err(|_| Status::Failed)?;
         let listener = Listener::from_std(listener).map_err(|_| {
             let _ = socket.remove();
@@ -280,7 +265,7 @@ impl State {
     async fn ready(&self) -> bool {
         let deadline = Instant::now() + HELPER_DEADLINE;
         while Instant::now() < deadline {
-            if let Ok(mut child) = self.dial().and_then(|mut command| command.spawn_guarded())
+            if let Ok(mut child) = self.dial().spawn_guarded()
                 && wait_success(&mut child, deadline).await
             {
                 return true;

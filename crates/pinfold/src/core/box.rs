@@ -738,7 +738,12 @@ pub fn down(name: &str) -> io::Result<()> {
     if let Some(lock) = ownership::try_name_lock(name)? {
         return remove_orphan(lock);
     }
-    let stopped = ownership::request_stop(name, observed.as_ref());
+    let stopped = ownership::request_stop(
+        name,
+        observed.as_ref(),
+        std::time::Instant::now() + ownership::STOP_TIMEOUT,
+        None,
+    );
     if matches!(stopped, Ok(true)) {
         return Ok(());
     }

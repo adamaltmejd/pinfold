@@ -20,7 +20,7 @@ use crate::core::runtime::sockets::{self, Sockets};
 use crate::core::{absent_ok, sha256_hex};
 
 pub const GENERATION_LABEL: &str = "dev.pinfold.generation";
-const STOP_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub fn host_dir() -> io::Result<PathBuf> {
@@ -341,7 +341,6 @@ impl Claim {
         sockets::check_length(&endpoint)?;
         let listener =
             sockets::bind_at(&host, endpoint.file_name().expect("shutdown socket name"))?;
-        listener.set_nonblocking(true)?;
         self.listener = Some(UnixListener::from_std(listener)?);
         #[cfg(target_os = "linux")]
         crate::core::runtime::firecracker::prepare_vmm(state_dir)?;
@@ -586,21 +585,8 @@ impl Drop for Claim {
 /// Ask only the generation observed before connecting. A replacement's
 /// listener refuses the old token instead of stopping its own box.
 /// Return true only when the owner acknowledges completed teardown.
-pub fn request_stop(name: &str, observed: Option<&Record>) -> io::Result<bool> {
-    request_stop_inner(name, observed, Instant::now() + STOP_TIMEOUT, None)
-}
-
-pub(crate) fn request_stop_project(
-    name: &str,
-    observed: &Record,
-    deadline: Instant,
-    cancel: &AtomicBool,
-    accepted: &AtomicBool,
-) -> io::Result<bool> {
-    request_stop_inner(name, Some(observed), deadline, Some((cancel, accepted)))
-}
-
-fn request_stop_inner(
+/// `project` is a project stop's cancel and acceptance flags.
+pub(crate) fn request_stop(
     name: &str,
     observed: Option<&Record>,
     deadline: Instant,

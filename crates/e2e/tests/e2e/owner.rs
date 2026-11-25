@@ -174,6 +174,10 @@ fn project_client_exits_125(env: &TestEnv) {
     let listed = json_lines(&listed.stdout);
     assert_eq!(listed.len(), 1, "boxes of project {id}: {listed:?}");
     let leftover = Leftover::listed(env, &listed[0]);
+    // On Linux, the proof that killing the owner leaves nothing below it,
+    // the VMM included. Sabotage: drop `set_pdeathsig` from `enter` in
+    // core/runtime/firecracker/jail.rs. The VMM then outlives its owner
+    // and `wait_gone` times out.
     #[cfg(target_os = "linux")]
     let below = e2e::Below::of(leftover.owner());
     let kill = leftover.kill();

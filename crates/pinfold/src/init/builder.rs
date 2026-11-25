@@ -67,7 +67,7 @@ pub(super) fn boot() -> ! {
     if let Err(error) = result {
         let _ = fs::write("/sys/fs/cgroup/work/cgroup.kill", "1");
         nix::unistd::sync();
-        let detail = failure_text(error);
+        let detail = last_log_bytes(error.to_string());
         let _ = write_frame(&mut host, FAILED, detail.as_bytes());
         process::exit(1);
     }
@@ -82,7 +82,10 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
     }
     capabilities()?;
     if relay {
-        firecracker::relay_builder()?;
+        let relay = std::net::TcpListener::bind(super::RELAY_LISTEN)?;
+        super::serve_relay(relay, || {
+            firecracker::vsock_connect(firecracker::PROXY_PORT)
+        })?;
     }
     fs::create_dir("/run/docker")?;
     match fs::remove_dir_all("/work/oci") {
@@ -127,7 +130,7 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
     let stopped = daemon.stop();
     stopped.map_err(|error| failed(error, &daemon_log))?;
     if let Err(error) = built {
-        let detail = failure_text(failed(error, &log));
+        let detail = last_log_bytes(failed(error, &log).to_string());
         if let Err(error) = pruning {
             return Err(io::Error::other(format!(
                 "{detail}\ncache cleanup failed: {error}"
@@ -208,11 +211,11 @@ fn finish(host: &mut UnixStream, failure: Option<&str>, selected_mounted: bool) 
     host.flush()
 }
 
-fn failure_text(error: io::Error) -> String {
-    let mut detail = error.to_string();
-    let start = detail.ceil_char_boundary(detail.len().saturating_sub(LOG_BYTES));
-    detail.drain(..start);
-    detail
+/// The last `LOG_BYTES` of `text`, from a character boundary.
+fn last_log_bytes(mut text: String) -> String {
+    let start = text.ceil_char_boundary(text.len().saturating_sub(LOG_BYTES));
+    text.drain(..start);
+    text
 }
 
 fn capabilities() -> io::Result<()> {
@@ -281,10 +284,7 @@ impl Tail {
 
     fn text(&self) -> String {
         let bytes: Vec<_> = self.bytes.iter().copied().collect();
-        let mut text = String::from_utf8_lossy(&bytes).into_owned();
-        let start = text.ceil_char_boundary(text.len().saturating_sub(LOG_BYTES));
-        text.drain(..start);
-        text
+        last_log_bytes(String::from_utf8_lossy(&bytes).into_owned())
     }
 }
 
