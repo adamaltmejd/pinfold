@@ -560,7 +560,7 @@ fn prune(args: &[String]) -> io::Result<i32> {
             return Err(error);
         }
     };
-    let removed = clean::prune_boxes(runtime, &boxes)?;
+    let removed = clean::prune_boxes(runtime, &boxes);
     clean::prune_leftover_states(runtime)?;
     for dead in &removed {
         println!(
@@ -1047,7 +1047,7 @@ impl CleanPlan {
     /// source's newest two. Image sizes are unmeasured: the runtime's image
     /// list carries none. Returns how many disks it removed.
     fn remove(self, runtime: &dyn Runtime) -> io::Result<usize> {
-        clean::prune_boxes(runtime, &self.boxes)?;
+        clean::prune_boxes(runtime, &self.boxes);
         clean::prune_leftover_states(runtime)?;
         if let Err(error) = image::service().purge_build_cache() {
             let _ = writeln!(io::stderr(), "pinfold clean: build cache: {error}; kept");

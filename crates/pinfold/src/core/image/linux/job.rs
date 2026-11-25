@@ -845,7 +845,7 @@ async fn run_job(
         let cancel = cancel.clone();
         tokio::task::spawn_blocking(move || {
             input_disk(&input, &disk, &cancel)?;
-            if matches!(phase, Phase::Build) {
+            if phase.egress() {
                 let file = File::options()
                     .create_new(true)
                     .write(true)
@@ -937,7 +937,7 @@ async fn run_job(
                 (b"vdc".as_slice(), b"/work".as_slice(), true),
                 (b"vdd".as_slice(), b"/input".as_slice(), false),
             ];
-            if matches!(phase, Phase::Build) {
+            if phase.egress() {
                 attachments.push((b"vde", b"/selected", false));
             }
             request.extend((attachments.len() as u32).to_be_bytes());
@@ -951,7 +951,7 @@ async fn run_job(
             request.extend(0u32.to_be_bytes());
             write_frame(&mut reader, BOOT, &request)?;
             let mut handoff = handoff;
-            let mut lookup_open = matches!(phase, Phase::Build);
+            let mut lookup_open = phase.egress();
             loop {
                 let mut prefix = [0; 5];
                 reader.read_exact(&mut prefix)?;

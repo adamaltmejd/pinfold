@@ -59,7 +59,9 @@ fn maintain_due() -> io::Result<()> {
     let runtime = runtime();
     report(
         "boxes",
-        boxes(runtime).and_then(|boxes| prune_boxes(runtime, &boxes).map(|_| ())),
+        boxes(runtime).map(|boxes| {
+            prune_boxes(runtime, &boxes);
+        }),
     );
     report("images", keep_two_images(service(), None));
     report("sockets", prune_leftover_states(runtime));
@@ -198,7 +200,7 @@ pub fn remove_orphan(
 }
 
 /// Inventory is advisory. A restarted generation is never removed by it.
-pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<Vec<DeadBox>> {
+pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> Vec<DeadBox> {
     let mut removed = Vec::new();
     for box_ in &boxes.dead {
         let result = (|| {
@@ -213,7 +215,7 @@ pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> io::Result<Vec<DeadB
             Err(error) => eprintln!("pinfold: prune {:?}: {error}", box_.id),
         }
     }
-    Ok(removed)
+    removed
 }
 
 /// Measured leftovers; removal must reacquire ownership and recheck.
@@ -351,10 +353,10 @@ pub fn path_bytes(path: &Path) -> u64 {
 /// Keep the newest two builds of every source any image names: each
 /// non-empty family label, and every caller name a `localhost/pinfold/image-<NAME>`
 /// tag names. `only` limits the pass to one `(label, source)`, the one a
-/// build just made. One image listing and one box listing serve every source;
-/// Call it
-/// after dead boxes are pruned: its box listing is retention's one in-use
-/// rule. A failing source is reported and the rest continue.
+/// build just made. One image listing and one box listing serve every
+/// source. Call it after dead boxes are pruned: its box listing is
+/// retention's one in-use rule. A failing source is reported and the rest
+/// continue.
 pub fn keep_two_images(
     service: &dyn ImageService,
     only: Option<(Option<&str>, &str)>,
