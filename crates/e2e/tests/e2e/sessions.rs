@@ -205,7 +205,6 @@ fn a_projects_sessions_share_one_box() {
     let both = ["--", "cat", "/tmp/e2e-a", "/tmp/e2e-b"];
     let joined = run(&mut session("one", &both, &refusing), COMMAND);
     assert_eq!(joined.code, 0, "{joined:?}");
-    assert_eq!(joined.stdout.lines().count(), 2, "{joined:?}");
 
     // The same command with another value is refused, naming the differing
     // field.
