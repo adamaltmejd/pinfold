@@ -375,7 +375,7 @@ impl TestEnv {
         // Not ready: `up` ends on its own and exits 1 (Process interface).
         drop(up.stdin.take());
         assert!(
-            up.drain(COMMAND).is_some(),
+            up.drain(Instant::now() + COMMAND).is_some(),
             "box up {name} did not end after {first}"
         );
         let status = up.reap(COMMAND);
@@ -905,7 +905,7 @@ impl BoxUp {
     pub fn ended(mut self) -> (Value, i32) {
         let deadline = Instant::now() + COMMAND;
         let last = self
-            .drain(deadline.saturating_duration_since(Instant::now()))
+            .drain(deadline)
             .unwrap_or_else(|| panic!("box up {} did not end", self.name));
         // The owner stays in the guard until its `down` line is parsed, so a
         // panic here still gets recovery and keeps the roots.
@@ -958,7 +958,10 @@ impl BoxUp {
         }
         // Never kill the owner: on Apple the guest would outlive it.
         drop(self.stdin.take());
-        if self.drain(Duration::from_secs(120)).is_none() {
+        if self
+            .drain(Instant::now() + Duration::from_secs(120))
+            .is_none()
+        {
             // Before `ready` the name may be another box's: a refused `up`
             // names a box that exists.
             let Some(run_id) = self.ready["run_id"].as_str().map(str::to_string) else {
@@ -970,7 +973,10 @@ impl BoxUp {
             if let Err(error) = in_drop(move || down_generation(&roots, &name, &run_id)) {
                 self.fail(&error);
             }
-            if self.drain(Duration::from_secs(60)).is_none() {
+            if self
+                .drain(Instant::now() + Duration::from_secs(60))
+                .is_none()
+            {
                 self.fail("box up still running after box down; left as it is");
                 return;
             }
@@ -1007,10 +1013,9 @@ impl BoxUp {
         )
     }
 
-    /// Read `up`'s stdout to EOF within `timeout`: the last line read, or
+    /// Read `up`'s stdout to EOF by `deadline`: the last line read, or
     /// `None` when it did not end.
-    fn drain(&self, timeout: Duration) -> Option<Option<String>> {
-        let deadline = Instant::now() + timeout;
+    fn drain(&self, deadline: Instant) -> Option<Option<String>> {
         let mut last = None;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
