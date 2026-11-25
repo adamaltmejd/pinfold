@@ -2252,7 +2252,12 @@ fn stop_observed(
     let answered = if current.is_none() {
         false
     } else {
-        ownership::request_stop_project(&observed.name, observed, deadline, cancel, accepted)?
+        ownership::request_stop(
+            &observed.name,
+            Some(observed),
+            deadline,
+            Some((cancel, accepted)),
+        )?
     };
     let after = ownership::record(&observed.name)?;
     if after
