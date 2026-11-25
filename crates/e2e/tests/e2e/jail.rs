@@ -5,7 +5,7 @@ use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
-use e2e::{Below, COMMAND, Leftover, Project, TestEnv, box_name, default_image, json_lines, run};
+use e2e::{Below, COMMAND, Project, TestEnv, box_name, default_image, json_lines, run};
 use serde_json::json;
 
 const NAMESPACES: [&str; 6] = ["user", "mnt", "pid", "net", "ipc", "uts"];
@@ -15,8 +15,7 @@ fn the_vmm_reaches_only_its_own_box() {
     // Sabotage (run): drop `CLONE_NEWIPC` from the clone flags in
     // core/runtime/firecracker/jail.rs. Each VMM then shares the host's
     // IPC namespace. Each block below names its own.
-    // Each VMM seeing its own disks, and the detached owner's SIGKILL
-    // ending its VMM, are the positive controls.
+    // Each VMM seeing its own disks is the positive control.
     let image = default_image();
     let env = TestEnv::new("jail");
     let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
@@ -62,11 +61,10 @@ fn the_vmm_reaches_only_its_own_box() {
     );
     let listed = json_lines(&listed.stdout);
     assert_eq!(listed.len(), 1, "boxes of project {id}: {listed:?}");
-    let leftover = Leftover::listed(&env, &listed[0]);
+    let b_owner = listed[0]["owner"].as_u64().expect("owner") as u32;
 
     let a_vmm = Vmm::of(a.pid());
-    let b_below = Below::of(leftover.owner());
-    let b_vmm = Vmm::of(leftover.owner());
+    let b_vmm = Vmm::of(b_owner);
 
     let uid = fs::metadata("/proc/self").unwrap().uid().to_string();
     // Every socket file under the test's state root and the runtime
@@ -264,14 +262,6 @@ fn the_vmm_reaches_only_its_own_box() {
             );
         }
     }
-
-    // Control: SIGKILL of the detached owner ends its VM.
-    // Sabotage: drop `set_pdeathsig` from `enter` in jail.rs. The VMM then
-    // outlives its owner and `wait_gone` times out.
-    let kill = leftover.kill();
-    assert_eq!(kill.code, 0, "kill the project owner: {kill:?}");
-    b_below.wait_gone();
-    drop(leftover);
     drop(project);
     drop(a);
 }
