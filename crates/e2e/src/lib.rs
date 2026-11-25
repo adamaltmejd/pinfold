@@ -12,7 +12,7 @@ use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -284,8 +284,7 @@ impl TestEnv {
         fs::create_dir_all(&env.roots.cache).unwrap();
         // Spend this root's daily pass now (see MAINTENANCE).
         let _hold = hold_maintenance();
-        let listed = run(env.command().args(["disk", "list", "--json"]), COMMAND);
-        assert_eq!(listed.code, 0, "pinfold disk list: {}", listed.stderr);
+        run(env.command().args(["disk", "list", "--json"]), COMMAND).ok("pinfold disk list");
         env
     }
 
@@ -375,7 +374,10 @@ impl TestEnv {
         }
         // Not ready: `up` ends on its own and exits 1 (Process interface).
         drop(up.stdin.take());
-        assert!(up.drain(COMMAND), "box up {name} did not end after {first}");
+        assert!(
+            up.drain(COMMAND).is_some(),
+            "box up {name} did not end after {first}"
+        );
         let status = up.reap(COMMAND);
         assert_eq!(
             status.map(exit_code),
@@ -387,9 +389,7 @@ impl TestEnv {
 
     /// `pinfold box list` lines for the box whose generation is `run_id`.
     pub fn listed(&self, run_id: &str) -> Vec<Value> {
-        let out = list_generation(self.command(), run_id);
-        assert_eq!(out.code, 0, "box list: {out:?}");
-        json_lines(&out.stdout)
+        json_lines(&list_generation(self.command(), run_id).ok("box list"))
     }
 }
 
@@ -469,11 +469,11 @@ impl<'a> Project<'a> {
         let root = env.root().join(name);
         fs::create_dir(&root).unwrap_or_else(|error| panic!("create {}: {error}", root.display()));
         host_git_setup(env);
-        let init = run(
+        run(
             git_command(env, &root).args(["init", "-q", "--template="]),
             COMMAND,
-        );
-        assert_eq!(init.code, 0, "git init: {init:?}");
+        )
+        .ok("git init");
         Project {
             env,
             root,
@@ -490,8 +490,7 @@ impl<'a> Project<'a> {
         } else {
             Vec::new()
         };
-        let edit = self.pinfold(&["config", "edit"]);
-        assert_eq!(edit.code, 0, "config edit: {edit:?}");
+        self.pinfold(&["config", "edit"]).ok("config edit");
         let new: Vec<String> = dir_names(&projects)
             .into_iter()
             .filter(|name| !before.contains(name))
@@ -630,19 +629,14 @@ impl Client {
         self.child.id()
     }
 
-    /// Write `line` and a newline to the command's stdin.
-    fn send(&mut self, line: &str) {
+    /// In a [`READER`] session: run `line`, and return the lines it printed.
+    /// The whole exchange is bounded by the command timeout.
+    pub fn ask(&mut self, line: &str) -> Vec<String> {
         let stdin = self.stdin.as_mut().expect("client stdin");
         stdin
             .write_all(format!("{line}\n").as_bytes())
             .and_then(|()| stdin.flush())
             .expect("write to the client");
-    }
-
-    /// In a [`READER`] session: run `line`, and return the lines it printed.
-    /// The whole exchange is bounded by the command timeout.
-    pub fn ask(&mut self, line: &str) -> Vec<String> {
-        self.send(line);
         let deadline = Instant::now() + COMMAND;
         let mut out = Vec::new();
         loop {
@@ -809,7 +803,6 @@ pub fn tree(dir: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
     found
 }
 
-/// The names in a directory; none when it is missing.
 /// The names in `dir`, sorted.
 pub fn dir_names(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(dir)
@@ -877,12 +870,8 @@ pub fn default_image() -> &'static str {
                 == 0;
         if !present {
             let env = TestEnv::new("default-image");
-            let build = run(env.command().args(["build", "--profile", "default"]), BUILD);
-            assert_eq!(
-                build.code, 0,
-                "pinfold build --profile default: {}",
-                build.stderr
-            );
+            run(env.command().args(["build", "--profile", "default"]), BUILD)
+                .ok("pinfold build --profile default");
         }
     });
     IMAGE
@@ -901,74 +890,6 @@ pub struct BoxUp {
 }
 
 impl BoxUp {
-    /// The egress log `ready` names, canonical, once checked to be a
-    /// regular file under the test's own state root.
-    pub fn egress_log_path(&self) -> PathBuf {
-        let named = self.ready["egress_log"]
-            .as_str()
-            .unwrap_or_else(|| panic!("ready names no egress log: {}", self.ready));
-        let path = fs::canonicalize(named).unwrap_or_else(|error| panic!("{named}: {error}"));
-        let root = fs::canonicalize(&self.roots.state).expect("the state root");
-        assert!(
-            path.starts_with(&root) && fs::metadata(&path).is_ok_and(|metadata| metadata.is_file()),
-            "the egress log {named} is not a regular file under {}",
-            root.display()
-        );
-        path
-    }
-
-    /// The decisions in this run's egress log.
-    pub fn egress_log(&self) -> Vec<Value> {
-        let path = self.egress_log_path();
-        json_lines(
-            &fs::read_to_string(&path)
-                .unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
-        )
-    }
-
-    /// Read `up`'s stdout to EOF within `timeout`; whether it ended.
-    fn drain(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match self.lines.recv_timeout(left) {
-                Ok(_) => {}
-                Err(RecvTimeoutError::Disconnected) => return true,
-                Err(RecvTimeoutError::Timeout) => return false,
-            }
-        }
-    }
-
-    /// Wait for the owner within `timeout`, without blocking past it.
-    fn reap(&mut self, timeout: Duration) -> Option<ExitStatus> {
-        let mut child = self.child.take()?;
-        let (send, status) = mpsc::channel();
-        thread::spawn(move || {
-            let _ = send.send(child.wait());
-        });
-        status.recv_timeout(timeout).ok().and_then(Result::ok)
-    }
-
-    fn fail(&mut self, what: &str) {
-        self.failed = true;
-        eprintln!(
-            "e2e: BOX {} DID NOT END CLEANLY: {what}; its roots are kept",
-            self.name
-        );
-        self.roots.keep.store(true, Ordering::SeqCst);
-    }
-}
-
-impl Drop for BoxUp {
-    fn drop(&mut self) {
-        self.teardown();
-        if self.failed && !thread::panicking() {
-            panic!("box {} did not end cleanly (see stderr)", self.name);
-        }
-    }
-}
-
-impl BoxUp {
     /// The `box up` process's pid, from the host.
     pub fn pid(&self) -> u32 {
         self.child.as_ref().expect("a running owner").id()
@@ -983,15 +904,9 @@ impl BoxUp {
     /// its last line and its exit code.
     pub fn ended(mut self) -> (Value, i32) {
         let deadline = Instant::now() + COMMAND;
-        let mut last = None;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            match self.lines.recv_timeout(left) {
-                Ok(line) => last = Some(line),
-                Err(RecvTimeoutError::Disconnected) => break,
-                Err(RecvTimeoutError::Timeout) => panic!("box up {} did not end", self.name),
-            }
-        }
+        let last = self
+            .drain(COMMAND)
+            .unwrap_or_else(|| panic!("box up {} did not end", self.name));
         // The owner stays in the guard until its `down` line is parsed, so a
         // panic here still gets recovery and keeps the roots.
         let status = loop {
@@ -1043,7 +958,7 @@ impl BoxUp {
         }
         // Never kill the owner: on Apple the guest would outlive it.
         drop(self.stdin.take());
-        if !self.drain(Duration::from_secs(120)) {
+        if self.drain(Duration::from_secs(120)).is_none() {
             // Before `ready` the name may be another box's: a refused `up`
             // names a box that exists.
             let Some(run_id) = self.ready["run_id"].as_str().map(str::to_string) else {
@@ -1055,7 +970,7 @@ impl BoxUp {
             if let Err(error) = in_drop(move || down_generation(&roots, &name, &run_id)) {
                 self.fail(&error);
             }
-            if !self.drain(Duration::from_secs(60)) {
+            if self.drain(Duration::from_secs(60)).is_none() {
                 self.fail("box up still running after box down; left as it is");
                 return;
             }
@@ -1064,6 +979,74 @@ impl BoxUp {
             Some(status) if status.success() => {}
             Some(status) => self.fail(&format!("box up exited {status}")),
             None => self.fail("box up was not reaped within 30 s"),
+        }
+    }
+
+    /// The egress log `ready` names, canonical, once checked to be a
+    /// regular file under the test's own state root.
+    pub fn egress_log_path(&self) -> PathBuf {
+        let named = self.ready["egress_log"]
+            .as_str()
+            .unwrap_or_else(|| panic!("ready names no egress log: {}", self.ready));
+        let path = fs::canonicalize(named).unwrap_or_else(|error| panic!("{named}: {error}"));
+        let root = fs::canonicalize(&self.roots.state).expect("the state root");
+        assert!(
+            path.starts_with(&root) && fs::metadata(&path).is_ok_and(|metadata| metadata.is_file()),
+            "the egress log {named} is not a regular file under {}",
+            root.display()
+        );
+        path
+    }
+
+    /// The decisions in this run's egress log.
+    pub fn egress_log(&self) -> Vec<Value> {
+        let path = self.egress_log_path();
+        json_lines(
+            &fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
+        )
+    }
+
+    /// Read `up`'s stdout to EOF within `timeout`: the last line read, or
+    /// `None` when it did not end.
+    fn drain(&self, timeout: Duration) -> Option<Option<String>> {
+        let deadline = Instant::now() + timeout;
+        let mut last = None;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(line) => last = Some(line),
+                Err(RecvTimeoutError::Disconnected) => return Some(last),
+                Err(RecvTimeoutError::Timeout) => return None,
+            }
+        }
+    }
+
+    /// Wait for the owner within `timeout`, without blocking past it.
+    fn reap(&mut self, timeout: Duration) -> Option<ExitStatus> {
+        let mut child = self.child.take()?;
+        let (send, status) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = send.send(child.wait());
+        });
+        status.recv_timeout(timeout).ok().and_then(Result::ok)
+    }
+
+    fn fail(&mut self, what: &str) {
+        self.failed = true;
+        eprintln!(
+            "e2e: BOX {} DID NOT END CLEANLY: {what}; its roots are kept",
+            self.name
+        );
+        self.roots.keep.store(true, Ordering::SeqCst);
+    }
+}
+
+impl Drop for BoxUp {
+    fn drop(&mut self) {
+        self.teardown();
+        if self.failed && !thread::panicking() {
+            panic!("box {} did not end cleanly (see stderr)", self.name);
         }
     }
 }
@@ -1307,12 +1290,11 @@ impl Request {
 /// A host HTTP service on loopback, reachable from a box only through a
 /// route. It answers every request and records it. It runs in the test
 /// process, which on macOS holds the firewall exception
-/// (scripts/run-mac-e2e.sh). Dropping it closes its listener.
+/// (scripts/run-mac-e2e.sh). Its listener lives until the test process
+/// exits.
 pub struct Fixture {
     port: u16,
     requests: Arc<Mutex<Vec<Request>>>,
-    stop: Arc<AtomicBool>,
-    accept: Option<JoinHandle<()>>,
 }
 
 /// What a [`Fixture`] answers.
@@ -1344,23 +1326,14 @@ impl Fixture {
         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the fixture");
         let port = listener.local_addr().expect("fixture address").port();
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let (seen, stopped) = (Arc::clone(&requests), Arc::clone(&stop));
-        let accept = thread::spawn(move || {
+        let seen = Arc::clone(&requests);
+        thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                if stopped.load(Ordering::SeqCst) {
-                    return;
-                }
                 let (seen, answer) = (Arc::clone(&seen), answer.clone());
                 thread::spawn(move || serve(stream, &seen, &answer));
             }
         });
-        Fixture {
-            port,
-            requests,
-            stop,
-            accept: Some(accept),
-        }
+        Fixture { port, requests }
     }
 
     /// The `host:port` a route names to reach the fixture.
@@ -1370,19 +1343,6 @@ impl Fixture {
 
     pub fn requests(&self) -> Vec<Request> {
         self.requests.lock().unwrap().clone()
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        // Wake the blocked accept so the thread sees the flag and returns,
-        // dropping the listener.
-        if TcpStream::connect(("127.0.0.1", self.port)).is_ok()
-            && let Some(accept) = self.accept.take()
-        {
-            let _ = accept.join();
-        }
     }
 }
 
@@ -1447,23 +1407,21 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, answer: &Answer) {
 /// A streamed completion of `reply` in the wire format `target` names.
 fn model_reply(target: &str, reply: &str) -> String {
     let path = target.split('?').next().unwrap_or_default();
-    let events: Vec<(Option<&str>, Value)> = if path.ends_with("/chat/completions") {
+    if path.ends_with("/chat/completions") {
         let chunk = |delta: Value, finish: Value| {
             serde_json::json!({
                 "id": "e2e", "object": "chat.completion.chunk", "created": 0, "model": "e2e",
                 "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }],
             })
         };
-        vec![
-            (
-                None,
-                chunk(
-                    serde_json::json!({ "role": "assistant", "content": reply }),
-                    Value::Null,
-                ),
+        format!(
+            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            chunk(
+                serde_json::json!({ "role": "assistant", "content": reply }),
+                Value::Null,
             ),
-            (None, chunk(serde_json::json!({}), "stop".into())),
-        ]
+            chunk(serde_json::json!({}), "stop".into()),
+        )
     } else if path == "/v1/messages" {
         let message = serde_json::json!({
             "id": "msg_e2e", "type": "message", "role": "assistant", "model": "e2e",
@@ -1497,21 +1455,10 @@ fn model_reply(target: &str, reply: &str) -> String {
         .into_iter()
         .map(|(event, mut data)| {
             data["type"] = event.into();
-            (Some(event), data)
+            format!("event: {event}\ndata: {data}\n\n")
         })
         .collect()
     } else {
-        return String::new();
-    };
-    let mut body: String = events
-        .iter()
-        .map(|(event, data)| match event {
-            Some(event) => format!("event: {event}\ndata: {data}\n\n"),
-            None => format!("data: {data}\n\n"),
-        })
-        .collect();
-    if path.ends_with("/chat/completions") {
-        body.push_str("data: [DONE]\n\n");
+        String::new()
     }
-    body
 }

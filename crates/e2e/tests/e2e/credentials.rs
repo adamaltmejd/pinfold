@@ -16,7 +16,7 @@ use std::process::{Command, Stdio};
 
 use e2e::{
     COMMAND, Client, Fixture, Project, READER, Request, TestEnv, default_image, first_on_path,
-    json_lines, op_calls, run, stand_in_op,
+    json_lines, op_calls, run, spawn, stand_in_op,
 };
 
 /// A throwaway random word.
@@ -30,11 +30,11 @@ fn hex(text: &str) -> String {
 
 /// Standard base64 of `text`, from the host's `base64`, fed on stdin.
 fn base64(text: &str) -> String {
-    let mut child = Command::new("base64")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("base64");
+    let mut child = spawn(
+        Command::new("base64")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped()),
+    );
     child
         .stdin
         .take()
