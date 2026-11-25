@@ -4,18 +4,18 @@
 
 [[host_helper]]
 name = "codex"
-version = "0.171.0"
+version = "0.172.0"
 
 [[host_helper.asset]]
 os-arch = "host-darwin-arm64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.171.0/codex-app-server-aarch64-apple-darwin.tar.gz"
-sha256 = "75690f1cc2ebd2ba71923dd52a69c3bf8bdbe6e0bc6c4861bb949cf977378b46"
+url = "https://github.com/openai/codex/releases/download/rust-v0.172.0/codex-app-server-aarch64-apple-darwin.tar.gz"
+sha256 = "b18587f0c0fe957b729aa722adc287c7eaee3aa2bb469c68921ebff1632b07d9"
 install = "tar.gz"
 as = "codex-app-server"
 
 [[host_helper.asset]]
 os-arch = "host-linux-x64"
-url = "https://github.com/openai/codex/releases/download/rust-v0.171.0/codex-app-server-x86_64-unknown-linux-musl.tar.gz"
-sha256 = "421bcd19b25b5e5b88fd851ddaba6a155c6f9adebae154a2821b73db12d03787"
+url = "https://github.com/openai/codex/releases/download/rust-v0.172.0/codex-app-server-x86_64-unknown-linux-musl.tar.gz"
+sha256 = "9675313ed4bec5e1dcc99a399cb6eee4b7bc269536a36a6a2df207202737c9d7"
 install = "tar.gz"
 as = "codex-app-server"

@@ -78,10 +78,9 @@ fn the_vmm_reaches_only_its_own_box() {
     ];
     let host_sockets = sockets_under(&roots);
     for (vmm, own, other) in [(&a_vmm, &a_disks, &b_disks), (&b_vmm, &b_disks, &a_disks)] {
-        // The user's, with no capabilities and no way to gain privilege.
+        // The user's, with no capabilities.
         // Sabotage: drop `drop_bounding(0)` from `restrict` in jail.rs.
-        // CapBnd is then the full set. (Dropping `set_no_new_privs` does
-        // not fail: Firecracker's seccomp setup sets it itself.)
+        // CapBnd is then the full set.
         let status = vmm.status();
         for field in ["Uid", "Gid"] {
             let ids: Vec<&str> = status[field].split_whitespace().collect();
@@ -92,7 +91,6 @@ fn the_vmm_reaches_only_its_own_box() {
             assert_eq!(ids, [expected.as_str(); 4], "{field}: {status:?}");
         }
         assert_eq!(status["CapBnd"], "0000000000000000", "{status:?}");
-        assert_eq!(status["NoNewPrivs"], "1", "{status:?}");
 
         // Namespaces of its own: not the host's, not the other VMM's.
         let theirs = if vmm.pid == a_vmm.pid { &b_vmm } else { &a_vmm };

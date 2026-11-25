@@ -74,8 +74,8 @@ pub struct Login {
     /// pi's provider, one of [`PI_PROVIDERS`]; only pi names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// The token's [`Source`]. claude and pi need one; codex takes none:
-    /// its token comes from the host helper.
+    /// The token's [`Source`]. claude, github and pi need one; codex takes
+    /// none: its token comes from the host helper.
     #[serde(
         default,
         deserialize_with = "present",
@@ -103,12 +103,8 @@ pub struct Inject {
 #[serde(deny_unknown_fields)]
 pub struct Header {
     pub from: String,
-    #[serde(
-        default,
-        deserialize_with = "present",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prefix: String,
 }
 
 /// Where a secret's value comes from, as a `from` key names it: a
@@ -121,9 +117,7 @@ pub enum Source {
 
 /// A key that is present holds a string: an explicit null is refused,
 /// never read as absent.
-pub(crate) fn present<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
+fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
     String::deserialize(deserializer).map(Some)
 }
 
@@ -159,13 +153,16 @@ fn env_entries<'de, D: serde::Deserializer<'de>>(
 impl Source {
     /// A `from` key's source, or why it cannot be read.
     pub(crate) fn declared(from: &str) -> Result<Source, &'static str> {
+        // A 1Password reference is one `op read` argument. No environment
+        // holds a variable whose name is empty or holds `=` or NUL, and
+        // macOS `getenv` reads `A=B` as `A`.
         if from.starts_with("op://") {
-            if valid_op(from) {
+            if !from.chars().any(|c| c.is_ascii_control()) && from.len() <= 1024 {
                 Ok(Source::Op(from.to_string()))
             } else {
                 Err("its 1Password reference holds a control character or exceeds 1024 bytes")
             }
-        } else if valid_from(from) {
+        } else if !from.is_empty() && !from.contains(['=', '\0']) {
             Ok(Source::From(from.to_string()))
         } else {
             Err("its from variable is empty or holds = or NUL")
@@ -212,11 +209,7 @@ impl Inject {
             header
                 .source()
                 .map_err(|error| invalid(format!("route header {name:?}: {error}")))?;
-            if header
-                .prefix
-                .as_ref()
-                .is_some_and(|prefix| prefix.contains(['\r', '\n', '\0']))
-            {
+            if header.prefix.contains(['\r', '\n', '\0']) {
                 return Err(invalid(format!(
                     "route header {name:?}: its prefix holds CR, LF or NUL"
                 )));
@@ -256,7 +249,7 @@ impl Inject {
                     source.name()
                 )));
             }
-            let value = format!("{}{value}", header.prefix.as_deref().unwrap_or_default());
+            let value = format!("{}{value}", header.prefix);
             headers.push((name.clone(), value));
         }
         Ok((target, headers))
@@ -501,25 +494,22 @@ impl Login {
                 header.to_string(),
                 Header {
                     from: source.name().to_string(),
-                    prefix: (!prefix.is_empty()).then(|| prefix.to_string()),
+                    prefix: prefix.to_string(),
                 },
             )]),
         };
         let (_, headers) = inject.resolve(route, values)?;
-        if self.is_github() && headers.is_empty() {
-            return Err(values.missing(&source));
-        }
+        // `values` holds the token, so its one header was resolved.
+        let token = &headers[0].1;
         let mut served = Vec::new();
         for (name, origin, base_path) in self.served(route)? {
-            let headers = match headers.first() {
-                Some((_, token)) if self.is_github() && name == GITHUB_NAMES[0] => {
-                    let basic = base64(format!("x-access-token:{token}").as_bytes());
-                    vec![(header.to_string(), format!("Basic {basic}"))]
-                }
-                Some((_, token)) if self.is_github() => {
-                    vec![(header.to_string(), format!("Bearer {token}"))]
-                }
-                _ => headers.clone(),
+            let headers = if !self.is_github() {
+                headers.clone()
+            } else if name == GITHUB_NAMES[0] {
+                let basic = base64(format!("x-access-token:{token}").as_bytes());
+                vec![(header.to_string(), format!("Basic {basic}"))]
+            } else {
+                vec![(header.to_string(), format!("Bearer {token}"))]
             };
             served.push(Served {
                 name: name.to_string(),
@@ -1253,19 +1243,6 @@ pub fn check_reserved_labels(labels: &BTreeMap<String, String>) -> Result<(), St
         )),
         None => Ok(()),
     }
-}
-
-/// A host variable name: no environment holds one that is empty or holds
-/// `=` or NUL, and macOS `getenv` reads `A=B` as `A`.
-fn valid_from(name: &str) -> bool {
-    !name.is_empty() && !name.contains(['=', '\0'])
-}
-
-/// A 1Password secret reference `op read` takes as one argument.
-fn valid_op(reference: &str) -> bool {
-    reference.starts_with("op://")
-        && !reference.chars().any(|c| c.is_ascii_control())
-        && reference.len() <= 1024
 }
 
 /// A POSIX environment name: `[A-Za-z_][A-Za-z0-9_]*`. Anything else

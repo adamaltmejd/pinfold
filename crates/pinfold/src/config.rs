@@ -31,8 +31,8 @@ const DEFAULT_ALLOW: [&str; 9] = [
     "pi.dev",
 ];
 
-/// The project mount's kind. Further `mounts` entries are read-only
-/// folders ([`Config::folders`]).
+/// The project mount's kind. Further `mounts` entries are folders
+/// ([`Config::folders`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProjectMount {
@@ -93,7 +93,7 @@ impl ProjectMount {
 # cpus = {DEFAULT_CPUS}
 # memory = \"{DEFAULT_MEMORY}\"
 # Variables in the box: a value, {{ from = \"VAR\" }} for the host's VAR, or {{ from = \"op://VAULT/ITEM/FIELD\" }} for 1Password:
-# env = {{ LANG = \"C.UTF-8\", API_KEY = {{ from = \"MY_API_KEY\" }} }}
+# env = {{ LANG = \"C.UTF-8\", GIT_AUTHOR_EMAIL = {{ from = \"MY_AGENT_EMAIL\" }} }}
 # A Containerfile beside this file builds the project's own image.
 
 # Agent logins kept on the host. These tables stay last, take the place of the
@@ -105,6 +105,10 @@ impl ProjectMount {
 # [routes.anthropic]
 # login = \"claude\"
 # from = \"CLAUDE_SETUP_TOKEN\"
+# gh and Git on a GitHub token in 1Password:
+# [routes.github]
+# login = \"github\"
+# from = \"op://VAULT/ITEM/FIELD\"
 ",
             self.as_str(),
             folder_share = if cfg!(target_os = "macos") {
@@ -268,7 +272,7 @@ impl std::error::Error for NoConfig {}
 /// The merged configuration for one project run.
 pub struct Config {
     pub mount: ProjectMount,
-    /// Read-only host folders after the project mount, each host absolute,
+    /// Host folders after the project mount, each host absolute,
     /// `~/` expanded to the user's canonical home. A box start admits each
     /// host only as its own real path ([`admit_folder`]).
     pub folders: Vec<Mount>,

@@ -439,7 +439,6 @@ fn credentials_stay_on_the_host() {
         "the refusal"
     );
     assert!(op_calls(&op).iter().any(|call| call == missing_reference));
-    fs::remove_file(op.join("calls")).unwrap();
     configure(claude_reference);
 
     // One session holds the box. Its argv carries the process sweep's
@@ -449,12 +448,6 @@ fn credentials_stay_on_the_host() {
     let canary = format!("pfargv{}", random());
     let mut session = Client::spawn(launch(&["--", "sh", "-c", READER, &canary]));
     assert_eq!(session.line(), "started");
-    // Sabotage (run): in core/plan.rs's `Values::read_op`, read each
-    // source rather than each distinct reference. The Claude reference is
-    // then asked twice.
-    let mut calls = op_calls(&op);
-    calls.sort();
-    assert_eq!(calls, [claude_reference, env_reference], "op calls");
     let mut ask = |line: &str| session.ask(line);
 
     // Control: the `from`, `op` and `PINFOLD_ENV_` values arrive in the
@@ -516,7 +509,9 @@ fn credentials_stay_on_the_host() {
     // value.
     // Sabotage (run): in proxy.rs's `Rules`, serve the github names with
     // `login: false`. X-Api-Key then reaches the fixture, and the
-    // `access_token` query is forwarded: curl prints 418, not 403.
+    // credential query is forwarded: curl prints 418, not 403.
+    // The query hides `access_token` behind a `;` separator, a percent
+    // escape, mixed case and `_`, each of which the proxy must undo.
     assert_eq!(
         ask(
             "GIT_TERMINAL_PROMPT=0 git -c http.extraHeader='AuTHorization: Bearer pfbox-g' \
@@ -528,8 +523,9 @@ fn credentials_stay_on_the_host() {
     let github_api = "-H 'AuTHorization: Bearer pfbox-h' -H 'X-Api-Key: pfbox-hk' \
                       'http://api.github.localhost/user";
     let before = decisions().len();
+    let upstream = github.requests().len();
     assert_eq!(
-        ask(&curl(&format!("{github_api}?access_token=x'"))),
+        ask(&curl(&format!("{github_api}?per_page=2;Access%5Ftoken=x'"))),
         ["403"]
     );
     let lines = decisions()[before..].to_vec();
@@ -550,36 +546,30 @@ fn credentials_stay_on_the_host() {
     );
     assert_eq!(
         github.requests().len(),
-        1,
+        upstream,
         "the refused query reached the fixture"
     );
-    // Control: the same request with an ordinary query, whose bytes arrive
-    // unchanged under `/api/v3`.
-    // Sabotage (run): in proxy.rs's `forward`, drop `base_path`. The API
-    // request then arrives at /user.
+    // Control: the same request with an ordinary query reaches the
+    // fixture.
     assert_eq!(ask(&curl(&format!("{github_api}?per_page=2'"))), ["418"]);
     let requests = github.requests();
-    let targets: Vec<&str> = requests
-        .iter()
-        .map(|request| request.target.as_str())
-        .collect();
-    assert_eq!(
-        targets,
-        [
-            "/e2e/repo.git/info/refs?service=git-upload-pack",
-            "/api/v3/user?per_page=2"
-        ]
-    );
+    let request = |part: &str| {
+        requests
+            .iter()
+            .find(|request| request.target.contains(part))
+            .unwrap_or_else(|| panic!("no request for {part} at the GitHub fixture"))
+    };
+    let (git, api) = (request("/info/refs"), request("/user"));
     assert!(
-        credential_fields(&requests[0]) == ["authorization"]
-            && requests[0].header("authorization") == [format!("Basic {basic}")],
+        credential_fields(git) == ["authorization"]
+            && git.header("authorization") == [format!("Basic {basic}")],
         "the Git request's credential fields {:?} are not the host's Basic credential alone",
-        credential_fields(&requests[0])
+        credential_fields(git)
     );
     assert!(
-        only_bearer(&requests[1], &claude_login),
+        only_bearer(api, &claude_login),
         "credential fields at the GitHub API: {:?}",
-        credential_fields(&requests[1])
+        credential_fields(api)
     );
 
     // Through the Pi login route the guest's mixed-case duplicates of

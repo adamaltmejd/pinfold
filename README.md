@@ -175,9 +175,7 @@ Login routes generate native configuration for the whole box. Claude and Codex
 use system configuration; Pi autoloads a read-only extension under its writable
 home. Agent configuration precedence still applies. Launch agents through PATH.
 An explicit project `routes` table replaces the profile's routes. An API
-key can also arrive through the environment. Using a Claude subscription
-through Pi is subject to Anthropic's terms: Pi presents the token as Claude
-Code and may bill it as extra usage.
+key can also arrive through the environment.
 
 A login route grants every process in the box the host login's authority
 over every path at its origin; see [Login routes](docs/ARCHITECTURE.md#egress-proxy)
@@ -284,7 +282,7 @@ Optional profiles add tools. Each builds on the one above it:
 | `adam` | `documents` | gh, fff (pi extension) and ponytail; allows `github.com` and `api.github.com` |
 
 Each one's directory under [profile/](profile) holds only what it adds.
-All three seed these
+Every profile seeds these
 [Pi settings](profile/default/home/.pi/agent/settings.json).
 In a running box, `cat /opt/pinfold/agents/install.txt` shows the agent versions
 installed at build time. `cat ~/.pi/agent/settings.json` shows the current guest settings.
@@ -413,8 +411,9 @@ See [Configuration](docs/ARCHITECTURE.md#configuration) for layers, keys and def
 
 A profile's `pinfold.toml` or the project's configuration sets the box's
 environment with `env`. A literal is plain configuration and shows in
-`pinfold config --json`; `from` reads a host variable, or a 1Password
-reference (`from = "op://…"`), when the box starts; pinfold never writes it down, and neither does the box runtime.
+`pinfold config --json`. `from` reads a host variable, or a 1Password
+reference (`from = "op://…"`), when the box starts, and neither pinfold
+nor the box runtime writes it down.
 Every `env` value is readable by any process in the box, so credentials
 belong in a route ([GitHub access](#github-access)).
 
@@ -424,8 +423,8 @@ GIT_AUTHOR_NAME = "my-agent"
 GIT_AUTHOR_EMAIL = { from = "MY_AGENT_EMAIL" }
 ```
 
-The project's names replace the profile's one by one, and the profile's
-its base's. A missing `from` variable refuses the start. A second command
+Layers replace `env` name by name: the project over the profile, the
+profile over its base. A missing `from` variable refuses the start. A second command
 joining a running box with a different value for that variable is refused
 as `config-changed`; stop the box to change it.
 
@@ -449,7 +448,7 @@ the project mount is `kind = "disk"`.
 mounts = [{ host = ".", kind = "share" }, { host = "~/notes/dataset", guest = "/notes" }]
 ```
 
-On macOS a folder with `kind = "share"` is one the box can also write,
+On macOS a folder with `kind = "share"` is also writable by the box,
 such as an outbox you open in Finder while the box runs.
 
 For disposable Rust build outputs in guest memory:
@@ -477,12 +476,10 @@ needs no `allow` entry for `github.com` or `api.github.com`. The box can
 use the token but never read it. Prefer a fine-grained token scoped to
 the one repository the box works on, with only the permissions it needs.
 
-`gh` speaks plain HTTP to `github.localhost` through an undocumented
-local-development case; a `gh` release could drop it, and then `gh` fails
-loudly. `gh release download` is not supported through the route: it
-requests `https://api.github.com` directly. Nor is REST
-pagination past the first page (`gh api --paginate` on a REST path): it
-follows absolute `api.github.com` links, which are refused. GraphQL
+Through the route, `gh release download` is not supported: it requests
+`https://api.github.com` directly. Nor is REST pagination past the first
+page (`gh api --paginate` on a REST path): it follows absolute
+`api.github.com` links, which are refused. GraphQL
 pagination works.
 
 ## Limits
