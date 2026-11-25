@@ -131,19 +131,13 @@ impl Runtime for Firecracker {
     }
 
     /// `box exec` of this executable, for a caller that pipes its stdio.
-    fn exec_command(
-        &self,
-        name: &str,
-        _init: &Path,
-        _context: &ExecContext<'_>,
-        argv: &[String],
-    ) -> io::Result<std::process::Command> {
+    fn exec_command(&self, name: &str, _init: &Path, argv: &[String]) -> std::process::Command {
         let mut command = std::process::Command::new("/proc/self/exe");
         command
             .process_group(0)
             .args(["box", "exec", name, "--"])
             .args(argv);
-        Ok(command)
+        command
     }
 
     fn stat(&self, name: &str) -> io::Result<BoxStat> {

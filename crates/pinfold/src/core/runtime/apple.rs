@@ -716,6 +716,7 @@ impl Runtime for Apple {
         Ok(())
     }
 
+    /// The native client owns only private pipes, never caller terminal fds.
     fn exec(
         &self,
         name: &str,
@@ -723,16 +724,144 @@ impl Runtime for Apple {
         context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        native_exec(name, init, context, argv)
+        use std::os::unix::net::UnixStream;
+        use std::os::unix::process::ExitStatusExt;
+        let (connection, bridge) = UnixStream::pair()?;
+        let mut command = std::process::Command::new("container");
+        command
+            .args(["exec", "-i", name])
+            .arg(init)
+            .args(["init", "session-exec"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut client = crate::core::process::GroupChild::spawn(&mut command)?;
+        drop(command);
+        let diagnostics =
+            StderrDrain::start_fd(client.take_stderr().expect("piped stderr").into())?;
+        let mut input = client.take_stdin();
+        let mut output = client.take_stdout();
+        crate::core::pipe::nonblocking(input.as_ref().expect("piped stdin"), "native exec")?;
+        crate::core::pipe::nonblocking(output.as_ref().expect("piped stdout"), "native exec")?;
+        bridge.set_nonblocking(true)?;
+        let stopped = AtomicBool::new(false);
+        let result = std::thread::scope(|scope| {
+            let worker_context = ExecContext {
+                cancel: Some(&stopped),
+                ..*context
+            };
+            let worker =
+                scope.spawn(move || super::exec_transport::exec(connection, &worker_context, argv));
+            let mut pending_input = VecDeque::new();
+            let mut pending_output = VecDeque::new();
+            let mut exited = None;
+            let relayed = (|| -> io::Result<()> {
+                loop {
+                    if worker.is_finished()
+                        || context
+                            .cancel
+                            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+                    {
+                        return Ok(());
+                    }
+                    if exited.is_none() && client.exited()? {
+                        exited = Some(Instant::now() + Duration::from_secs(1));
+                        input.take();
+                        pending_input.clear();
+                    }
+                    if exited.is_some_and(|deadline| Instant::now() >= deadline) {
+                        return Ok(());
+                    }
+                    if output.is_none() && pending_output.is_empty() {
+                        let _ = bridge.shutdown(std::net::Shutdown::Write);
+                    }
+                    let mut fds = [
+                        libc::pollfd {
+                            fd: if input.is_some() && pending_input.is_empty() {
+                                bridge.as_raw_fd()
+                            } else {
+                                -1
+                            },
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: if pending_input.is_empty() {
+                                -1
+                            } else {
+                                input.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+                            },
+                            events: libc::POLLOUT,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: if pending_output.is_empty() {
+                                output.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+                            } else {
+                                -1
+                            },
+                            events: libc::POLLIN,
+                            revents: 0,
+                        },
+                        libc::pollfd {
+                            fd: if pending_output.is_empty() {
+                                -1
+                            } else {
+                                bridge.as_raw_fd()
+                            },
+                            events: libc::POLLOUT,
+                            revents: 0,
+                        },
+                    ];
+                    // The finite poll also observes native exit without trusting its pipes' EOF.
+                    if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 20) } < 0 {
+                        let error = io::Error::last_os_error();
+                        if error.kind() == io::ErrorKind::Interrupted {
+                            continue;
+                        }
+                        return Err(error);
+                    }
+                    if fds[0].revents != 0 && !bridge_read(&mut &bridge, &mut pending_input)? {
+                        input.take();
+                    }
+                    if fds[1].revents != 0
+                        && let Some(writer) = input.as_mut()
+                        && !bridge_write(writer, &mut pending_input)?
+                    {
+                        input.take();
+                        pending_input.clear();
+                    }
+                    if fds[2].revents != 0
+                        && let Some(reader) = output.as_mut()
+                        && !bridge_read(reader, &mut pending_output)?
+                    {
+                        output.take();
+                    }
+                    if fds[3].revents != 0 && !bridge_write(&mut &bridge, &mut pending_output)? {
+                        return Ok(());
+                    }
+                }
+            })();
+            stopped.store(true, Ordering::Release);
+            let _ = bridge.shutdown(std::net::Shutdown::Both);
+            drop((input, output));
+            let _ = client.finish();
+            let result = worker
+                .join()
+                .map_err(|_| io::Error::other("native exec worker failed"))?;
+            match result {
+                Ok(code) => Ok(code),
+                Err(error) => relayed.and(Err(error)),
+            }
+        });
+        let diagnostics: Vec<_> = diagnostics.close().into_iter().collect();
+        if result.is_err() && !diagnostics.is_empty() {
+            crate::core::process::diagnostic(String::from_utf8_lossy(&diagnostics));
+        }
+        result.map(|code| ExitStatus::from_raw(code << 8))
     }
 
-    fn exec_command(
-        &self,
-        name: &str,
-        init: &Path,
-        _context: &ExecContext<'_>,
-        argv: &[String],
-    ) -> io::Result<std::process::Command> {
+    fn exec_command(&self, name: &str, init: &Path, argv: &[String]) -> std::process::Command {
         let mut command = std::process::Command::new("container");
         command.args(["exec", "-i"]);
         // Without a TTY the runtime's exec gets its own process group, so
@@ -748,7 +877,7 @@ impl Runtime for Apple {
             .arg(init)
             .args(["init", "exec", "--box-env", "--"])
             .args(argv);
-        Ok(command)
+        command
     }
 
     /// A networkless helper owns fresh roots, then drops privileges to
@@ -763,9 +892,7 @@ impl Runtime for Apple {
         fills: &[Fill],
         cancel: &AtomicBool,
     ) -> io::Result<()> {
-        if cancel.load(Ordering::Acquire) {
-            return Err(io::ErrorKind::Interrupted.into());
-        }
+        crate::core::pipe::check_cancel(cancel)?;
         if names.is_empty() && directories.is_empty() {
             return Ok(());
         }
@@ -933,149 +1060,6 @@ impl Runtime for Apple {
     }
 }
 
-/// The native client owns only private pipes, never caller terminal fds.
-fn native_exec(
-    name: &str,
-    init: &Path,
-    context: &ExecContext<'_>,
-    argv: &[String],
-) -> io::Result<ExitStatus> {
-    use std::os::unix::net::UnixStream;
-    use std::os::unix::process::ExitStatusExt;
-    let (connection, bridge) = UnixStream::pair()?;
-    let mut command = std::process::Command::new("container");
-    command
-        .args(["exec", "-i", name])
-        .arg(init)
-        .args(["init", "session-exec"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut client = crate::core::process::GroupChild::spawn(&mut command)?;
-    drop(command);
-    let diagnostics = StderrDrain::start_fd(client.take_stderr().expect("piped stderr").into())?;
-    let mut input = client.take_stdin();
-    let mut output = client.take_stdout();
-    crate::core::pipe::nonblocking(input.as_ref().expect("piped stdin"), "native exec")?;
-    crate::core::pipe::nonblocking(output.as_ref().expect("piped stdout"), "native exec")?;
-    bridge.set_nonblocking(true)?;
-    let stopped = AtomicBool::new(false);
-    let result = std::thread::scope(|scope| {
-        let worker_context = ExecContext {
-            cancel: Some(&stopped),
-            ..*context
-        };
-        let worker =
-            scope.spawn(move || super::exec_transport::exec(connection, &worker_context, argv));
-        let mut pending_input = VecDeque::new();
-        let mut pending_output = VecDeque::new();
-        let mut exited = None;
-        let relayed = (|| -> io::Result<()> {
-            loop {
-                if worker.is_finished()
-                    || context
-                        .cancel
-                        .is_some_and(|cancel| cancel.load(Ordering::Acquire))
-                {
-                    return Ok(());
-                }
-                if exited.is_none() && client.exited()? {
-                    exited = Some(Instant::now() + Duration::from_secs(1));
-                    input.take();
-                    pending_input.clear();
-                }
-                if exited.is_some_and(|deadline| Instant::now() >= deadline) {
-                    return Ok(());
-                }
-                if output.is_none() && pending_output.is_empty() {
-                    let _ = bridge.shutdown(std::net::Shutdown::Write);
-                }
-                let mut fds = [
-                    libc::pollfd {
-                        fd: if input.is_some() && pending_input.is_empty() {
-                            bridge.as_raw_fd()
-                        } else {
-                            -1
-                        },
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                    libc::pollfd {
-                        fd: if pending_input.is_empty() {
-                            -1
-                        } else {
-                            input.as_ref().map_or(-1, AsRawFd::as_raw_fd)
-                        },
-                        events: libc::POLLOUT,
-                        revents: 0,
-                    },
-                    libc::pollfd {
-                        fd: if pending_output.is_empty() {
-                            output.as_ref().map_or(-1, AsRawFd::as_raw_fd)
-                        } else {
-                            -1
-                        },
-                        events: libc::POLLIN,
-                        revents: 0,
-                    },
-                    libc::pollfd {
-                        fd: if pending_output.is_empty() {
-                            -1
-                        } else {
-                            bridge.as_raw_fd()
-                        },
-                        events: libc::POLLOUT,
-                        revents: 0,
-                    },
-                ];
-                // The finite poll also observes native exit without trusting its pipes' EOF.
-                if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 20) } < 0 {
-                    let error = io::Error::last_os_error();
-                    if error.kind() == io::ErrorKind::Interrupted {
-                        continue;
-                    }
-                    return Err(error);
-                }
-                if fds[0].revents != 0 && !bridge_read(&mut &bridge, &mut pending_input)? {
-                    input.take();
-                }
-                if fds[1].revents != 0
-                    && let Some(writer) = input.as_mut()
-                    && !bridge_write(writer, &mut pending_input)?
-                {
-                    input.take();
-                    pending_input.clear();
-                }
-                if fds[2].revents != 0
-                    && let Some(reader) = output.as_mut()
-                    && !bridge_read(reader, &mut pending_output)?
-                {
-                    output.take();
-                }
-                if fds[3].revents != 0 && !bridge_write(&mut &bridge, &mut pending_output)? {
-                    return Ok(());
-                }
-            }
-        })();
-        stopped.store(true, Ordering::Release);
-        let _ = bridge.shutdown(std::net::Shutdown::Both);
-        drop((input, output));
-        let _ = client.finish();
-        let result = worker
-            .join()
-            .map_err(|_| io::Error::other("native exec worker failed"))?;
-        match result {
-            Ok(code) => Ok(code),
-            Err(error) => relayed.and(Err(error)),
-        }
-    });
-    let diagnostics: Vec<_> = diagnostics.close().into_iter().collect();
-    if result.is_err() && !diagnostics.is_empty() {
-        crate::core::process::diagnostic(String::from_utf8_lossy(&diagnostics));
-    }
-    result.map(|code| ExitStatus::from_raw(code << 8))
-}
-
 fn bridge_read(input: &mut impl io::Read, pending: &mut VecDeque<u8>) -> io::Result<bool> {
     let mut bytes = [0; 32 * 1024];
     match input.read(&mut bytes) {
@@ -1116,16 +1100,13 @@ fn bridge_write(output: &mut impl Write, pending: &mut VecDeque<u8>) -> io::Resu
     }
 }
 
-/// `container exec` of `argv` through init, preserving terminal identity on a TTY.
 /// Wait, bounded, until inspection reports box `name` running. Apple records
 /// `.running` only after the box's first process starts, so `ready` can
 /// arrive first; an exec is refused in that gap.
 fn wait_until_running(name: &str, cancel: &AtomicBool) -> io::Result<BoxInfo> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if cancel.load(Ordering::Acquire) {
-            return Err(io::ErrorKind::Interrupted.into());
-        }
+        crate::core::pipe::check_cancel(cancel)?;
         let state = Apple.inspect(name)?;
         match state {
             Some(box_) if box_.running => return Ok(box_),
@@ -1196,9 +1177,7 @@ fn copy_in(name: &str, init: &Path, seeding: &Seeding, cancel: &AtomicBool) -> i
     let mut exited = None;
     let mut wait = crate::core::process::ExitWait::new();
     let status = loop {
-        if cancel.load(Ordering::Acquire) {
-            return Err(io::ErrorKind::Interrupted.into());
-        }
+        crate::core::pipe::check_cancel(cancel)?;
         if exited.is_none() && child.exited()? {
             exited = Some(Instant::now());
         }

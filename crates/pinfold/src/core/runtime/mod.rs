@@ -252,13 +252,7 @@ pub trait Runtime: Sync {
     ) -> io::Result<ExitStatus>;
 
     /// The command [`Runtime::exec`] runs, for a caller that pipes its stdio.
-    fn exec_command(
-        &self,
-        name: &str,
-        init: &Path,
-        context: &ExecContext<'_>,
-        argv: &[String],
-    ) -> io::Result<std::process::Command>;
+    fn exec_command(&self, name: &str, init: &Path, argv: &[String]) -> std::process::Command;
 
     /// One box's OOM kills, memory and pids facts. `name` is the box
     /// `list` names. Fields the runtime cannot answer are `None`.

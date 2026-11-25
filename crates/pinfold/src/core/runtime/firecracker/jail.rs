@@ -154,6 +154,8 @@ fn kill(pidfd: &OwnedFd) -> io::Result<()> {
 /// exactly as long as the VMM, so the VM ends with its owner process.
 pub fn spawn(jail: &Jail, state_dir: &Path) -> io::Result<Vmm> {
     let plan = Plan::jail(jail)?;
+    // Retained through child mounting.
+    let vsock = jail.vsock.try_clone()?;
     let state_dir = state_dir.to_path_buf();
     let (started_tx, started_rx) = mpsc::channel();
     let (status_tx, status_rx) = oneshot::channel();
@@ -161,17 +163,14 @@ pub fn spawn(jail: &Jail, state_dir: &Path) -> io::Result<Vmm> {
         .name("vmm".into())
         .spawn(move || {
             let started = (|| {
-                if let Some(vsock) = &plan.vsock {
-                    // Clone the mount namespace only after this thread has its
-                    // own cwd pinned to the retained directory. The kernel then
-                    // rebases that cwd onto the child's copy of the mount.
-                    nix::sched::unshare(CloneFlags::CLONE_FS).map_err(|error| {
-                        io::Error::other(format!("VMM jail: isolate cwd: {error}"))
-                    })?;
-                    nix::unistd::fchdir(vsock).map_err(|error| {
-                        io::Error::other(format!("VMM jail: enter socket directory: {error}"))
-                    })?;
-                }
+                // Clone the mount namespace only after this thread has its
+                // own cwd pinned to the retained directory. The kernel then
+                // rebases that cwd onto the child's copy of the mount.
+                nix::sched::unshare(CloneFlags::CLONE_FS)
+                    .map_err(|error| io::Error::other(format!("VMM jail: isolate cwd: {error}")))?;
+                nix::unistd::fchdir(&vsock).map_err(|error| {
+                    io::Error::other(format!("VMM jail: enter socket directory: {error}"))
+                })?;
                 start(&plan, Some(&state_dir))
             })();
             let (pid, _alive, pidfd) = match started {
@@ -239,8 +238,6 @@ struct Plan {
     /// The tmpfs root, on the host's side of `pivot_root`.
     root: CString,
     binds: Vec<Bind>,
-    /// Retained through child mounting; absent for the namespace probe.
-    vsock: Option<File>,
     /// `None` for the probe, which exits after mounting its tmpfs.
     exec: Option<Exec>,
 }
@@ -270,7 +267,6 @@ impl Plan {
             // In the probe's own mount namespace, over the host's root.
             root: c"/".to_owned(),
             binds: Vec::new(),
-            vsock: None,
             exec: None,
         })
     }
@@ -346,7 +342,6 @@ impl Plan {
             gid_map,
             root: cstring(jail.root)?,
             binds,
-            vsock: Some(jail.vsock.try_clone()?),
             exec: Some(Exec {
                 dev: target("/dev")?,
                 rules,
