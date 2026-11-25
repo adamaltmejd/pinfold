@@ -1046,8 +1046,9 @@ network listener, no token: the socket identifies the box.
     set to a placeholder, and `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and
     `GIT_CONFIG_VALUE_n` setting `url.http://github.localhost/.insteadOf`
     to `https://github.com/` and to `git@github.com:`, and
-    `http.postBuffer` to `524288000` so Git never sends a chunked body; no
-    file is mounted. A caller env entry naming any of these variables is
+    `http.http://github.localhost/.postBuffer` to `524288000`, since Git
+    sends a chunked body, which the proxy refuses, once a request outgrows
+    its buffer; no file is mounted. A caller env entry naming any of these variables is
     refused as `spec`, naming it.
   - `codex`: `{ "login": "codex" }` uses the host's own Codex login, in
     whatever store Codex keeps it. The proxy gets the access token from

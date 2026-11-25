@@ -372,7 +372,10 @@ pub const GITHUB_ENV: [(&str, &str); 10] = [
     ("GIT_CONFIG_KEY_1", "url.http://github.localhost/.insteadOf"),
     ("GIT_CONFIG_VALUE_1", "git@github.com:"),
     // The proxy refuses chunked framing; Git chunks a body over the buffer.
-    ("GIT_CONFIG_KEY_2", "http.postBuffer"),
+    (
+        "GIT_CONFIG_KEY_2",
+        "http.http://github.localhost/.postBuffer",
+    ),
     ("GIT_CONFIG_VALUE_2", "524288000"),
 ];
 
