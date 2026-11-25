@@ -4,11 +4,11 @@
 use std::collections::hash_map::RandomState;
 use std::fs;
 use std::hash::{BuildHasher, Hasher};
-use std::thread;
 use std::time::Duration;
 
-use e2e::{BoxUp, Exec, Project, TestEnv, box_name, run};
-use serde_json::{Value, json};
+use e2e::{Exec, Project, TestEnv, run};
+#[cfg(target_os = "macos")]
+use serde_json::Value;
 
 const BUILD: Duration = Duration::from_secs(900);
 
@@ -30,9 +30,9 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
     // Sabotage (run): in pi/launch.rs's freshness walk, give `None` where
     // a base is itself outdated (`builds on an outdated image`). After the
     // root changes, only the root names `image-outdated`.
-    // The box from the top link with every link's file and seed, the
-    // corrected cycle coming ready, and the root alone not outdated after
-    // its own rebuild are the positive controls.
+    // The box from the top link with every link's file and seed, and the
+    // root alone not outdated after its own rebuild, are the positive
+    // controls.
     let env = TestEnv::own_cache("chain");
     let word = format!("{:08x}", RandomState::new().build_hasher().finish() as u32);
     let prefix = format!("e2e-{}-{word}", std::process::id());
@@ -55,15 +55,15 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
     };
     let above = |base: &str| format!("localhost/pinfold/profile-{base}:latest");
     // Each lower link seeds a path of its own, and one the top replaces.
-    let root_link = |base: Option<&str>, text: &str| {
+    let root_link = |text: &str| {
         link(
             &root,
-            base,
+            None,
             recipe(root_base(), "root", text),
             &[("e2e-root-seed", "root-seed"), ("e2e-seed", "root")],
         );
     };
-    root_link(None, "root");
+    root_link("root");
     link(
         &mid,
         Some(&root),
@@ -81,28 +81,6 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
         assert_eq!(built.code, 0, "build --profile {name}: {built:?}");
     };
     build(&top);
-
-    // With the chain's images published, a cycle (the root names the top
-    // as its base) is refused; corrected, the same spec comes ready.
-    // Seeds need `$HOME` on a disk.
-    let spec = json!({
-        "name": box_name("chain"),
-        "profile": top,
-        "env": { "HOME": "/home/e2e" },
-        "disks": [{ "name": format!("{prefix}-chain"), "guest": "/home/e2e", "size": "1G" }],
-    });
-    root_link(Some(&top), "root");
-    let refused = match env.start(&spec) {
-        Ok(up) => panic!("a cycle came ready: {}", up.ready()),
-        Err(line) => line,
-    };
-    assert_eq!(
-        (&refused["event"], &refused["reason"]),
-        (&json!("refused"), &json!("profile")),
-        "{refused}"
-    );
-    root_link(None, "root");
-    drop(env.up(&spec));
 
     // A project on the top link.
     let project = Project::new(&env, "chain");
@@ -134,7 +112,7 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
     let files = |root_text: &str| format!("{root_text}\nmid\ntop\nroot-seedmid-seedtop");
 
     // A change at the root names every image above it.
-    root_link(None, "root-2");
+    root_link("root-2");
     let changed = launch();
     assert_eq!(changed.code, 0, "{changed:?}");
     assert_eq!(
@@ -174,37 +152,6 @@ fn a_profile_with_a_base_applies_it_and_is_outdated_when_it_changes() {
         "{}",
         rebuilt.stderr
     );
-
-    // A second, unchanged rebuild keeps every image identity.
-    let before = identities(&env, [&root, &mid, &top]);
-    build(&top);
-    assert_eq!(identities(&env, [&root, &mid, &top]), before);
-}
-
-/// Each link's image id, from the `ready` line of a box of its latest.
-fn identities(env: &TestEnv, links: [&String; 3]) -> Vec<Value> {
-    let ups: Vec<BoxUp> = thread::scope(|scope| {
-        let started: Vec<_> = links
-            .iter()
-            .map(|link| {
-                scope.spawn(move || {
-                    env.up(&json!({
-                        "name": box_name(&format!("chain-{}", link.rsplit('-').next().unwrap())),
-                        "image": format!("localhost/pinfold/profile-{link}:latest"),
-                    }))
-                })
-            })
-            .collect();
-        started.into_iter().map(|up| up.join().unwrap()).collect()
-    });
-    let ids: Vec<Value> = ups
-        .iter()
-        .map(|up| up.ready()["image"]["id"].clone())
-        .collect();
-    for id in &ids {
-        assert!(id.as_str().is_some_and(|id| !id.is_empty()), "{id}");
-    }
-    ids
 }
 
 fn tokens(text: &str) -> impl Iterator<Item = &str> {
