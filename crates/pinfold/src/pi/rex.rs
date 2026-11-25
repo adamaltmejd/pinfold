@@ -147,7 +147,8 @@ impl Rex {
         };
         tokio::select! {
             biased;
-            _ = closed(&mut closing) => None,
+            // The sender lives in `self`, so the wait never fails.
+            _ = closing.wait_for(|closing| *closing) => None,
             status = work => status,
         }
     }
@@ -164,12 +165,6 @@ impl Rex {
     }
 }
 
-async fn closed(closing: &mut watch::Receiver<bool>) {
-    if closing.wait_for(|closing| *closing).await.is_err() {
-        std::future::pending::<()>().await;
-    }
-}
-
 impl State {
     /// Check for `rex` in the box, then the app's Remote Control, then
     /// relay. A relay is kept while its server runs and Remote Control
@@ -182,12 +177,17 @@ impl State {
         {
             self.shut().await;
         }
-        if self.relay.is_none()
-            && !self
-                .succeeds(&["rex", "--autostart=false", "version"])
-                .await
-        {
-            return Status::Absent;
+        if self.relay.is_none() {
+            let present = match self
+                .command(&["rex", "--autostart=false", "version"])
+                .spawn_guarded()
+            {
+                Ok(mut child) => wait_success(&mut child, Instant::now() + HELPER_DEADLINE).await,
+                Err(_) => false,
+            };
+            if !present {
+                return Status::Absent;
+            }
         }
         if !remote_control_off().await {
             self.shut().await;
@@ -215,13 +215,6 @@ impl State {
     fn dial(&self) -> Command {
         let init = self.init.to_string_lossy().into_owned();
         self.command(&[&init, "init", "rex-dial"])
-    }
-
-    async fn succeeds(&self, argv: &[&str]) -> bool {
-        let Ok(mut child) = self.command(argv).spawn_guarded() else {
-            return false;
-        };
-        wait_success(&mut child, Instant::now() + HELPER_DEADLINE).await
     }
 
     /// Start the guest server, wait until it accepts, read Remote Control

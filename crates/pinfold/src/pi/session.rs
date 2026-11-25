@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -311,8 +311,6 @@ fn matching_claims(root: &Path) -> io::Result<Vec<ownership::Record>> {
     Ok(claims)
 }
 
-/// Under launch ownership, retire dead claims before allowing a replacement.
-/// Also returns whether it removed an orphan box.
 /// Take the launch lock and discover the owner within one control deadline.
 async fn locked_discovery(
     root: &Path,
@@ -333,6 +331,8 @@ async fn locked_discovery(
     }
 }
 
+/// Under launch ownership, retire dead claims before allowing a replacement.
+/// Also returns whether it removed an orphan box.
 fn discover(root: &Path) -> io::Result<(Option<Locator>, bool)> {
     let locator = read_locator(root)?;
     let claims = matching_claims(root)?;
@@ -995,8 +995,7 @@ fn spawn_owner(
     drop(guard);
     drop((owner, command));
     let stderr = child.stderr.take().ok_or_else(unavailable)?;
-    use std::os::fd::IntoRawFd;
-    let stderr = unsafe { File::from_raw_fd(stderr.into_raw_fd()) };
+    let stderr = File::from(OwnedFd::from(stderr));
     // ChildStderr is a pipe, not a UnixStream; AsyncFd reads the retained fd.
     crate::core::pipe::nonblocking(&stderr, "owner diagnostics")?;
     let (stop, mut stopping) = watch::channel(false);
@@ -1554,10 +1553,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
     let mut files = descriptors
         .into_iter()
         .map(|fd| unsafe { File::from_raw_fd(fd) });
-    use std::os::fd::IntoRawFd;
-    let socket = unsafe {
-        std::os::unix::net::UnixStream::from_raw_fd(files.next().expect("socket").into_raw_fd())
-    };
+    let socket = std::os::unix::net::UnixStream::from(OwnedFd::from(files.next().expect("socket")));
     wire::peer(&socket)?;
     socket.set_nonblocking(true)?;
     let launch = files.next().expect("launch");
