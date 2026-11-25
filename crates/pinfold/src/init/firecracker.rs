@@ -70,7 +70,7 @@ pub const EXEC_PORT: u32 = 1024;
 /// PID 1's port for the unmount at `down`.
 pub const CONTROL_PORT: u32 = 1025;
 /// The host port of the box's proxy socket.
-const PROXY_PORT: u32 = 3128;
+pub(super) const PROXY_PORT: u32 = 3128;
 const HOST_CID: u32 = libc::VMADDR_CID_HOST;
 /// The work cgroup's pids cap.
 const PIDS_MAX: u32 = 2048;
@@ -331,13 +331,7 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
                 Some("noinit_itable"),
             )?;
             if attachment.writable && attachment.fresh {
-                // A nonempty recovery directory is never removed.
-                let _ = fs::remove_dir(target.join("lost+found"));
-                nix::unistd::chown(
-                    &target,
-                    Some(Uid::from_raw(request.uid)),
-                    Some(Gid::from_raw(request.gid)),
-                )?;
+                super::own_fresh_root(&target, request.uid, request.gid)?;
             }
             for (guest, missing) in &request.fills {
                 if !missing && *guest == attachment.guest {
@@ -407,12 +401,6 @@ pub(super) fn mount_builder_input() -> io::Result<()> {
         MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_RDONLY,
         Some("noinit_itable"),
     )
-}
-
-#[cfg(target_arch = "x86_64")]
-pub(super) fn relay_builder() -> io::Result<()> {
-    let relay = TcpListener::bind(super::RELAY_LISTEN)?;
-    super::serve_relay(relay, || vsock_connect(PROXY_PORT))
 }
 
 fn mount(

@@ -605,12 +605,7 @@ fn setup(args: &[String]) -> io::Result<()> {
     }
     for ((uid, gid), dir) in ownership {
         // Only fresh disk roots reach this ownership pass. Recovered data stays.
-        let _ = fs::remove_dir(Path::new(dir).join("lost+found"));
-        nix::unistd::chown(
-            dir.as_str(),
-            Some(nix::unistd::Uid::from_raw(uid)),
-            Some(nix::unistd::Gid::from_raw(gid)),
-        )?;
+        own_fresh_root(Path::new(dir), uid, gid)?;
     }
     if let Some((uid, gid)) = user {
         drop_identity(uid, gid)?;
@@ -691,6 +686,18 @@ fn make_directories(mut root: OwnedFd, relative: &Path) -> io::Result<()> {
             Mode::empty(),
         )?;
     }
+    Ok(())
+}
+
+/// Give a fresh disk root to the box user. A nonempty recovery directory is
+/// never removed.
+fn own_fresh_root(root: &Path, uid: u32, gid: u32) -> io::Result<()> {
+    let _ = fs::remove_dir(root.join("lost+found"));
+    nix::unistd::chown(
+        root,
+        Some(nix::unistd::Uid::from_raw(uid)),
+        Some(nix::unistd::Gid::from_raw(gid)),
+    )?;
     Ok(())
 }
 
