@@ -175,9 +175,7 @@ Login routes generate native configuration for the whole box. Claude and Codex
 use system configuration; Pi autoloads a read-only extension under its writable
 home. Agent configuration precedence still applies. Launch agents through PATH.
 An explicit project `routes` table replaces the profile's routes. An API
-key can also arrive through the environment. Using a Claude subscription
-through Pi is subject to Anthropic's terms: Pi presents the token as Claude
-Code and may bill it as extra usage.
+key can also arrive through the environment.
 
 A login route grants every process in the box the host login's authority
 over every path at its origin; see [Login routes](docs/ARCHITECTURE.md#egress-proxy)
