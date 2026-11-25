@@ -1,6 +1,6 @@
 //! A codex login route's token: asked of the pinned host helper, checked,
-//! and held in the proxy's memory only. Also the `op` reads behind `op`
-//! sources, and the files a login route's agents read in the box.
+//! and held in the proxy's memory only. Also the 1Password reads behind
+//! `op://` `from` values, and the files a login route's agents read in the box.
 //! Renderers never receive resolved credentials.
 
 use crate::core::process::GroupChild;

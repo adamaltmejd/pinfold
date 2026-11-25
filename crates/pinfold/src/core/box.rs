@@ -211,7 +211,7 @@ impl Box {
         // or resolved. Only `box up` reads `op` itself: the project client
         // sends its values. `op` may wait on the user, so it runs once every
         // check before the claim that needs no value has passed; until
-        // then validation checks `from` sources alone.
+        // then validation checks host variables alone.
         plan.validate(Some(values))
             .map_err(|error| refused(plan, RefusalReason::Spec, error))?;
         let reads_op = expected_image.is_none() && plan.reads_op();

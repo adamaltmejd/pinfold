@@ -938,15 +938,15 @@ fn query_decode(value: &str) -> Option<Vec<u8>> {
 }
 
 /// Forward one parsed request with `host` as its Host header and
-/// `base_path` before its path, then its Content-Length body, and stream the response back until the upstream
-/// closes; a failed dial (`None`) is answered 502. `report` gets the
-/// upstream's status code once its status line has arrived, or `None` when
-/// the exchange ends first. One request per
-/// connection. Each injected header replaces any the box sent under the
-/// same name, and a box-sent header named in `remove` is dropped. There is
-/// no upstream half-close: over TLS a close_notify before the response
-/// would end the exchange, and the server's close ends the response, with
-/// or without its own close_notify.
+/// `base_path` before its path, then its Content-Length body, and stream
+/// the response back until the upstream closes; a failed dial (`None`) is
+/// answered 502. `report` gets the upstream's status code once its status
+/// line has arrived, or `None` when the exchange ends first. One request
+/// per connection. Each injected header replaces any the box sent under
+/// the same name, and a box-sent header named in `remove` is dropped.
+/// There is no upstream half-close: over TLS a close_notify before the
+/// response would end the exchange, and the server's close ends the
+/// response, with or without its own close_notify.
 #[allow(clippy::too_many_arguments)]
 fn forward(
     client: &mut UnixStream,
