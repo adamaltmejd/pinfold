@@ -493,7 +493,7 @@ The box spec `up` reads from stdin:
 }
 ```
 
-- No `egress`: no way out at all (gates).
+- No `egress`: no way out at all.
 - `env` is exact apart from the always-applied values below; nothing is inherited.
   An env name must match
   `[A-Za-z_][A-Za-z0-9_]*`; any other name is refused as `spec`, naming it.
@@ -991,7 +991,7 @@ network listener, no token: the socket identifies the box.
   for the whole box. Agent precedence remains in force: Claude's managed env
   overrides user settings and inherited env; Codex's user config, supported
   project settings and explicit options override its system layer. Project-local
-  `model_provider` is ignored. Pi's stored credentials override extension placeholders. Configuration is convenience, not credential isolation.
+  `model_provider` is ignored. Configuration is convenience, not credential isolation.
 
   Every login route applies these rules. Validation precedes credential
   refresh, DNS resolution and an upstream connection:
@@ -1033,24 +1033,22 @@ network listener, no token: the socket identifies the box.
     a placeholder `CLAUDE_CODE_OAUTH_TOKEN`, and blank `ANTHROPIC_API_KEY`.
   - `github`: `{ "login": "github", "from": VAR }`, where `$VAR` is a
     GitHub token read once at start like an injecting route's. The route
-    is served at two fixed names, not its own, since `gh` sends plain HTTP
-    only to `github.localhost` (undocumented `gh` behaviour):
-    `github.localhost` goes to `https://github.com` with `Authorization:
-    Basic` and standard base64, padded, of `x-access-token:` and `$VAR`
-    (Git smart HTTP); `api.github.localhost` goes to
-    `https://api.github.com` with `Authorization: Bearer` (REST and
-    GraphQL). Either name colliding with another route is refused as
-    `spec`. A `to` names one origin serving Git at its root and the API
-    under `/api/v3`, so `api.github.localhost/PATH` goes to
-    `TO/api/v3/PATH` and GraphQL to `TO/api/v3/graphql`: a test-fixture
-    convention, not full GitHub Enterprise Server compatibility. The box's
-    environment gets `GH_HOST=github.localhost`, `GH_TOKEN` and
-    `GH_ENTERPRISE_TOKEN` set to a placeholder, and `GIT_CONFIG_COUNT`,
-    `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n` setting
-    `url.http://github.localhost/.insteadOf` to `https://github.com/` and
-    to `git@github.com:`, and `http.postBuffer` to `524288000` so Git
-    never sends a chunked body; no file is mounted. A caller env entry naming
-    any of these variables is refused as `spec`, naming it.
+    is served at two fixed names, not its own: `github.localhost` goes to
+    `https://github.com` with `Authorization: Basic` and standard base64,
+    padded, of `x-access-token:` and `$VAR` (Git smart HTTP);
+    `api.github.localhost` goes to `https://api.github.com` with
+    `Authorization: Bearer` (REST and GraphQL). Either name colliding with
+    another route is refused as `spec`. A `to` names one origin serving
+    Git at its root and the API under `/api/v3`, so
+    `api.github.localhost/PATH` goes to `TO/api/v3/PATH` and GraphQL to
+    `TO/api/v3/graphql` (a test-fixture convention). The box's environment
+    gets `GH_HOST=github.localhost`, `GH_TOKEN` and `GH_ENTERPRISE_TOKEN`
+    set to a placeholder, and `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and
+    `GIT_CONFIG_VALUE_n` setting `url.http://github.localhost/.insteadOf`
+    to `https://github.com/` and to `git@github.com:`, and
+    `http.postBuffer` to `524288000` so Git never sends a chunked body; no
+    file is mounted. A caller env entry naming any of these variables is
+    refused as `spec`, naming it.
   - `codex`: `{ "login": "codex" }` uses the host's own Codex login, in
     whatever store Codex keeps it. The proxy gets the access token from
     the pinned host helper (Pinned artifacts): `codex-app-server` with the
@@ -1857,7 +1855,6 @@ its project.
   control before runtime checks and image leasing. Existing name records,
   state or shutdown endpoints refuse. These checks run as retained cancellable
   work; catalog and image-lease locks wait nonblocking with cancellation.
-  Public box-up checks and orphan recovery keep their existing order.
 - **Keep/stop:** `pinfold start` keeps the project box past its last session.
   Repeated matching starts succeed. For a share, start commits keep without
   executing a command. On success `start` prints one stderr line,
