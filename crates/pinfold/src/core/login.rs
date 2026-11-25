@@ -362,15 +362,18 @@ pub fn claude_config(route: &str) -> String {
 
 /// The box environment a github login route sets: `gh` at the route with
 /// placeholder tokens, and Git's GitHub URLs rewritten to the route.
-pub const GITHUB_ENV: [(&str, &str); 8] = [
+pub const GITHUB_ENV: [(&str, &str); 10] = [
     ("GH_HOST", "github.localhost"),
     ("GH_TOKEN", LOGIN_PLACEHOLDER),
     ("GH_ENTERPRISE_TOKEN", LOGIN_PLACEHOLDER),
-    ("GIT_CONFIG_COUNT", "2"),
+    ("GIT_CONFIG_COUNT", "3"),
     ("GIT_CONFIG_KEY_0", "url.http://github.localhost/.insteadOf"),
     ("GIT_CONFIG_VALUE_0", "https://github.com/"),
     ("GIT_CONFIG_KEY_1", "url.http://github.localhost/.insteadOf"),
     ("GIT_CONFIG_VALUE_1", "git@github.com:"),
+    // The proxy refuses chunked framing; Git chunks a body over the buffer.
+    ("GIT_CONFIG_KEY_2", "http.postBuffer"),
+    ("GIT_CONFIG_VALUE_2", "524288000"),
 ];
 
 /// The single autoload entry under the writable home; sibling extensions remain.
