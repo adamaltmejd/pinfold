@@ -53,7 +53,7 @@ pub(super) fn digest_hex(digest: &str) -> io::Result<&str> {
         .ok_or_else(|| invalid("image-output: invalid sha256 digest"))
 }
 
-fn new_file(path: &Path) -> io::Result<File> {
+pub(super) fn new_file(path: &Path) -> io::Result<File> {
     File::options()
         .write(true)
         .create_new(true)

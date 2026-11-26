@@ -110,19 +110,18 @@ pub fn build(build: Build) -> io::Result<Result<Built, String>> {
     let repository = format!("localhost/pinfold/{stem}-{}", build.source);
     let latest = format!("{repository}:latest");
     let reference = format!("{repository}:{id}");
-    let tags = [latest.clone(), reference.clone()];
     // Declared only by the agent resolver stage; other layers keep their cache.
     let build_arg = matches!(&build.context, Context::Alone(_))
-        .then_some(("PINFOLD_AGENT_RESOLVE", id.as_str()));
+        .then(|| ("PINFOLD_AGENT_RESOLVE".to_string(), id.clone()));
     let request = |context: &Path, containerfile: &Path| {
-        service::build(&BuildRequest {
-            context,
-            containerfile,
-            tags: &tags,
-            labels: &labels,
+        service::build(BuildRequest {
+            context: context.to_path_buf(),
+            containerfile: containerfile.to_path_buf(),
+            tags: vec![latest.clone(), reference.clone()],
+            labels: labels.clone(),
             cache: build.cache,
-            allow: &build.allow,
-            build_arg,
+            allow: build.allow.clone(),
+            build_arg: build_arg.clone(),
         })
     };
     let result = match build.context {

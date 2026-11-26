@@ -38,6 +38,13 @@ const CACHE_BYTES: u64 = 8 << 30;
 const WORK_BYTES: u64 = 7 << 30;
 const JOB_TIME: Duration = Duration::from_secs(300);
 const INPUT_BYTES: u64 = 512 << 20;
+// Context and selected bases have independent limits. Each charged entry
+// costs at least 4 KiB; include the uncharged tree roots before overhead.
+const SELECTED_BYTES: u64 = {
+    let entries = (INPUT_BYTES + LOCAL_BASE_BYTES) / 4096 + 3;
+    let kib = entries * 4;
+    (kib + kib / 10 + entries / 4 + 16384).div_ceil(4) * 4096
+};
 const JSON_BYTES: usize = 1 << 20;
 const LOG_BYTES: usize = 64 << 10;
 const BUILD_HOSTS: &[&str] = &[
@@ -81,16 +88,6 @@ struct Job<'a> {
     build_arg: Option<&'a (String, String)>,
     labels: &'a BTreeMap<String, String>,
     bases: Vec<Base>,
-}
-
-struct Request {
-    context: PathBuf,
-    containerfile: PathBuf,
-    cache: bool,
-    build_arg: Option<(String, String)>,
-    labels: BTreeMap<String, String>,
-    tags: Vec<String>,
-    allow: Vec<String>,
 }
 
 struct Prepared {
@@ -210,7 +207,7 @@ impl InputBudget {
     }
 }
 
-pub fn build(request: &BuildRequest) -> io::Result<Result<(), String>> {
+pub fn build(request: BuildRequest) -> io::Result<Result<(), String>> {
     crate::core::runtime::runtime().preflight()?;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -218,7 +215,7 @@ pub fn build(request: &BuildRequest) -> io::Result<Result<(), String>> {
         .block_on(transaction(request))
 }
 
-async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String>> {
+async fn transaction(request: BuildRequest) -> io::Result<Result<(), String>> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
     let cancel = Arc::new(AtomicBool::new(false));
@@ -243,17 +240,6 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
         _ = terminate.recv() => { let _ = restoring.await; return Err(io::ErrorKind::Interrupted.into()); },
     }
     claim.prepare(&state, false)?;
-    let request = Request {
-        context: request.context.to_path_buf(),
-        containerfile: request.containerfile.to_path_buf(),
-        cache: request.cache,
-        build_arg: request
-            .build_arg
-            .map(|(name, value)| (name.to_owned(), value.to_owned())),
-        labels: request.labels.clone(),
-        tags: request.tags.to_vec(),
-        allow: request.allow.to_vec(),
-    };
     let mut proxy = None;
     let result = {
         let work = run_transaction(
@@ -311,7 +297,7 @@ async fn transaction(request: &BuildRequest<'_>) -> io::Result<Result<(), String
 }
 
 async fn run_transaction(
-    request: Request,
+    request: BuildRequest,
     state: PathBuf,
     cancel: Arc<AtomicBool>,
     claim: &mut Claim,
@@ -458,7 +444,7 @@ async fn run_transaction(
     watch_publication(publishing, &cancel, claim, &mut audit.failure).await
 }
 
-fn prepare(request: &Request, state: &Path, cancel: &AtomicBool) -> io::Result<Prepared> {
+fn prepare(request: &BuildRequest, state: &Path, cancel: &AtomicBool) -> io::Result<Prepared> {
     check_cancel(cancel)?;
     let root = artifacts::builder(Some(cancel))?;
     let vmm = artifacts::vmm(Some(cancel))?;
@@ -797,12 +783,7 @@ fn conversion_base(
         check_cancel(cancel)?;
         budget.charge(bytes.len() as u64)?;
         let hash = sha256_hex(&bytes);
-        File::options()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(blobs.join(&hash))?
-            .write_all(&bytes)?;
+        catalog::new_file(&blobs.join(&hash))?.write_all(&bytes)?;
         Ok((format!("sha256:{hash}"), bytes.len()))
     };
     let (config_id, config_size) = blob(serde_json::to_vec(&config)?)?;
@@ -848,12 +829,8 @@ async fn run_job(
         tokio::task::spawn_blocking(move || {
             input_disk(&input, &disk, &cancel)?;
             if phase.egress() {
-                let file = File::options()
-                    .create_new(true)
-                    .write(true)
-                    .mode(0o600)
-                    .open(selected_disk)?;
-                file.set_len(selected_bytes()?)?;
+                let file = catalog::new_file(&selected_disk)?;
+                file.set_len(SELECTED_BYTES)?;
                 Ok(Some(file))
             } else {
                 Ok(None)
@@ -1263,12 +1240,7 @@ fn cleanup_abandoned_socket_dirs(_cache_claim: &Claim) -> io::Result<()> {
 
 fn empty_disk(path: &Path, bytes: u64, cancel: &AtomicBool) -> io::Result<()> {
     check_cancel(cancel)?;
-    File::options()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(path)?
-        .set_len(bytes)?;
+    catalog::new_file(path)?.set_len(bytes)?;
     let mut command = mkfs()?;
     command.arg(path);
     run_process(command, cancel)
@@ -1293,23 +1265,6 @@ fn input_disk(input: &Path, disk: &Path, cancel: &AtomicBool) -> io::Result<()> 
     run_process(command, cancel)
 }
 
-fn selected_bytes() -> io::Result<u64> {
-    // Context and selected bases have independent limits. Each charged entry
-    // costs at least 4 KiB; include the uncharged tree roots before overhead.
-    let overflow = || io::Error::other("resource: build input reservation");
-    let bytes = INPUT_BYTES
-        .checked_add(LOCAL_BASE_BYTES)
-        .ok_or_else(overflow)?;
-    let entries = (bytes / 4096).checked_add(3).ok_or_else(overflow)?;
-    let kib = entries.checked_mul(4).ok_or_else(overflow)?;
-    kib.checked_add(kib / 10)
-        .and_then(|kib| kib.checked_add(entries / 4))
-        .and_then(|kib| kib.checked_add(16384))
-        .and_then(|kib| kib.checked_add(3))
-        .and_then(|kib| (kib / 4).checked_mul(4096))
-        .ok_or_else(overflow)
-}
-
 fn populate(
     mut destination: File,
     staging: &Path,
@@ -1317,7 +1272,7 @@ fn populate(
     deadline: Instant,
     cancel: &AtomicBool,
 ) -> io::Result<()> {
-    let capacity = selected_bytes()?;
+    let capacity = SELECTED_BYTES;
     let original = destination.metadata()?;
     let same_backing = || -> io::Result<()> {
         let named = fs::symlink_metadata(backing)?;
@@ -1415,11 +1370,7 @@ fn copy_open_file(
         return Err(io::Error::other("build-input: input changed file type"));
     }
     budget.charge(metadata.len())?;
-    let mut destination = File::options()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(to)?;
+    let mut destination = catalog::new_file(to)?;
     let mut bytes = [0; 64 << 10];
     let mut copied = 0u64;
     loop {

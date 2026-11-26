@@ -249,12 +249,12 @@ pub fn build_cache_bytes() -> io::Result<u64> {
     allocated_bytes(&root.join("containers/buildkit"))
 }
 
-pub fn build(request: &BuildRequest) -> io::Result<Result<(), String>> {
+pub fn build(request: BuildRequest) -> io::Result<Result<(), String>> {
     // Through the post-build prune and trim, which also need the builder.
     let _building = Flock::lock(ownership::open_lock(BUILDER_LOCK)?, FlockArg::LockShared)
         .map_err(|(_, error)| io::Error::from(error))?;
-    refresh_base(&std::fs::read(request.containerfile)?)?;
-    let result = run_build(request)?;
+    refresh_base(&std::fs::read(&request.containerfile)?)?;
+    let result = run_build(&request)?;
     // Neither step fails the build.
     if prune_builder(&["--keep-storage", BUILDER_KEEP_MB]).is_err() {
         eprintln!("pinfold: could not prune the builder cache");
@@ -333,19 +333,19 @@ fn run_build(request: &BuildRequest) -> io::Result<Result<(), String>> {
             Some("--no-cache")
         })
         .arg("--file")
-        .arg(request.containerfile);
-    if let Some((name, value)) = request.build_arg {
+        .arg(&request.containerfile);
+    if let Some((name, value)) = &request.build_arg {
         command.arg("--build-arg").arg(format!("{name}={value}"));
     }
-    for tag in request.tags {
+    for tag in &request.tags {
         command.arg("--tag").arg(tag);
     }
-    for (key, value) in request.labels {
+    for (key, value) in &request.labels {
         command.arg("--label").arg(format!("{key}={value}"));
     }
     command
         // A bare relative context such as `--json` would parse as an option.
-        .arg(std::path::absolute(request.context)?)
+        .arg(std::path::absolute(&request.context)?)
         .stdin(Stdio::null())
         .stdout(writer.try_clone()?)
         .stderr(writer);
