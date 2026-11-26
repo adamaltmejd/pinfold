@@ -16,8 +16,9 @@ change it stayed at 2.25 GB. Stop took about 0.4 s longer.
   works only for writable drives on the `Sync` engine, the default. For a
   regular backing file it punches holes.
 - Guest init, at UNMOUNT: after ending box work and `sync`, a `FITRIM`
-  ioctl over the whole range on each writable attachment, then the
-  unmounts. A failed trim is ignored.
+  ioctl on each writable attachment, then the unmounts. A failed trim is
+  ignored. The tables below used one call over the whole range; the
+  bound in "Trim budget" came after review.
 - The jail needed nothing new. The hole punch passed Firecracker's
   seccomp filter and pinfold's Landlock rules (read and write on the
   writable disk).
@@ -74,9 +75,7 @@ After:
 First start allocated 7,077,888 bytes in both runs. An idle stop after
 the cycles took 0.11 s before and 0.35 s after. That is about 0.4 s
 added per stop, for two 64 GiB disks with almost no data. Stop time on
-a full or fragmented disk, where a trim sends more discards, was not
-measured. The trim runs inside the 30 s unmount deadline; a stop that
-exceeds it leaves the disk unclean.
+a fragmented disk is under "Trim budget".
 
 Before the change this run grew by 93 MB over five rewrites; the
 2026-11-23 run grew by 2.2 GB. After it, the image grew by about 230 KB
@@ -84,6 +83,56 @@ per cycle, and the deleted data came back each time.
 
 A 100 MB file written before a stop had the same SHA-256 after the trim
 and a new start.
+
+## Trim budget
+
+Review found two gaps. The trims run inside the host's 30 s unmount
+deadline, and a stop past it leaves the disk unclean. And PID 1 keeps
+only `CAP_SYS_ADMIN`, with no DAC override, so it could not open a disk
+root the box user had made mode 0700, and skipped its trim.
+
+Fragmented free space was measured on the dev VM with a 32 GiB disk:
+write a file from `/dev/urandom`, punch holes (`fallocate` punch-hole)
+in alternate stretches of it, then time the stop from closing `box up`'s
+stdin until `up` exits. ext4 forgets what it trimmed at unmount, so each
+stop discards every free extent again.
+
+| File | Holes | Extent floor | Stop after punching (s) | Next idle stop (s) | Image after |
+|---|---|---|---:|---:|---:|
+| 1 GiB | 4 KiB | none | 21.9 | 20.3 | 548 MB |
+| 1 GiB | 4 KiB | 1 MiB | 0.16 | 0.12 | 1,084 MB |
+| 8 GiB | 1 MiB | 1 MiB | 1.47 | 0.68 | 4,303 MB |
+
+An idle stop of the new disk took 0.09 to 0.12 s. Without a floor, a GiB
+of 4 KiB holes cost about 20 s at every stop, about 150 us a discard.
+An earlier 8 GiB run of 4 KiB holes, with 1 GiB ranges and the 20 s
+cutoff but no floor, was stopped with `box down`. It exited with `box
+teardown deadline exceeded` after its own 10 s wait, and the disk was
+left unclean. Why the stop did not end clean was not established; at
+about 20 s a range, a second range started just before the cutoff would
+pass the host's 30 s.
+
+So the trim now:
+
+- issues `FITRIM` one GiB at a time and starts no range after 20 s from
+  UNMOUNT, which includes the 10 s for box work to end; the unmounts keep
+  the rest of the host's 30 s;
+- sets `minlen` to 1 MiB, so one range sends at most 1024 discards. The
+  worst case measured, 1 MiB holes, cost about 0.18 s per GiB on the
+  first stop and 0.08 s after; a 64 GiB disk at that density would take
+  about 11 s;
+- uses a descriptor on each writable root that init opens at mount, while
+  it still holds every capability. The exec service, forked after, closes
+  its copies; PID 1 closes them after the trims, before unmounting.
+
+Free space in pieces under 1 MiB stays allocated on the host. Deleting
+whole trees mostly frees large extents: four copies of the image's
+`/usr` (17,136 files, 763 MB) took the image from 6.8 MB to 837 MB, and
+after `rm -rf` and a 0.22 s stop it held 37 MB.
+
+A plain box's `box down` waits 10 s for teardown, so on a large,
+fragmented disk it can report a timeout before the stop ends. That was
+not measured with the bound in place.
 
 ## Test
 
@@ -98,6 +147,11 @@ blocks already allocated.
 On the VM the extended test passed in 43 s (default image cached). With
 the `discard` field removed from `vm.rs` it failed at the reclaim check,
 269,426,688 bytes with the file written and 269,467,648 after the stop.
+
+After review the test samples allocation after the delete as well, while
+the box is live, and requires the drop across the stop; a disk mounted
+with continuous discard would fail it. Before the stop the box makes the
+disk's root mode 0700.
 
 ## Cleanup
 

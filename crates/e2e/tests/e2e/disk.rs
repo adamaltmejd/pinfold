@@ -37,7 +37,8 @@ fn disks_persist_and_attach_exclusively() {
     // `claim`. The read-only attachment after the prune then comes ready.
     // Sabotage (run): drop the `discard` drive field in vm.rs's `config`.
     // The guest's trim at stop then fails, and the image keeps the deleted
-    // file's blocks.
+    // file's blocks. Sabotage (run): open each writable root in init's
+    // `unmount` instead of at mount; PID 1 cannot open the private root.
     // The writable recovery run and the read-only run after it are the
     // positive controls; the image's growth by the written file is the
     // reclaim's.
@@ -104,8 +105,9 @@ fn disks_persist_and_attach_exclusively() {
     let recovery = env.up(&spec(&first, &disk, false));
     assert_eq!(read(&first), marker);
 
-    // On Linux the recovery run writes and deletes a file. The image at the
-    // spec's path keeps the freed blocks allocated until the stop.
+    // On Linux the recovery run writes and deletes a file, then makes the
+    // disk's root private. The image at the spec's path keeps the freed
+    // blocks allocated until the stop.
     let image = env
         .state_home()
         .join("pinfold/disks")
@@ -115,7 +117,7 @@ fn disks_persist_and_attach_exclusively() {
     // sixteenth of slack.
     const FILL: u64 = 256 << 20;
     const MOVED: u64 = FILL * 15 / 16;
-    let written = cfg!(target_os = "linux").then(|| {
+    let deleted = cfg!(target_os = "linux").then(|| {
         let base = allocated();
         let out = env.exec(
             &first,
@@ -130,9 +132,14 @@ fn disks_persist_and_attach_exclusively() {
         assert_eq!(out.code, 0, "{out:?}");
         let written = allocated();
         assert!(written >= base + MOVED, "{base} -> {written}");
-        let out = env.exec(&first, &["sh", "-c", "rm /data/fill && sync"]);
+        let out = env.exec(
+            &first,
+            &["sh", "-c", "rm /data/fill && chmod 700 /data && sync"],
+        );
         assert_eq!(out.code, 0, "{out:?}");
-        written
+        let deleted = allocated();
+        assert!(deleted >= base + MOVED, "{base} -> {deleted}");
+        deleted
     });
 
     // An attached disk is not removed.
@@ -150,15 +157,15 @@ fn disks_persist_and_attach_exclusively() {
         lines[0]
     );
     drop(recovery);
-    if let Some(written) = written {
+    if let Some(deleted) = deleted {
         let stopped = allocated();
-        assert!(stopped + MOVED <= written, "{written} -> {stopped}");
+        assert!(stopped + MOVED <= deleted, "{deleted} -> {stopped}");
     }
 
     // After the writable run ends with `down`, a read-only one comes up;
     // on Linux it reads the file the trim kept.
     let reading = env.up(&spec(&reader, &disk, true));
-    if written.is_some() {
+    if deleted.is_some() {
         assert_eq!(read(&reader), marker);
     }
     drop(reading);

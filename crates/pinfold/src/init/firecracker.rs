@@ -96,7 +96,7 @@ pub fn boot() -> ! {
     }
     let mut host = vsock_connect(BOOT_PORT)
         .unwrap_or_else(|error| die(&format!("connect to the host: {error}")));
-    let (request, control) = match prepare(&mut host, false) {
+    let (request, control, trims) = match prepare(&mut host, false) {
         Ok(prepared) => prepared,
         Err(error) => fail(&mut host, &error),
     };
@@ -106,7 +106,7 @@ pub fn boot() -> ! {
     // Safety: PID 1 has started no thread, so the child is a whole copy.
     let service = match unsafe { nix::unistd::fork() } {
         Ok(ForkResult::Child) => {
-            drop((control, dropping));
+            drop((control, dropping, trims));
             exec_service(&request, host, dropped)
         }
         Ok(ForkResult::Parent { child }) => child,
@@ -126,7 +126,7 @@ pub fn boot() -> ! {
         .unwrap_or_else(|error| die(&format!("ignore SIGCHLD: {error}")));
     let service = pidfd_open(service.as_raw())
         .unwrap_or_else(|error| die(&format!("watch the exec service: {error}")));
-    serve_control(&request, &control, &service)
+    serve_control(&request, &control, &service, trims)
 }
 
 fn die(detail: &str) -> ! {
@@ -230,8 +230,10 @@ fn guest_path(fields: &mut Fields) -> io::Result<PathBuf> {
 }
 
 /// Read BOOT, mount the box's tree, enter it and make the work cgroup.
-/// Runs as root with every capability.
-fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd)> {
+/// Runs as root with every capability. Also returns a descriptor on each
+/// writable attachment's root for the trim at stop: PID 1 keeps no DAC
+/// override, so it could not open a root the box user makes private.
+fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd, Vec<OwnedFd>)> {
     let (kind, payload) = read_frame(host)?;
     if kind != BOOT {
         return Err(io::Error::other(format!("expected BOOT, got frame {kind}")));
@@ -298,6 +300,7 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
     )?;
     mount_at(root, "/dev/shm", "tmpfs", "tmpfs", nodev, Some("mode=1777"))?;
     mount_at(root, "/tmp", "tmpfs", "tmpfs", nodev, Some("mode=1777"))?;
+    let mut trims = Vec::new();
     for deferred in [false, true] {
         for attachment in request
             .attachments
@@ -330,8 +333,11 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
                 flags,
                 Some("noinit_itable"),
             )?;
-            if attachment.writable && attachment.fresh {
-                super::own_fresh_root(&target, request.uid, request.gid)?;
+            if attachment.writable {
+                trims.push(super::open_directory(&target)?);
+                if attachment.fresh {
+                    super::own_fresh_root(&target, request.uid, request.gid)?;
+                }
             }
             for (guest, missing) in &request.fills {
                 if !missing && *guest == attachment.guest {
@@ -362,15 +368,15 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
     fs::write(format!("{WORK}/pids.max"), PIDS_MAX.to_string())?;
     // Bound while PID 1 still holds every capability; the host dials it.
     let control = vsock_listen(CONTROL_PORT)?;
-    Ok((request, control))
+    Ok((request, control, trims))
 }
 
 /// The trusted image job uses the same mount setup, with fixed devices and
 /// no agent state or execution service. The agent entry point stays separate.
 #[cfg(target_arch = "x86_64")]
 pub(super) fn prepare_builder(host: &mut UnixStream) -> io::Result<bool> {
-    let (request, control) = prepare(host, true)?;
-    drop(control);
+    let (request, control, trims) = prepare(host, true)?;
+    drop((control, trims));
     mount(
         "tmpfs",
         Path::new("/run"),
@@ -636,7 +642,12 @@ pub(crate) fn pidfd_open(pid: i32) -> io::Result<OwnedFd> {
 
 /// PID 1 after boot: answer UNMOUNT, and end the VM if the exec service
 /// ends before one.
-fn serve_control(request: &Request, control: &OwnedFd, service: &OwnedFd) -> ! {
+fn serve_control(
+    request: &Request,
+    control: &OwnedFd,
+    service: &OwnedFd,
+    mut trims: Vec<OwnedFd>,
+) -> ! {
     let mut unmounted = None;
     loop {
         let mut fds = vec![PollFd::new(control.as_fd(), PollFlags::POLLIN)];
@@ -663,7 +674,9 @@ fn serve_control(request: &Request, control: &OwnedFd, service: &OwnedFd) -> ! {
         };
         let reply = match read_frame(&mut connection) {
             Ok((UNMOUNT, _)) => unmounted
-                .get_or_insert_with(|| unmount(request).map_err(|error| error.to_string()))
+                .get_or_insert_with(|| {
+                    unmount(request, std::mem::take(&mut trims)).map_err(|error| error.to_string())
+                })
                 .clone(),
             Ok((kind, _)) => Err(format!("unknown control frame {kind}")),
             Err(error) => Err(error.to_string()),
@@ -678,12 +691,17 @@ fn serve_control(request: &Request, control: &OwnedFd, service: &OwnedFd) -> ! {
 /// End box work, so nothing keeps a disk busy, then sync and unmount every
 /// attachment, the nested ones first. Trimming each writable disk first
 /// returns its freed blocks to the host as holes in the image.
-fn unmount(request: &Request) -> io::Result<()> {
-    stop_work(Some(Instant::now() + Duration::from_secs(10)))?;
+fn unmount(request: &Request, trims: Vec<OwnedFd>) -> io::Result<()> {
+    // The host waits 30 s for the answer. Trims start only in the first
+    // 20, so the unmounts keep the rest.
+    let started = Instant::now();
+    stop_work(Some(started + Duration::from_secs(10)))?;
     nix::unistd::sync();
-    for attachment in request.attachments.iter().filter(|a| a.writable) {
-        trim(&attachment.guest);
+    for disk in &trims {
+        trim(disk, started + Duration::from_secs(20));
     }
+    // A held descriptor would make its unmount EBUSY.
+    drop(trims);
     for attachment in request.attachments.iter().rev() {
         nix::mount::umount2(&attachment.guest, MntFlags::UMOUNT_NOFOLLOW).map_err(|error| {
             io::Error::other(format!("unmount {}: {error}", attachment.guest.display()))
@@ -692,17 +710,27 @@ fn unmount(request: &Request) -> io::Result<()> {
     Ok(())
 }
 
-/// FITRIM the filesystem mounted at `guest`. A failure leaves only space
-/// unreclaimed, so it does not fail the stop.
-fn trim(guest: &Path) {
+/// FITRIM the filesystem `disk` is on, one GiB at a time, starting no range
+/// after `deadline`; one FITRIM cannot be interrupted. Ranges past the end
+/// fail, as does any other error, which leaves only space unreclaimed and
+/// does not fail the stop.
+fn trim(disk: &OwnedFd, deadline: Instant) {
     // linux/fs.h: _IOWR('X', 121, struct fstrim_range).
     const FITRIM: libc::c_ulong = 0xc018_5879;
-    let Ok(directory) = super::open_directory(guest) else {
-        return;
-    };
-    let mut range: [u64; 3] = [0, u64::MAX, 0];
-    // SAFETY: the kernel reads and writes only the 24-byte fstrim_range.
-    unsafe { libc::ioctl(directory.as_raw_fd(), FITRIM as _, range.as_mut_ptr()) };
+    const RANGE: u64 = 1 << 30;
+    // ext4 forgets what it trimmed at unmount, so each stop discards every
+    // free extent again. Skipping extents under 1 MiB caps a range at 1024
+    // discards (docs/archive/2026-11-26-linux-disk-discard.md).
+    const MINLEN: u64 = 1 << 20;
+    let mut start = 0;
+    while Instant::now() < deadline {
+        let mut range: [u64; 3] = [start, RANGE, MINLEN];
+        // SAFETY: the kernel reads and writes only the 24-byte fstrim_range.
+        if unsafe { libc::ioctl(disk.as_raw_fd(), FITRIM as _, range.as_mut_ptr()) } < 0 {
+            return;
+        }
+        start += RANGE;
+    }
 }
 
 /// Kill the work cgroup and wait until it is empty, failing after
