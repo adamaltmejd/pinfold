@@ -1,5 +1,21 @@
 #!/usr/bin/env python3
-"""Repin repository dependencies and tools (ARCHITECTURE.md, Pinned artifacts)."""
+"""Repin repository dependencies and tools (ARCHITECTURE.md, Pinned artifacts).
+
+Policy:
+- The host helper, infrastructure, image-tool, Rust and Cargo pins move only
+  with a pinfold release.
+- The Public Suffix List moves only with `--suffix-list`, which a manual
+  release passes and the nightly does not. That run prints the allow entries
+  newly refused or no longer refused; the release notes name them under
+  "Caller changes".
+- Versions only move up to stable releases and are never rehashed at the
+  same version.
+- The host helper takes the latest stable release once its assets exist.
+  Other image tools wait seven full days after their last required asset was
+  published; a missing publication time makes them ineligible.
+- Cargo dependencies take the latest stable, non-yanked version.
+- A publisher integrity failure aborts before any pin file is written.
+"""
 
 import argparse
 import base64

@@ -32,8 +32,7 @@ RUN set -eu; \
     printf '%s\n' "PS1='pinfold:\\w\\\$ '" >> /etc/bash.bashrc
 
 # An interactive shell in a project box that starts in the home, such as a
-# Rex pane, moves to the project. The `claude` launcher below marks the
-# project trusted.
+# Rex pane, moves to the project.
 RUN printf '%s\n' \
     'case $- in *i*)' \
     '    if [ -n "${PINFOLD_PROJECT-}" ] && [ -d "$PINFOLD_PROJECT" ]; then' \
@@ -140,10 +139,9 @@ ENV PI_TELEMETRY=0 PI_SKIP_VERSION_CHECK=1 \
 # `claude` on PATH is a launcher. In a project box it first records, in
 # ~/.claude.json, that onboarding is done, the auto-mode nudge seen and the
 # project trusted, since the VM is the trust boundary: no first-run screen
-# asks again, and none defaults away from the seeded permission mode. Every
-# other key stays; a symlink is left alone; a failed jq or write still
-# starts Claude. The write is skipped when all three are set, so it can
-# race a running Claude's own rewrite only while one is missing.
+# asks again, and none defaults away from the seeded permission mode. The
+# write is skipped when all three are set, so it can race a running Claude's
+# own rewrite only while one is missing.
 RUN printf '%s\n' \
     '#!/bin/sh' \
     'if [ -n "${PINFOLD_PROJECT-}" ] && [ -n "${HOME-}" ]; then' \
