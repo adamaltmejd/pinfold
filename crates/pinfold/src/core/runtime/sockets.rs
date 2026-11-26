@@ -549,28 +549,7 @@ fn remove_directory(host: &File, leaf: &OsStr, generation: &str) -> io::Result<(
 fn rename_at(host: &File, old: &OsStr, new: &OsStr) -> io::Result<()> {
     let old = name(old)?;
     let new = name(new)?;
-    #[cfg(target_os = "linux")]
-    let renamed = unsafe {
-        libc::syscall(
-            libc::SYS_renameat2,
-            host.as_raw_fd(),
-            old.as_ptr(),
-            host.as_raw_fd(),
-            new.as_ptr(),
-            libc::RENAME_NOREPLACE,
-        ) as libc::c_int
-    };
-    #[cfg(target_os = "macos")]
-    let renamed = unsafe {
-        libc::renameatx_np(
-            host.as_raw_fd(),
-            old.as_ptr(),
-            host.as_raw_fd(),
-            new.as_ptr(),
-            libc::RENAME_EXCL,
-        )
-    };
-    syscall(renamed).map(drop).map_err(failure)
+    crate::core::rename_noreplace(host, &old, &new).map_err(failure)
 }
 
 fn unlink_at(parent: &File, leaf: &OsStr, flags: i32) -> io::Result<()> {

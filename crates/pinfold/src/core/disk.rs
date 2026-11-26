@@ -397,19 +397,15 @@ fn marker(name: &str, kind: &str) -> io::Result<PathBuf> {
         .join(format!("{name}.{kind}")))
 }
 
-fn marked(name: &str, kind: &str) -> io::Result<bool> {
-    fs::exists(marker(name, kind)?)
-}
-
 /// Whether a writable attachment of the disk ended without `down`.
 pub fn unclean(name: &str) -> io::Result<bool> {
-    marked(name, UNCLEAN)
+    fs::exists(marker(name, UNCLEAN)?)
 }
 
 /// Whether pinfold created the disk and its box never came ready: such a
 /// disk counts as absent.
 pub fn unfilled(name: &str) -> io::Result<bool> {
-    marked(name, UNFILLED)
+    fs::exists(marker(name, UNFILLED)?)
 }
 
 /// Durably: a lost mark would let a dead box's disk pass as clean or filled.

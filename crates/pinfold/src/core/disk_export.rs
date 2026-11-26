@@ -4,7 +4,6 @@ use std::collections::BTreeSet;
 use std::ffi::CString;
 use std::fs::{self, File};
 use std::io;
-use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -26,9 +25,6 @@ use crate::init::{
 
 /// The caller chooses files to cross; this operation never reads Pi policy.
 pub fn run(name: &str, destination: &Path, image: Option<&str>) -> io::Result<i32> {
-    destination
-        .to_str()
-        .ok_or_else(|| io::Error::other("path-not-utf8: export destination"))?;
     let staging = Staging::new(destination)?;
     let nonce = super::random_hex()?;
     let plan = Plan {
@@ -185,33 +181,10 @@ impl Staging {
     }
 
     fn publish(mut self) -> io::Result<()> {
-        // Plain rename may replace an empty directory. Both platforms offer
-        // a no-replace operation, which also closes destination creation races.
-        // This promises atomic visibility, not durability through a host crash.
-        #[cfg(target_os = "linux")]
-        let result = unsafe {
-            // Rust's bundled musl does not export the libc wrapper. The
-            // kernel operation provides the same no-replace boundary.
-            nix::libc::syscall(
-                nix::libc::SYS_renameat2,
-                self.parent.as_raw_fd(),
-                self.name.as_ptr(),
-                self.parent.as_raw_fd(),
-                self.destination.as_ptr(),
-                nix::libc::RENAME_NOREPLACE,
-            ) as i32
-        };
-        #[cfg(target_os = "macos")]
-        let result = unsafe {
-            nix::libc::renameatx_np(
-                self.parent.as_raw_fd(),
-                self.name.as_ptr(),
-                self.parent.as_raw_fd(),
-                self.destination.as_ptr(),
-                nix::libc::RENAME_EXCL,
-            )
-        };
-        checked(result).map_err(|error| {
+        // Plain rename may replace an empty directory. The no-replace
+        // operation also closes destination creation races. This promises
+        // atomic visibility, not durability through a host crash.
+        super::rename_noreplace(&self.parent, &self.name, &self.destination).map_err(|error| {
             if error.kind() == io::ErrorKind::AlreadyExists {
                 io::Error::other("destination-exists: export destination already exists")
             } else {
@@ -236,14 +209,6 @@ impl Drop for Staging {
 
 fn cstring(bytes: &[u8]) -> io::Result<CString> {
     CString::new(bytes).map_err(|_| io::Error::other("spec: export path contains NUL"))
-}
-
-fn checked(result: i32) -> io::Result<i32> {
-    if result < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(result)
-    }
 }
 
 fn open_dir(parent: &File, name: &CString) -> io::Result<File> {
