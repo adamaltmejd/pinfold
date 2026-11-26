@@ -152,7 +152,7 @@ fn project_intro(unconfigured: &mut bool) -> io::Result<Option<Option<PathBuf>>>
     println!("Files     {}", project_files(config.mount, root));
     let reference = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(root));
     // Only a definite absence earns a line; an unknown answer stays quiet.
-    if image_built(&image::service::resolve_image(&reference)).0 == Some(false) {
+    if matches!(image::service::resolve_image(&reference), Ok(None)) {
         match (&config.image, configured) {
             (Some(image), _) => println!(
                 "Image     {} is not available locally. Make it available before running.",
@@ -1837,15 +1837,6 @@ fn config_edit() -> io::Result<i32> {
     Ok(code)
 }
 
-/// Whether an image lookup found the image, and why when it cannot tell.
-fn image_built(resolved: &io::Result<Option<image::ImageInfo>>) -> (Option<bool>, Option<String>) {
-    match resolved {
-        Ok(Some(_)) => (Some(true), None),
-        Ok(None) => (Some(false), None),
-        Err(error) => (None, Some(error.to_string())),
-    }
-}
-
 /// `resolved` is the lookup of `image`, the config's image, or `None` when it
 /// was skipped.
 fn config_report(
@@ -1856,7 +1847,11 @@ fn config_report(
 ) -> io::Result<serde_json::Value> {
     let project = crate::pi::state::project_id(root);
     let [home_disk, project_disk] = crate::pi::state::disk_names(&project);
-    let (image_built, image_error) = resolved.map_or((None, None), image_built);
+    let (image_built, image_error) = match resolved {
+        None => (None, None),
+        Some(Ok(found)) => (Some(found.is_some()), None),
+        Some(Err(error)) => (None, Some(error.to_string())),
+    };
     let mut chain = Vec::new();
     for link in config.profile.links().into_iter().rev() {
         let path = link.dir()?;
