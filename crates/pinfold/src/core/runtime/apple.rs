@@ -1,6 +1,6 @@
 //! The Apple `container` runtime adapter.
 
-use crate::core::process::{AsyncCommandGuard, CommandGuard};
+use crate::core::process::{AsyncCommandGuard, CommandGuard, GroupChild};
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
@@ -762,17 +762,20 @@ impl Write for PreparationInput<'_> {
     }
 }
 
+/// Wait for a preparation helper, or end it at once after a failed send.
+/// Its group is killed before the leader is reaped, so no host descendant
+/// keeps a transfer pipe.
 fn wait_preparation(
-    child: &mut std::process::Child,
+    child: &mut GroupChild,
+    failed: bool,
     cancel: &AtomicBool,
 ) -> io::Result<ExitStatus> {
     loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(status);
+        if failed || child.exited()? {
+            return child.finish();
         }
         if cancel.load(Ordering::Acquire) {
-            let _ = child.kill();
-            child.wait()?;
+            child.finish()?;
             return Err(io::ErrorKind::Interrupted.into());
         }
         match nix::poll::poll(&mut [], 20u16) {
@@ -929,7 +932,7 @@ impl Runtime for Apple {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut client = crate::core::process::GroupChild::spawn(&mut command)?;
+        let mut client = GroupChild::spawn(&mut command)?;
         drop(command);
         let diagnostics =
             StderrDrain::start_fd(client.take_stderr().expect("piped stderr").into())?;
@@ -1049,52 +1052,40 @@ impl Runtime for Apple {
         }
         let mut spawned = false;
         let result = (|| -> io::Result<std::process::Output> {
-            let mut child = command
-                .arg("--entrypoint")
-                .arg(init)
-                .arg(image)
-                .args(setup)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn_guarded()
-                .map_err(|error| spawn_error("container", error))?;
+            let mut child = GroupChild::spawn(
+                command
+                    .arg("--entrypoint")
+                    .arg(init)
+                    .arg(image)
+                    .args(setup)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped()),
+            )
+            .map_err(|error| spawn_error("container", error))?;
             spawned = true;
-            let result = (|| {
-                let drain = StderrDrain::start_fd(
-                    child.stderr.take().expect("setup stderr is piped").into(),
-                )?;
-                let sent = (|| {
-                    let input = child.stdin.take().expect("setup stdin is piped");
-                    crate::core::pipe::nonblocking(&input, "disk preparation")?;
-                    let mut input = PreparationInput { input, cancel };
-                    for fill in fills {
-                        disk::send(fill, &mut input)?;
-                    }
-                    Ok::<_, io::Error>(())
-                })();
-                let status = if sent.is_err() {
-                    let _ = child.kill();
-                    child.wait()
-                } else {
-                    wait_preparation(&mut child, cancel)
-                };
-                let stderr = drain.close().into_iter().collect();
-                let status = status?;
-                if status.success() {
-                    sent?;
+            let drain =
+                StderrDrain::start_fd(child.take_stderr().expect("setup stderr is piped").into())?;
+            let sent = (|| {
+                let input = child.take_stdin().expect("setup stdin is piped");
+                crate::core::pipe::nonblocking(&input, "disk preparation")?;
+                let mut input = PreparationInput { input, cancel };
+                for fill in fills {
+                    disk::send(fill, &mut input)?;
                 }
-                Ok(std::process::Output {
-                    status,
-                    stdout: Vec::new(),
-                    stderr,
-                })
+                Ok::<_, io::Error>(())
             })();
-            if result.is_err() {
-                let _ = child.kill();
-                let _ = child.wait();
+            let status = wait_preparation(&mut child, sent.is_err(), cancel);
+            let stderr = drain.close().into_iter().collect();
+            let status = status?;
+            if status.success() {
+                sent?;
             }
-            result
+            Ok(std::process::Output {
+                status,
+                stdout: Vec::new(),
+                stderr,
+            })
         })();
         if !spawned {
             return result.map(drop);
@@ -1180,49 +1171,38 @@ fn make_proxy_connectable(name: &str, init: &Path) -> io::Result<()> {
 
 /// Copy missing profile seeds without buffering another copy of their bytes.
 fn copy_in(name: &str, init: &Path, seeding: &Seeding, cancel: &AtomicBool) -> io::Result<()> {
-    let mut child = std::process::Command::new("container")
-        .args(["exec", "-i", name])
-        .arg(init)
-        .args(["init", "receive", "--missing"])
-        .arg(&seeding.guest)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn_guarded()
-        .map_err(|error| spawn_error("container", error))?;
-    let result = (|| {
-        let drain = StderrDrain::start_fd(child.stderr.take().expect("piped seed stderr").into())?;
-        let sent = (|| {
-            let input = child.stdin.take().expect("piped seed input");
-            crate::core::pipe::nonblocking(&input, "seed copy")?;
-            disk::send_seeds(
-                &seeding.relative,
-                &seeding.seeds,
-                &mut PreparationInput { input, cancel },
-            )
-        })();
-        let status = if sent.is_err() {
-            let _ = child.kill();
-            child.wait()
-        } else {
-            wait_preparation(&mut child, cancel)
-        };
-        let tail: Vec<_> = drain.close().into_iter().collect();
-        let diagnostics = terminal_text(String::from_utf8_lossy(&tail).trim());
-        // A cancelled or failed send says why unless the receiver did.
-        if !status?.success() && (sent.is_ok() || !diagnostics.is_empty()) {
-            return Err(io::Error::other(format!(
-                "copy into {}: {diagnostics}",
-                seeding.guest.display()
-            )));
-        }
-        sent.map_err(|error| io::Error::new(error.kind(), format!("seed copy: {error}")))
+    let mut child = GroupChild::spawn(
+        std::process::Command::new("container")
+            .args(["exec", "-i", name])
+            .arg(init)
+            .args(["init", "receive", "--missing"])
+            .arg(&seeding.guest)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()),
+    )
+    .map_err(|error| spawn_error("container", error))?;
+    let drain = StderrDrain::start_fd(child.take_stderr().expect("piped seed stderr").into())?;
+    let sent = (|| {
+        let input = child.take_stdin().expect("piped seed input");
+        crate::core::pipe::nonblocking(&input, "seed copy")?;
+        disk::send_seeds(
+            &seeding.relative,
+            &seeding.seeds,
+            &mut PreparationInput { input, cancel },
+        )
     })();
-    if result.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
+    let status = wait_preparation(&mut child, sent.is_err(), cancel);
+    let tail: Vec<_> = drain.close().into_iter().collect();
+    let diagnostics = terminal_text(String::from_utf8_lossy(&tail).trim());
+    // A cancelled or failed send says why unless the receiver did.
+    if !status?.success() && (sent.is_ok() || !diagnostics.is_empty()) {
+        return Err(io::Error::other(format!(
+            "copy into {}: {diagnostics}",
+            seeding.guest.display()
+        )));
     }
-    result
+    sent.map_err(|error| io::Error::new(error.kind(), format!("seed copy: {error}")))
 }
 
 /// One `container list --format json` entry, as much as pinfold needs.

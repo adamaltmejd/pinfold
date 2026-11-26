@@ -4,7 +4,7 @@ use crate::core::process::StdioRelay;
 use crate::core::runtime::terminal::{Raw, Winch, window};
 use crate::formatting::terminal_text;
 use crate::init::exec_wire::{
-    EXEC, EXIT, FAILED, RESIZE, STDERR, STDIN, STDIN_END, STDOUT, write_frame,
+    EXEC, EXIT, FAILED, FrameWriter, RESIZE, STDERR, STDIN, STDIN_END, STDOUT,
 };
 use nix::libc;
 use std::ffi::OsString;
@@ -37,7 +37,7 @@ pub(crate) fn env_payload(vars: &[(OsString, OsString)]) -> Vec<u8> {
 pub fn exec(
     from_box: impl Read + AsFd,
     mut to_box: impl Write + AsFd,
-    native_exited: impl FnMut() -> io::Result<bool>,
+    mut native_exited: impl FnMut() -> io::Result<bool>,
     context: &crate::core::runtime::ExecContext<'_>,
     argv: &[String],
 ) -> io::Result<i32> {
@@ -74,15 +74,23 @@ pub fn exec(
     let stdin = StdioRelay::new(input, true)?;
     let stdout = StdioRelay::new(output, false)?;
     let stderr = StdioRelay::new(errors, false)?;
-    write_frame(
-        &mut Cancellable {
-            connection: &mut to_box,
-            cancel,
-            completed_first: true,
-        },
-        EXEC,
-        &payload,
-    )?;
+    let mut exec = FrameWriter::default();
+    exec.start(EXEC, &payload)?;
+    // A descendant can hold a native client's stdin open after the client exits.
+    while !exec.flush(&mut to_box)? {
+        cancelled(cancel)?;
+        if native_exited()? {
+            return Err(io::Error::other("the box ended the exec before it exited"));
+        }
+        let mut ready = [nix::poll::PollFd::new(
+            to_box.as_fd(),
+            nix::poll::PollFlags::POLLOUT,
+        )];
+        match nix::poll::poll(&mut ready, 100u16) {
+            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
 
     let result = relay(
         from_box,
@@ -104,7 +112,7 @@ fn relay(
     [mut stdin, mut stdout, mut stderr]: [StdioRelay; 3],
     winch: Option<&Winch>,
 ) -> io::Result<i32> {
-    use crate::init::exec_wire::{CHUNK, CREDIT, FrameReader, FrameWriter, OUTPUT_END, WINDOW};
+    use crate::init::exec_wire::{CHUNK, CREDIT, FrameReader, OUTPUT_END, WINDOW};
     use std::collections::VecDeque;
     let mut reader = FrameReader::default();
     let mut writer = FrameWriter::default();
@@ -384,6 +392,7 @@ pub(super) fn cancelled(cancel: Option<&AtomicBool>) -> io::Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn wait(fd: libc::c_int, events: libc::c_short, cancel: Option<&AtomicBool>) -> io::Result<()> {
     loop {
         cancelled(cancel)?;
@@ -407,24 +416,23 @@ fn wait(fd: libc::c_int, events: libc::c_short, cancel: Option<&AtomicBool>) -> 
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(super) struct Cancellable<'a, T> {
     connection: T,
     cancel: Option<&'a AtomicBool>,
-    completed_first: bool,
 }
 
+#[cfg(target_os = "linux")]
 impl<'a, T> Cancellable<'a, T> {
-    #[cfg(target_os = "linux")]
     pub(super) fn startup(connection: T, cancel: &'a AtomicBool) -> Self {
         Self {
             connection,
             cancel: Some(cancel),
-            completed_first: false,
         }
     }
 
     fn cancellation(&self, error: io::Error) -> io::Error {
-        if !self.completed_first && error.kind() == io::ErrorKind::Interrupted {
+        if error.kind() == io::ErrorKind::Interrupted {
             // Buffered copy routines retry Interrupted rather than ending BOOT.
             io::Error::new(io::ErrorKind::ConnectionAborted, "startup cancelled")
         } else {
@@ -433,13 +441,11 @@ impl<'a, T> Cancellable<'a, T> {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<T: Read + AsFd> Read for Cancellable<'_, T> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         loop {
-            if !self.completed_first {
-                cancelled(self.cancel).map_err(|error| self.cancellation(error))?;
-            }
-            // A frame already readable, including EXIT, precedes client cancellation.
+            cancelled(self.cancel).map_err(|error| self.cancellation(error))?;
             match self.connection.read(buffer) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     wait(
@@ -467,6 +473,7 @@ impl<T: Read + AsFd> Read for Cancellable<'_, T> {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl<T: Write + AsFd> Write for Cancellable<'_, T> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         loop {
