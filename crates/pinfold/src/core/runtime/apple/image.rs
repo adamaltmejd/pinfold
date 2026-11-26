@@ -293,28 +293,25 @@ fn refresh_base(containerfile: &[u8]) -> io::Result<()> {
     if platform.is_some_and(|platform| platform.contains('$')) {
         return Ok(());
     }
-    match base {
-        Some("scratch") => Ok(()),
-        Some(base) if !base.contains('$') => {
-            // A pinfold-built base can never be pulled, so read its digest
-            // locally before spending the retries on a doomed pull. Every
-            // pinfold build records [`clean::BASE_LABEL`], empty when its
-            // own base did not resolve, so its presence marks the image; a
-            // caller image's family labels are all empty.
-            // An unreadable local index falls through to the pull.
-            if let Ok(Some(image)) = resolve_image(base)
-                && image.labels.contains_key(clean::BASE_LABEL)
-            {
-                return Ok(());
-            }
-            // A floating tag must be pulled for its digest to be current and
-            // present to inspect. An unresolvable base has no digest.
-            let platform = platform.unwrap_or("linux/arm64");
-            let _ = output(&["container", "image", "pull", "--platform", platform, base]);
-            Ok(())
-        }
-        _ => Ok(()),
+    let Some(base) = base.filter(|base| *base != "scratch" && !base.contains('$')) else {
+        return Ok(());
+    };
+    // A pinfold-built base can never be pulled, so read its digest locally
+    // before spending the retries on a doomed pull. Every pinfold build
+    // records [`clean::BASE_LABEL`], empty when its own base did not
+    // resolve, so its presence marks the image; a caller image's family
+    // labels are all empty.
+    // An unreadable local index falls through to the pull.
+    if let Ok(Some(image)) = resolve_image(base)
+        && image.labels.contains_key(clean::BASE_LABEL)
+    {
+        return Ok(());
     }
+    // A floating tag must be pulled for its digest to be current and
+    // present to inspect. An unresolvable base has no digest.
+    let platform = platform.unwrap_or("linux/arm64");
+    let _ = output(&["container", "image", "pull", "--platform", platform, base]);
+    Ok(())
 }
 
 /// Run `container build` for `request`. stdout and stderr are captured

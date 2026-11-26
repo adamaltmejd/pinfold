@@ -6,10 +6,12 @@ use crate::formatting::terminal_text;
 use crate::init::exec_wire::{
     EXEC, EXIT, FAILED, RESIZE, STDERR, STDIN, STDIN_END, STDOUT, write_frame,
 };
+use nix::errno::Errno;
 use nix::libc;
+use nix::poll::{PollFd, PollFlags, poll};
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::os::fd::{AsFd, AsRawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -226,15 +228,12 @@ fn relay(
                 }
                 let (bytes, _) = output[index].as_slices();
                 if !bytes.is_empty() {
-                    let count = unsafe {
-                        libc::write(relay.as_raw_fd(), bytes.as_ptr().cast(), bytes.len())
-                    };
-                    if count > 0 {
-                        output[index].drain(..count as usize);
-                        credit_pending[index] += count as u32;
-                    } else if count < 0 {
-                        let error = io::Error::last_os_error();
-                        match error.kind() {
+                    match relay.write(bytes) {
+                        Ok(count) => {
+                            output[index].drain(..count);
+                            credit_pending[index] += count as u32;
+                        }
+                        Err(error) => match error.kind() {
                             io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => {}
                             io::ErrorKind::BrokenPipe if !context.tty => {
                                 relay.close();
@@ -244,7 +243,7 @@ fn relay(
                                 credit_pending[index] = 0;
                             }
                             _ => return Err(error),
-                        }
+                        },
                     }
                 }
             }
@@ -401,29 +400,20 @@ pub(super) fn cancelled(cancel: Option<&AtomicBool>) -> io::Result<()> {
 }
 
 fn wait(
-    fd: libc::c_int,
-    events: libc::c_short,
+    fd: BorrowedFd,
+    events: PollFlags,
     cancel: Option<&AtomicBool>,
-    interval_ms: libc::c_int,
+    interval_ms: u16,
 ) -> io::Result<()> {
     loop {
         cancelled(cancel)?;
-        let mut fds = [libc::pollfd {
-            fd,
-            events,
-            revents: 0,
-        }];
-        // SAFETY: poll reads and updates the live pollfd value.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, interval_ms) };
-        if ready < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(error);
-        }
-        if fds[0].revents != 0 {
-            return Ok(());
+        let mut fds = [PollFd::new(fd, events)];
+        match poll(&mut fds, interval_ms) {
+            Err(Errno::EINTR) => continue,
+            Err(error) => return Err(error.into()),
+            // None: bits nix does not know, still an event.
+            Ok(_) if fds[0].any() != Some(false) => return Ok(()),
+            Ok(_) => {}
         }
     }
 }
@@ -434,7 +424,7 @@ pub(super) struct Cancellable<'a, T> {
     connection: T,
     cancel: Option<&'a AtomicBool>,
     operation: &'static str,
-    interval_ms: libc::c_int,
+    interval_ms: u16,
 }
 
 impl<'a, T> Cancellable<'a, T> {
@@ -478,8 +468,8 @@ impl<T: Read + AsFd> Read for Cancellable<'_, T> {
             match self.connection.read(buffer) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     wait(
-                        self.connection.as_fd().as_raw_fd(),
-                        libc::POLLIN,
+                        self.connection.as_fd(),
+                        PollFlags::POLLIN,
                         self.cancel,
                         self.interval_ms,
                     )
@@ -499,8 +489,8 @@ impl<T: Write + AsFd> Write for Cancellable<'_, T> {
             match self.connection.write(buffer) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     wait(
-                        self.connection.as_fd().as_raw_fd(),
-                        libc::POLLOUT,
+                        self.connection.as_fd(),
+                        PollFlags::POLLOUT,
                         self.cancel,
                         self.interval_ms,
                     )

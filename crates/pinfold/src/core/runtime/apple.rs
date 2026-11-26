@@ -5,7 +5,7 @@ use crate::core::process::{AsyncCommandGuard, CommandGuard, GroupChild};
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -13,7 +13,8 @@ use std::process::{ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use nix::libc;
+use nix::errno::Errno;
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, Command};
@@ -653,46 +654,25 @@ impl StderrDrain {
                 loop {
                     if !closing {
                         let mut fds = [
-                            libc::pollfd {
-                                fd: stop.as_raw_fd(),
-                                events: libc::POLLIN,
-                                revents: 0,
-                            },
-                            libc::pollfd {
-                                fd: stderr.as_raw_fd(),
-                                events: libc::POLLIN,
-                                revents: 0,
-                            },
+                            PollFd::new(stop.as_fd(), PollFlags::POLLIN),
+                            PollFd::new(stderr.as_fd(), PollFlags::POLLIN),
                         ];
-                        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, -1) };
-                        if ready < 0 {
-                            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                                continue;
-                            }
-                            break;
+                        match poll(&mut fds, PollTimeout::NONE) {
+                            Err(Errno::EINTR) => continue,
+                            Err(_) => break,
+                            Ok(_) => {}
                         }
-                        closing = fds[0].revents != 0;
+                        // None: bits nix does not know, still an event.
+                        closing = fds[0].any() != Some(false);
                     }
-                    let count = unsafe {
-                        libc::read(
-                            stderr.as_raw_fd(),
-                            bytes.as_mut_ptr().cast(),
-                            bytes.len().min(final_bytes),
-                        )
+                    let limit = bytes.len().min(final_bytes);
+                    let count = match nix::unistd::read(&stderr, &mut bytes[..limit]) {
+                        Ok(0) => break,
+                        Ok(count) => count,
+                        Err(Errno::EINTR) => continue,
+                        Err(Errno::EAGAIN) if !closing => continue,
+                        Err(_) => break,
                     };
-                    if count < 0 {
-                        let error = io::Error::last_os_error();
-                        if error.kind() == io::ErrorKind::Interrupted
-                            || (!closing && error.kind() == io::ErrorKind::WouldBlock)
-                        {
-                            continue;
-                        }
-                        break;
-                    }
-                    if count == 0 {
-                        break;
-                    }
-                    let count = count as usize;
                     let remove = (tail.len() + count).saturating_sub(STARTUP_DIAGNOSTICS);
                     tail.drain(..remove);
                     tail.extend(&bytes[..count]);
