@@ -232,7 +232,7 @@ fn read_locator(root: &Path) -> io::Result<Option<Locator>> {
         return Err(unavailable());
     }
     let mut bytes = Vec::new();
-    std::io::Read::read_to_end(&mut file, &mut bytes)?;
+    file.read_to_end(&mut bytes)?;
     let locator: Locator = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
     locator.validate(root)?;
     Ok(Some(locator))
@@ -1025,10 +1025,7 @@ fn spawn_owner(
                 },
             };
             let mut bytes = [0u8; 4096];
-            let read = ready.try_io(|fd| {
-                use std::io::Read;
-                fd.get_ref().read(&mut bytes)
-            });
+            let read = ready.try_io(|fd| fd.get_ref().read(&mut bytes));
             match read {
                 Ok(Ok(0)) => break,
                 Ok(Err(error)) => return Err(error),
@@ -1552,7 +1549,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
             return Err(protocol());
         }
     }
-    if unsafe { libc::getsid(0) != libc::getpid() } {
+    if nix::unistd::getsid(None) != Ok(nix::unistd::getpid()) {
         return Err(protocol());
     }
     let mut files = descriptors
@@ -1698,7 +1695,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let listener = crate::core::process::Listener::from_std(sockets::Sockets::open(&box_.run_id)?.bind_control()?)?;
         let mut leases = BTreeMap::new();
         let keep = !matches!(intent, Intent::Join);
-        redirect_stderr()?;
+        nix::unistd::dup2_stderr(File::options().write(true).open("/dev/null")?)?;
         // Commit before acknowledgement, including when that acknowledgement is lost.
         let reply = if keep { Reply::Kept { name: plan.name.clone(), generation: box_.run_id.clone(), rex: status } }
             else { Reply::Admitted { name: plan.name.clone(), generation: box_.run_id.clone() } };
@@ -1729,13 +1726,6 @@ fn same_file(a: &File, b: &File) -> io::Result<()> {
     let (a, b) = (a.metadata()?, b.metadata()?);
     if a.dev() != b.dev() || a.ino() != b.ino() {
         return Err(protocol());
-    }
-    Ok(())
-}
-fn redirect_stderr() -> io::Result<()> {
-    let null = File::options().write(true).open("/dev/null")?;
-    if unsafe { libc::dup2(null.as_raw_fd(), 2) } < 0 {
-        return Err(io::Error::last_os_error());
     }
     Ok(())
 }
@@ -1793,7 +1783,7 @@ async fn serve(
                 }
                 Event::Request { mut stream, request } => {
                     let request = *request;
-                    if !request.target().is_some_and(|(candidate_root, candidate_generation)| candidate_root == root && candidate_generation == generation) {
+                    if !request.addresses(root, &generation) {
                         let _ = wire::write_reply(&mut stream, Reply::error("session-protocol")).await; continue;
                     }
                     if matches!(request, Request::Borrow { share_only: true, .. }) && !snapshot.is_share() {
@@ -2001,10 +1991,7 @@ async fn draining_reply(event: Event, root: &Path, generation: &str) {
     else {
         return;
     };
-    let correct = request
-        .target()
-        .is_some_and(|(r, g)| r == root && g == generation);
-    let reply = if correct {
+    let reply = if request.addresses(root, generation) {
         Reply::Draining {
             generation: generation.into(),
         }
