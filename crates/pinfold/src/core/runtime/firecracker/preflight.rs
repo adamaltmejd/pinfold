@@ -3,7 +3,10 @@
 
 use std::fs;
 use std::io;
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
+
+use nix::libc;
 
 use super::jail;
 
@@ -14,12 +17,12 @@ pub fn host_requirements() -> Vec<String> {
     if nix::unistd::getuid().is_root() {
         missing.push("root: pinfold runs as uid 0; Firecracker runs only as the user".to_string());
     }
-    // The executable is also the guest init, and the init disk holds no
-    // dynamic loader.
-    if !cfg!(target_feature = "crt-static") {
-        missing.push(
-            "static: pinfold was built without static CRT linking (crt-static); the guest init needs a statically linked build".to_string(),
-        );
+    match std::env::current_exe().and_then(|exe| has_interpreter(&exe)) {
+        Ok(false) => {}
+        Ok(true) => missing.push(
+            "static: pinfold's executable names a dynamic loader (PT_INTERP); the guest init needs a statically linked build".to_string(),
+        ),
+        Err(error) => missing.push(format!("static: pinfold's executable: {error}")),
     }
     if let Err(error) = kvm() {
         missing.push(format!(
@@ -54,13 +57,56 @@ pub fn host_requirements() -> Vec<String> {
     missing
 }
 
-/// Open `/dev/kvm` read-write: access, not group membership.
+/// Whether an ELF64 little-endian executable has a `PT_INTERP` program
+/// header. The executable is also the guest init, and the init disk holds
+/// no dynamic loader. A file whose header or whole program-header table
+/// cannot be read is an error, never "no interpreter".
+fn has_interpreter(path: &std::path::Path) -> io::Result<bool> {
+    use std::os::unix::fs::FileExt;
+    const PT_INTERP: u32 = 3;
+    const ENTRY: usize = 56;
+    let not_elf = || io::Error::other("it could not be read as an ELF64 little-endian executable");
+    let file = fs::File::open(path)?;
+    let mut header = [0u8; 64];
+    file.read_exact_at(&mut header, 0).map_err(|_| not_elf())?;
+    if header[..4] != *b"\x7fELF" || header[4] != 2 || header[5] != 1 {
+        return Err(not_elf());
+    }
+    let offset = u64::from_le_bytes(header[0x20..0x28].try_into().expect("8 bytes"));
+    let size = u16::from_le_bytes([header[0x36], header[0x37]]);
+    let count = u16::from_le_bytes([header[0x38], header[0x39]]);
+    if usize::from(size) != ENTRY {
+        return Err(not_elf());
+    }
+    let mut interpreter = false;
+    for index in 0..u64::from(count) {
+        let mut entry = [0u8; ENTRY];
+        let at = offset
+            .checked_add(index * ENTRY as u64)
+            .ok_or_else(not_elf)?;
+        file.read_exact_at(&mut entry, at).map_err(|_| not_elf())?;
+        interpreter |= u32::from_le_bytes(entry[..4].try_into().expect("4 bytes")) == PT_INTERP;
+    }
+    Ok(interpreter)
+}
+
+/// Open `/dev/kvm` and use it: access, not group membership.
 fn kvm() -> io::Result<()> {
-    fs::OpenOptions::new()
+    const KVM_GET_API_VERSION: libc::c_ulong = 0xAE00;
+    const KVM_API_VERSION: libc::c_int = 12;
+    let device = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/dev/kvm")
-        .map(drop)
+        .open("/dev/kvm")?;
+    // SAFETY: an ioctl without an argument on an open descriptor.
+    let version = unsafe { libc::ioctl(device.as_raw_fd(), KVM_GET_API_VERSION as _, 0) };
+    if version < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if version != KVM_API_VERSION {
+        return Err(io::Error::other(format!("KVM API version {version}")));
+    }
+    Ok(())
 }
 
 /// The first executable `mkfs.ext4` on PATH, then in `/usr/sbin` and

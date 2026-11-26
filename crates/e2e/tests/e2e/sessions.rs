@@ -307,7 +307,7 @@ fn a_projects_sessions_share_one_box() {
         "{lines:?}"
     );
 
-    b.finish();
+    assert_eq!(b.finish(), 0, "B after its stdin closed");
 
     // A crossing's box command ends when Git does, even one that ignores
     // TERM. In the disk project's box, kept by session C, the box's `git`
