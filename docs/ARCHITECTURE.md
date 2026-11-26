@@ -18,8 +18,7 @@ _Avoid_: sandbox, container, VM, run
 **Session**: one project command's client connection. A temporary crossing
 connection also retains the project box.
 
-**Box spec**: the JSON a caller gives `box up`. It is the whole box: nothing
-is added that the spec does not name.
+**Box spec**: the JSON a caller gives `box up`.
 
 **Project**: a main Git checkout’s canonical root, including its linked
 worktrees beneath that root, else the canonical invoking folder. A linked
@@ -34,8 +33,9 @@ read-only shared files, and config defaults.
 **Project home**: a project's `$HOME`, a disk. It belongs to the project
 from its first start.
 
-**Disk**: a named ext4 image pinfold keeps for boxes. It outlives the
-boxes that attach it; the host never mounts or reads it.
+**Disk**: a named disk pinfold keeps for boxes: an ext4 image on Linux, an
+Apple `container` volume on macOS. It outlives the boxes that attach it; the
+host never mounts or reads it.
 _Avoid_: volume, workspace
 
 **Seed**: a profile file copied into a project home only when missing.
@@ -600,8 +600,8 @@ The box spec `up` reads from stdin:
 - On Linux a box attaches at most 14 disks and mounts, pinfold's own
   (the profile's `share/` and each generated configuration directory) included;
   more are refused as `spec`.
-- A disk `name` is validated like a profile name, does not start with
-  `pin-`, and is named once per spec. `size` is a whole number
+- A disk `name` is validated like a profile name and is named once per
+  spec. `size` is a whole number
   followed by `G`, at least `1G`, default `64G`; it caps a disk pinfold
   creates and is ignored for one that exists (`disk list` reports its
   size). A disk is created on first use, empty or filled from `from`.
@@ -640,7 +640,7 @@ The box spec `up` reads from stdin:
 A run is one `up` from `ready` to its end. Its records live in
 `~/.local/state/pinfold/runs/<run_id>/`, outside the box's state dir, so
 they outlast teardown. The directory is 0700 and its files 0600, created
-without following symlinks. `refused` and `failed` retain no run.
+without following symlinks.
 
 The launch record is written once, atomically, after startup completes
 (Lifecycle step 6) and immediately before `ready`. Failed-start
@@ -684,8 +684,8 @@ An audit failure takes precedence in the final terminal reason and client
 notification, including a failure during teardown. Completed command status
 is retained.
 
-An egress log append failure or cap exhaustion (Egress proxy) stops a
-running box. No other record write failure does. A launch record that cannot be
+No record write failure but an egress log append failure or cap exhaustion
+(Egress proxy) stops a running box. A launch record that cannot be
 written fails the start with `failed`, naming it. A terminal record that
 cannot be written is reported on stderr; `down`, its reason and the exit
 code are unchanged. A run-record write never delays or alters an audit
@@ -820,7 +820,7 @@ process. Getting further needs a host kernel bug.
   Apple execution, project and public, carries command frames over the
   native client's private pipes and creates its PTY in the guest. Only
   pinfold changes the caller's terminal. No native Apple client holds a
-  caller-terminal descriptor. Framed execution keeps separate stdout and stderr channels.
+  caller-terminal descriptor.
   The box-owning native client's stderr is piped. Startup diagnostics retain
   at most 64 KiB in memory. Before ready, stdout EOF or native-client exit
   starts a one-second failure deadline even if a descendant holds stderr.
@@ -837,10 +837,7 @@ process. Getting further needs a host kernel bug.
   consumption credits. Command input cannot block window changes or status.
   Non-TTY execution preserves separate
   byte streams. Closing a non-TTY output consumer closes that guest stream's
-  pipe reader so its writer observes SIGPIPE. An observed exec status survives later
-  relay failure or cancellation.
-  After the command exits, remaining output drains to EOF or a one-second
-  deadline; a descendant holding an endpoint cannot retain the client.
+  pipe reader so its writer observes SIGPIPE.
   Both platforms restore only termios this execution changed. Restoration
   checks that its process group owns the foreground terminal before writing.
   A non-raw execution leaves later terminal settings alone. Handled
@@ -848,9 +845,7 @@ process. Getting further needs a host kernel bug.
   terminal exec preserves the caller's input file status flags, blocking or
   nonblocking; Apple never changes any caller file status flags. Private stdio copiers carry no owner
   authority, exit on client death, and are killed and reaped on cancellation.
-  A restoration failure
-  fails an otherwise successful command; an existing command failure is
-  preserved. This does not cover process-killing signals.
+  Restoration does not cover process-killing signals.
 - When a project client departs, its unprivileged guest helper sends TERM
   to that command's process group, then KILL two seconds later if it remains.
   A terminal departure first closes its PTY master, hanging up the guest terminal.
@@ -880,8 +875,8 @@ process. Getting further needs a host kernel bug.
   External box teardown or an accepted shutdown during startup uses 125
   when no command completion was observed. Host stop handling uses `128+n`
   only for a signal received by the pinfold process. An observed command status
-  survives leave or teardown failure, which is reported on stderr and in the run
-  record. A completed exec
+  survives relay failure, cancellation, leave and teardown failure; the last
+  two are reported on stderr and in the run record. A completed exec
   result is checked before a ready shutdown or signal. Terminal-restoration
   failure preserves an observed nonzero command status and changes observed
   success to 125.
@@ -893,8 +888,7 @@ process. Getting further needs a host kernel bug.
   succeeds. The exec service
   remains protected at -1000. This bounds score-based immunity; it does
   not guarantee guest liveness under arbitrary memory pressure.
-- After a SIGKILL of pinfold, `box prune` cleans up; the terminal needs
-  `stty sane`.
+- After a SIGKILL of pinfold the terminal needs `stty sane`.
 
 ## Transport
 
@@ -935,7 +929,8 @@ started. A VMM child waits on a pipe before entering its jail. The owner
 atomically replaces and syncs its identity before releasing that child;
 EOF exits without exec. Retirement requires a known pre-start state, a
 complete identity proving the VMM ended, or successful owned reaping.
-Unknown liveness preserves the generation's resources.
+Unknown liveness preserves the generation's resources: it pins the claim's
+generation state, retains disk ownership and is reported as `unknown`.
 Private socket staging may be removed after a pre-start publication failure
 without retiring the claim. Before deleting other generation resources,
 confirmed runtime removal under the name lock is recorded by atomically
@@ -944,12 +939,11 @@ Box and builder cleanup resume from that record even after the identity tree
 is gone. The owner record and its retirement evidence are unlinked last and
 the directory is synced.
 Readiness inspects only its own claim. Inventory reports per-box errors and
-rechecks retirement before treating a missing identity as unknown. Unknown
-liveness retains disk ownership and is reported as `unknown`.
+rechecks retirement before treating a missing identity as unknown.
 Inventory and measurement report bad records and continue. A resource decision
-consults only claims that can reference that resource. Unknown VMM liveness
-pins that claim's generation state. Claims pin disks as Disks, Attachment,
-states; recovery of other verified-dead claims continues.
+consults only claims that can reference that resource; a claim pins disks as
+Disks (Attachment) states, and recovery of other verified-dead claims
+continues.
 
 ## Egress proxy
 
@@ -1037,12 +1031,10 @@ network listener, no token: the socket identifies the box.
   sent under that name. `$VAR` is read once per start, from the
   environment of the process that starts the box: `box up`'s own, or a
   project box's starting client (Configuration); a missing variable
-  refuses the start. A header's `from` may be a 1Password reference,
-  read by that process (Process interface). An `https`
+  refuses the start. An `https`
   target is resolved and checked like an allowlisted host; an `http` target
   is a host service. The value never reaches argv, the box, the spec or
-  the log. The box can use the credential but not read
-  it, unless `to` echoes request headers back. Header names that frame the request (`Host`,
+  the log. The box cannot read it unless `to` echoes request headers back. Header names that frame the request (`Host`,
   `Content-Length`, `Expect`, hop-by-hop) are refused.
 - **Login routes:** a route whose value is `{ "login": AGENT }` carries
   a login for that agent; pinfold owns the origin, its routed hosts and
@@ -1090,9 +1082,7 @@ network listener, no token: the socket identifies the box.
   - `claude`: `{ "login": "claude", "from": VAR }`, where `$VAR` is a
     `claude setup-token` token read once at start like an injecting route's.
     The route goes to `https://api.anthropic.com` with `Authorization:
-    Bearer`. `from` may be a 1Password reference, here and for github
-    and pi.
-    It is served at `api.anthropic.com`. Claude's managed settings set a
+    Bearer`. It is served at `api.anthropic.com`. Claude's managed settings set a
     placeholder `CLAUDE_CODE_OAUTH_TOKEN` and blank `ANTHROPIC_API_KEY`.
   - `github`: `{ "login": "github", "from": VAR }`, where `$VAR` is a
     GitHub token read once at start like an injecting route's. The route
@@ -1238,8 +1228,9 @@ Containerfile in the profile's chain (Profiles). An explicit image and project C
 as `image-source-conflict` after layering. An explicit image overrides the
 profile recipe. No source refuses as `image-source-missing`; an empty image
 refuses as `image-invalid`, before state is created.
-Explicit images resolve locally. A project launch never pulls or imports an
-image itself; a confirmed managed build can pull its recipe's external base.
+Explicit images resolve locally. A project launch (`-- CMD` or `start`)
+checks local image availability before recording project state, and never
+pulls or imports an image itself; a confirmed managed build can pull its recipe's external base.
 A project recipe typically `FROM`s the profile image.
 
 - When starting a new box with interactive I/O (Configuration),
@@ -1264,8 +1255,7 @@ A project recipe typically `FROM`s the profile image.
   the full recipe to run. Launch never installs agents. A managed build
   first rebuilds, root first, every profile beneath it that has a recipe:
   a project build its selected profile's chain, a profile build its base
-  chain. Each image records the identity of the one built just beneath it,
-  and Linux freezes that identity for its build.
+  chain.
   Each image's publication is a separate operation: a failed build may leave
   successfully rebuilt images beneath it published. Stderr names each
   image as its build starts; those named before the failed one are the
@@ -1296,10 +1286,8 @@ A project recipe typically `FROM`s the profile image.
   the context. NAME is validated like a profile name. A box spec's `image` names
   either tag.
   Identical inputs under two names build one image. It carries the
-  caller's `--label`s, none of which may start with `dev.pinfold.`. It uses
-  the builder's layer cache unless the caller passes `--no-cache`.
-- Before invoking the builder, a build names its profile, project or caller
-  image on stderr. A build never touches project homes.
+  caller's `--label`s, none of which may start with `dev.pinfold.`.
+- A build never touches project homes.
 - Profile and project images record their Containerfile's SHA-256 as
   `dev.pinfold.containerfile-sha256`. Before a project-command launch, and in doctor,
   changed or unrecorded Containerfile inputs produce an `image-outdated`
@@ -1317,106 +1305,75 @@ A project recipe typically `FROM`s the profile image.
 This is a separate internal role, never a box-spec option. Agent Always
 applied and outer VMM jail, parent lifetime, seccomp and vsock controls
 stay exact. The trusted guest service stays root with capability bound
-`0xa82425fb` (mount included) and `no_new_privs`. RUN uses pinned
-BuildKit's ordinary OCI capabilities without SYS_ADMIN; user namespaces
-and insecure entitlements are disabled. There is no NIC or direct route.
+`0xa82425fb` (mount included) and `no_new_privs`. RUN uses pinned BuildKit's
+ordinary OCI capabilities without SYS_ADMIN; user namespaces and insecure
+entitlements are disabled. There is no NIC or direct route.
 
-Attach only the pinned immutable bootstrap, this binary's read-only init,
-host-written read-only inputs and owned writable storage. No host bind,
-agent home, host auth, registry credential, agent disk or unrelated device
-enters either role. A builder exclusively owns one version-keyed cache;
-a converter gets a fresh separate work disk and never attaches that cache.
-Ownership, cancellation, audit failure and recovery remain host authority.
-A job must stop and reap its VMM before releasing ownership. Discard the
-derivable cache after unclean work; completed images survive cache removal.
-A failed cache job prunes unused mutable cache mounts through pinned BuildKit,
-preserving regular image-layer cache. Cleanup failure omits the clean end receipt;
-the next build recreates the cache. A handled recipe failure may retain the cache
-only after daemon/work teardown, sync and unmount, a complete failure/end/EOF
-receipt, VMM reaping and a successful host backing-file sync. A stop during
-clean-marker updates attempts to restore the marker, then retire the backing file
-if restoration fails; errors propagate.
-A stop after those physical barriers does not make the cache unclean again.
+Only the pinned immutable bootstrap, this binary's read-only init, host-written
+read-only inputs and owned writable storage attach. No host bind, agent home,
+host auth, registry credential, agent disk or unrelated device enters either
+role. A builder exclusively owns one version-keyed cache. A converter gets a
+fresh work disk and never attaches that cache. A job stops and reaps its VMM
+before releasing ownership. Unclean work discards the derivable cache, and
+completed images survive its removal. A failed recipe keeps the cache only
+after clean teardown, sync and VMM reaping.
 
-Daemon and RUN use the production proxy and audit. Initial build hosts are
+Daemon and RUN use the production proxy and audit. The initial build hosts are
 `registry-1.docker.io`, `auth.docker.io`, `production.cloudfront.docker.com`,
 `docker-images-prod.s3.dualstack.us-east-1.amazonaws.com`,
 `deb.debian.org`, `github.com`, `api.github.com`,
 `release-assets.githubusercontent.com`, `downloads.claude.ai`,
 `registry.npmjs.org` and `cli.github.com`. Linux `build` and `image build`
 accept repeatable `--allow HOST` exact DNS additions, independently of agent
-policy. A recipe grants no network authority. Denials retain the proxy's
-stable reasons. Apple rejects `--allow` additions and retains its existing
-build egress policy. Build records name their audit log on stderr and use
-normal retained run records. Each Linux build's egress log has the same
-128 MiB cap. Exhaustion follows the existing audit-failure handling and
-publication boundary below. No credential values enter argv or files.
+policy. A recipe grants no network authority. Denials keep the proxy's stable
+reasons. Apple rejects `--allow` additions and keeps its existing build egress
+policy. Build records name their audit log on stderr and use normal retained
+run records. Each Linux build's egress log has the same 128 MiB cap; exhausting
+it is an audit failure, which fails the build before the catalog commit and
+leaves the outcome after it. No credential value enters argv or a file.
 
-Freeze caller context and local image metadata. One finite builder guest
-uses pinned BuildKit's native Dockerfile frontend for discovery and build.
-Initially it receives local aliases and opaque identities, without local
-image configurations or layers. Its helper requests exact frozen configs
-on demand; the host records each consulted local identity before replying.
-Every consultation counts, including empty-rootfs and other optimized-out
-inputs. Later native metadata calls may only reuse an already served local
-binding. Metadata lookup closes permanently before RUN.
-
-Lease and validate those identities, then supply their complete OCI contexts,
-including normalized `:latest` names. Deleted identities fail preparation;
-they are never retargeted. The selected job and source policy are host-written
-on a separate physical read-only device attached blank at boot. The host
-formats private staging, copies its bounded bytes through the retained backing
-FD without resizing or replacing it, syncs and closes writers before authorizing
-use. The backing reservation derives from the existing input and filesystem
-overhead bounds. Init leaves that device unopened until authorization, then
-invalidates its quiescent block cache and mounts it read-only. An acknowledgement
-does not establish host completion. A new native build session uses only the
-selected OCI contexts. A source policy refuses managed-image registry fallback
-and pins discovered external image digests for the build pass.
-Linux uses the pinned native frontend; `#syntax` cannot select another one.
-The base profile dependency is frozen to the identity recorded in
+Caller context and local image metadata are frozen. The builder guest uses
+pinned BuildKit's native Dockerfile frontend; `#syntax` cannot select another.
+The host leases and validates every local image identity the build consults and
+supplies its OCI context; metadata lookup closes before RUN. A deleted identity
+fails preparation and is never retargeted. A source policy refuses
+managed-image registry fallback and pins discovered external image digests for
+the build pass; those digests are internal metadata, not an attestation of
+provenance. The base profile dependency is frozen to the identity recorded in
 `dev.pinfold.base`; a changed or missing dependency is `image-base-changed`.
-Apple records the label but does not bind the build to it; its native
-builder resolves the profile tag.
-Other resolved image digests are internal metadata, never user configuration.
-Linux records the reachable image inputs from native BuildKit discovery,
-then freezes those identities for execution. This is not an attestation or
-an independent provenance claim.
+Apple records the label but does not bind the build to it; its native builder
+resolves the profile tag.
 
-Guest output is a bounded framed stream. The host creates only fixed-mode
-staging paths derived from validated kinds and SHA-256 values, ignoring
-all guest path, owner and link metadata. It never extracts a guest archive
-on the host or reads/mounts a guest-writable disk. Validate sizes, hashes,
-media, linux/amd64 config, expected labels and the complete local descriptor
-graph. No external descriptor URL or unreferenced object is admitted.
-Admit one direct runnable manifest. Attachments, attestation manifests,
-nested indexes and unsupported media are refused rather than ignored.
+Guest output is untrusted. The host never extracts a guest archive or reads or
+mounts a guest-writable disk, ignores all guest path, owner and link metadata,
+and validates sizes, hashes, media, `linux/amd64` config, expected labels and
+the complete local descriptor graph. No external descriptor URL or unreferenced
+object is admitted. Exactly one direct runnable manifest is admitted;
+attachments, attestation manifests, nested indexes and unsupported media are
+refused.
 
-The converter has a 7 GiB work disk. A completed raw root is at most
-2 GiB. An admitted image's aggregate OCI payload is at most 1 GiB;
-selected local-base payloads together are at most 1 GiB. Caller context
-retains its separate 512 MiB bound. Snapshot accounting includes filesystem
-allocation and directory overhead.
+The converter has a 7 GiB work disk. A completed raw root is at most 2 GiB. An
+admitted image's aggregate OCI payload is at most 1 GiB; selected local-base
+payloads together are at most 1 GiB. Caller context keeps its separate 512 MiB
+bound. Snapshot accounting includes filesystem allocation and directory
+overhead. The converter receives only the host's validated read-only OCI
+layout, has no egress, and flattens with pinned BuildKit and the guest's tar and
+mkfs.ext4. It runs no inherited image trigger and leaves the original OCI
+configuration unchanged. Ownership, modes, links, whiteouts, capabilities and
+ACL metadata must survive. The host receives the raw root as opaque bounded
+hashed bytes and reuses only a completed representation whose manifest,
+converter recipe and bootstrap, and verified raw-root size and hash match.
 
-The fresh independent converter receives only the host's validated read-only OCI layout,
-has no egress, and uses pinned BuildKit flattening plus guest tar and
-mkfs.ext4. Conversion uses the admitted layers without executing inherited
-image triggers; the original OCI configuration stays unchanged. Ownership,
-modes, links, whiteouts, capabilities and ACL metadata must survive conversion.
-Receive the raw root as opaque bounded hashed
-bytes. Reuse only a completed representation with matching manifest,
-converter recipe/bootstrap and verified raw-root size/hash.
-
-Publish immutable OCI objects and completed root before one atomic catalog
-generation containing the unique ref and latest together. The catalog
-rename commits the build. Before commit, failure, truncation, deadline or
-interruption changes neither ref. After commit, late stop, audit, durability
-or cleanup errors do not change its successful outcome; durability and
-cleanup problems are reported. Running-image and
-build-input leases prevent removal through concurrent clean/rm/publication.
-Starting a prepared image reads only the catalog and completed root/config
-and works with the builder absent. Damaged preparation requires a rebuild.
-Partial roots are never reusable.
+Immutable OCI objects and the completed root are published before one atomic
+catalog generation that carries the unique ref and `latest` together. The
+catalog rename commits the build. Before it, failure, truncation, deadline or
+interruption changes neither ref. After it, late stop, audit, durability or
+cleanup errors do not change the successful outcome; durability and cleanup
+problems are reported. Running-image and build-input leases prevent removal
+through concurrent clean, rm or publication. Starting a prepared image reads
+only the catalog and the completed root and config, and works with the builder
+absent. Damaged preparation requires a rebuild; partial roots are never
+reusable.
 
 The cache is `$XDG_CACHE_HOME/pinfold/images/`: `catalog.json` maps refs to
 immutable manifests and records labels, config environment, resolved image
@@ -1437,18 +1394,12 @@ has `base = "default"` and `adam` has `base = "documents"`; each recipe
 adds only its own tools.
 Every built-in recipe ends with the step that strips setuid/setgid bits,
 so each link strips what it added. A user recipe's steps are its own.
-Infrastructure and tool assets use pinned `ADD --checksum` inputs for the
-selected architecture. Only `default`'s recipe resolves and installs
-agents (Images); the profiles above it inherit them from its image.
-A per-build argument is declared only by the resolver stage; no other
-step depends on it. Installation uses publisher integrity metadata where
-supplied. Codex and its code-mode
-host come from the same resolved release. A recipe not built on `default`
-controls its own agent installation and must retain the resolver stage for
-this behavior.
-Missing required assets fail installation.
-Final images contain installed tools, without their archives. gh comes
-from GitHub's signed apt repository.
+Infrastructure and tool assets use pinned `ADD --checksum` inputs.
+Only `default`'s recipe resolves and installs agents (Images); the profiles
+above it inherit them from its image. A recipe not built on `default` controls
+its own agent installation and must retain the resolver stage for that
+behavior. Installation uses publisher integrity metadata where supplied, and a
+missing required asset fails it. gh comes from GitHub's signed apt repository.
 
 ## Pinned artifacts
 
@@ -1467,18 +1418,9 @@ host helper, `codex-app-server`: its version and assets per host `os-arch`
 `~/.cache/pinfold/artifacts/codex/<version>/host-<os-arch>/` on the first
 `up` with a codex or pi `openai-codex` login route. A missing recorded file reinstalls it. A checksum mismatch fails the login.
 
-`scripts/bump-pins.py` moves the host helper, infrastructure, image-tool,
-Rust and Cargo pins only with a pinfold release. It moves the Public Suffix
-List only with `--suffix-list`, which a manual release passes and the
-nightly does not; that run prints the allow entries newly refused or no
-longer refused, and the release notes name them under "Caller changes".
-Versions only move up to stable releases and are never rehashed at the same
-version.
-The helper takes the latest stable release once its assets exist; other image
-tools wait seven full days after their last required asset was published.
-A missing publication time makes them ineligible. Cargo dependencies take
-the latest stable, non-yanked version. Publisher integrity failure aborts
-before any pin file is written.
+`scripts/bump-pins.py` moves pins only with a pinfold release (its header holds
+the policy). An image-tool pin adopts a release only after it is seven full
+days old.
 
 On Linux, `crates/pinfold/vmm.toml` pins Firecracker and its guest kernel
 for `linux-x64`, each checked against its pinned digest. The guest kernel
@@ -1501,8 +1443,7 @@ Installation verifies the staged archive's pinned size and SHA-256 before
 streaming only `root.ext4` into a fixed 0600 file and atomically publishing
 the complete `linux-x64/` install. The raw-root size and SHA-256 are verified
 before publication and on every use; a mismatch fails with
-`builder-integrity`. Embedded digests remain authority if public bytes
-change; the sidecar manifest supplies none. `doctor --artifacts --json` reports
+`builder-integrity`. `doctor --artifacts --json` reports
 the builder URL, archive pin/size, recipe SHA-256 and verified cache state.
 
 The init is not an artifact: it always comes from the CLI's own build
@@ -1554,34 +1495,30 @@ with or without a TTY.
 - pinfold does not manage pi settings: `pi install` in a box changes that
   project home only.
 - Built-ins package all three agents on PATH. Missing-only home seeds
-  supply Pi's trust/settings defaults, Claude permission/sandbox defaults
-  and Codex approval/sandbox/update-check defaults. In the `default`
+  supply Pi's trust/settings defaults, Claude permission/sandbox defaults and
+  Codex approval, sandbox and update-check defaults (`.codex/config.toml` and
+  `.codex/app-server-daemon/settings.json`). In the `default`
   image, `claude` on PATH is a launcher that, in a project box, first sets
   Claude's onboarding, auto-mode nudge and `$PINFOLD_PROJECT` trust flags
   in `~/.claude.json`, so no first-run screen undoes the seeded defaults. Native home instructions
   are `.pi/agent/APPEND_SYSTEM.md`, `.claude/CLAUDE.md` and `.codex/AGENTS.md`.
-  An existing instruction file blocks its missing-only seed, including an
-  earlier seed; changing profiles does not update it. Instructions are
-  guidance and enforce nothing. Supported updater switches are recipe environment defaults. Route-generated
-  system files contain authentication configuration only.
+  Instructions are guidance and enforce nothing. Supported updater switches are
+  recipe environment defaults. Route-generated system files contain
+  authentication configuration only.
 
 pi's two config levels both load in every run: the user level (pi's agent
 dir under `$HOME`, seeded from `home/`, with packages from `share/`) and
 the project's own `.pi/` and `.agents/skills`.
 
-Every built-in seeds only `/opt/pinfold/profile/pi` as its pi package,
-sets `defaultProjectTrust: "always"` and adds pi's built-in `codemode` tool
-to the default tools. Its operating-context extension writes into pi's
-system prompt at every start the hosts in `PINFOLD_ALLOW` and that a
-403 carrying `Proxy-Status: pinfold` is the sandbox's final refusal, which
-`curl -v` shows. pi therefore gets the refusal line even when an existing
-instruction file blocks the seed. The seeded instructions carry the same
-refusal line for Claude and Codex, and where work goes in a share and a
-disk project. Only `default` carries home seeds; the others inherit them.
-Documents adds `read-documents`, which adam inherits. Adam's own
-`pi/package.json` replaces default's and also registers fff and ponytail.
-Default and documents set no config besides `base`. Adam's `allow` is the
-default list plus `github.com` and `api.github.com`.
+Every built-in seeds only `/opt/pinfold/profile/pi` as its pi package and sets
+`defaultProjectTrust: "always"`; only `default` carries home seeds, and the
+others inherit them. `default`'s operating-context extension writes into pi's system
+prompt at every start the hosts in `PINFOLD_ALLOW` and that a 403 carrying
+`Proxy-Status: pinfold` is the sandbox's final refusal, so pi gets that line
+even when an existing instruction file blocks the seed; the seeded instructions
+carry it for Claude and Codex. `adam`'s `allow` is the default list plus
+`github.com` and `api.github.com`; `default` and `documents` set no config
+besides `base`.
 
 ## Disks
 
@@ -1821,7 +1758,7 @@ Automatic, never prompting:
   in the last hour stays, so the ref its `built` line named still comes
   up; past the hour the newest two rule applies.
 - At most once a day, at the start of a working command (except the deferred
-  cases below, and not `--version`, `--help`, `doctor`, `config`, `profile`, `profile list`, `update`, `apparmor-profile`, `box list`, `box down`, `box inspect`, `box events`, `box prune`, `clean`, `--`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
+  cases below, and not `--version`, `--help`, `doctor`, `config`, `profile`, `profile list`, `update`, `apparmor-profile`, `box list`, `box down`, `box inspect`, `box events`, `box prune`, `clean`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
   is gone (nothing owns its generation's lifetime lock), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
   builds beyond each source's newest two (the after-build rule, applied
@@ -1872,11 +1809,8 @@ of NAME, whatever its age, and no other name's.
   says so in one line. The listing names each project it removes by its
   recorded checkout. A project's disks go before its state; a disk a box
   attaches, or one clean fails to remove, is kept with its project's
-  state, and clean says so; only a failure exits nonzero. The listing
-  names each attached disk and its box under its project, as keeping the
-  state.
-  `--all-projects` without `--idle` is a usage error. Never automatic: a
-  project disk holds unfetched work, and a home disk sessions and logins.
+  state, and clean says so; only a failure exits nonzero.
+  `--all-projects` without `--idle` is a usage error. Neither is ever automatic.
 
 It then measures again and reports what it freed: how much the listed
 categories shrank, in total and per category. Image bytes are not among
@@ -1914,12 +1848,12 @@ its project.
 ## pi layer
 
 - **Command:** `pinfold -- CMD` runs the complete literal argv in the image.
-  The executable word must be nonempty. No shell or implicit agent is added.
+  No shell or implicit agent is added.
 - **State:** a project has host state under
   `~/.local/state/pinfold/projects/<name>-<hash>/` and a persistent
   `pin-<name>-<hash>-home` disk at `/home/pinfold`. A disk project also has
-  `pin-<name>-<hash>-project`. The `pin-` prefix is reserved: a box spec
-  may not name it, so these disks are the project's. The hash is of the canonical project root
+  `pin-<name>-<hash>-project`. A box spec may not name the `pin-` prefix
+  (Process interface). The hash is of the canonical project root
   path. Agent settings, sessions and caches sit at their default paths in
   the home disk. The cosmetic name is at most 32 ASCII bytes.
 - **Project mount:** a share appears at the canonical host project path,
@@ -1943,7 +1877,7 @@ its project.
   independently of HOME and XDG roots. A session ends when its command returns
   or its client disconnects. A departed session's command group is asked to
   stop (Process supervision), even while a keep request or crossing lease
-  retains the box. Ending one session does not end another.
+  retains the box.
   Two share sessions use one generation, one share and one home disk.
   With no session, crossing lease or keep request, the owner closes admission
   and tears down the box. Bootstrap death or a final departure racing a
@@ -1975,43 +1909,29 @@ its project.
   same acknowledgement and wait. Teardown failure is reported as
   `teardown-failed` on stderr and in the run record.
 - **Rex (macOS):** `pinfold start` asks its owner for a Rex relay when
-  `REX_SESSION` is set and stdin, stdout and stderr are terminals. The
-  owner checks, in order:
-  `rex --autostart=false version` succeeds in the box (exit status only);
-  `defaults read com.superlogical.rex rex.client.remoteControl` prints `0`.
-  It then runs `rex server run --listen
-  unix:///home/pinfold/.local/state/rex/run/server.sock` in the box and waits
-  until an exec of `pinfold init rex-dial` with closed stdin connects to
-  that socket. It reads the preference again, and only then binds
-  `<host directory>/<project key>.rex`, a host-only 0600 socket outside
-  the generation directory. Each helper, the readiness wait and each
-  preference read has a five-second bound; `start` waits up to 30 seconds
-  for the answer. Each connection gets its own exec of `pinfold init
-  rex-dial`, which copies bytes to the fixed guest socket. The owner copies
-  the connection through pipes itself. The host's end reaches the guest,
-  whose reply may follow for five seconds before the exec is ended; the
-  guest's end ends the connection. A repeated start reuses the relay while
-  its server exec runs; after that exec exits, the next start sets the
-  relay up again. `start` prints on stderr two lines: `pinfold start: rex:
-  add this address in the Rex app under Add Remote Host…`, then
-  `unix://PATH` alone. Remote Control
-  on or unreadable, at either read, sets up nothing, closes a relay already
-  up, and prints one `rex-remote-control` line. A failed setup prints one
-  `rex-relay-failed` line. Without `rex` in the box, outside Rex or without
-  terminals, `start` behaves as without this feature and prints nothing
-  more. A first start's setup yields to stop, box exit, a signal and the
-  client leaving. Once the owner's shutdown has begun no relay exists:
-  pending setup is cancelled and new requests are refused, a setup that
-  finished meanwhile is not answered, and a start waiting on it gets the
-  draining answer. The relay closes, its execs end and its socket is
-  removed before teardown, including when that close is itself cancelled.
-  Concurrent starts share one server exec and one socket.
-  Owner death ends every connection and every dial exec, and leaves a
-  socket that refuses connections; the guest server's exec ends with the
-  orphan box. Only an
-  owner bootstrapping under the launch lock, or, on macOS, `stop` holding
-  the launch lock with no project locator left, removes a left socket. The relay never starts or selects
-  a box. pinfold never drives the Rex app.
+  `REX_SESSION` is set and stdin, stdout and stderr are terminals. The relay is
+  set up only when `rex` runs in the box (`rex --autostart=false version`
+  succeeds) and the Rex app's Remote Control preference (`defaults read
+  com.superlogical.rex rex.client.remoteControl`) reads `0`, both before and
+  after the owner starts `rex server run` in the box on a fixed guest socket.
+  The owner then binds `<host directory>/<project key>.rex`, a host-only 0600
+  socket outside the generation directory, and carries each connection to the
+  guest server through its own exec of `pinfold init rex-dial`. `start` waits up
+  to 30 seconds for the answer and prints on stderr two lines: one asking to add
+  the address in the Rex app under Add Remote Host, then `unix://PATH` alone.
+  A repeated start reuses the relay while its server exec runs, and concurrent
+  starts share one server exec and one socket. Remote Control on or unreadable
+  at either read sets up nothing, closes a relay already up, and prints one
+  `rex-remote-control` line. A failed setup prints one `rex-relay-failed`
+  line. Without `rex` in the box, outside Rex or without terminals, `start`
+  prints nothing more. Setup yields to stop, box exit, a signal and the client
+  leaving, and no relay is set up once shutdown has begun. The relay closes,
+  its execs end and its socket is removed before teardown. Owner death ends
+  every connection and leaves a socket that refuses connections; only an owner
+  bootstrapping under the launch lock, or on macOS `stop` holding the launch
+  lock with no project locator left, removes it. The relay never starts or
+  selects a box. pinfold never drives the Rex app. What the relay exposes is
+  in the threat model.
 - **Admission:** joining and keeping never change running policy or
   credentials. Different host roots or effective startup configuration refuse
   as `config-changed`, naming differing fields. On a known profile mismatch
@@ -2315,22 +2235,18 @@ A `from` host variable is read once per launch, from the environment of
 the client whose launch starts a new box, and a 1Password reference once
 by that client (Process interface); a joining or keeping client reads
 its current values only for the admission comparison. A `from` name the
-box spec refuses (Process interface) refuses the start before any owner
-starts. A missing variable
-refuses the start before any owner starts, and so does a missing injecting
-or login route variable: the client prints `env "NAME" needs the host
-variable VAR, which is not set` or `route "NAME" needs the host variable
-VAR, which is not set` on stderr and exits 125. The value travels as a
+box spec refuses (Process interface), a missing variable and a missing
+injecting or login route variable each refuse the start before any owner
+starts: the client names the key and the variable on stderr and exits 125. The value travels as a
 `PINFOLD_ENV_` value does: in the environment of the detached owner and
 its runtime client, and in the admission snapshot, held in memory and
 sent over the private project socket. The owner starts the box with the
-snapshot's values, and a running owner compares a joining client's
-snapshot with its own. An `op` value is read only by the client whose
+snapshot's values. An `op` value is read only by the client whose
 launch starts a new box, after every other launch check and just before it
 spawns the owner, so a refusal before then runs no `op`; a failed read
-refuses before any owner starts with `env "NAME" needs the
-1Password reference REFERENCE: CAUSE` or the `route` form, and exit 125.
-A joining or keeping client never runs `op`, and the owner never does.
+refuses before any owner starts, naming the key (`env` or `route`), the
+reference and the cause, and exits 125. A joining or keeping client never
+runs `op`, and the owner never does.
 The value travels to the owner beside the startup snapshot, never in a
 host environment or in any snapshot a joining client sends; the owner refuses
 as `session-protocol`, before recording anything, values that are not
@@ -2363,16 +2279,15 @@ The list keys take comma-separated values in the environment:
 - `PINFOLD_ROUTES`: `name=host:port` pairs; an injecting or login route needs a file.
 
 A disk size is spelled as the box spec's `size`; any other value is
-refused as `spec`, naming the key, a share's `project_disk_size` included. A disk
-keeps the size it was created with. When a size key is set and its disk
-exists, filled, at another size, the starting client prints `pinfold:
-KEY is SIZE, but disk NAME exists at SIZE and keeps that size` on stderr
-and starts; a joining client is not refused for a changed size key.
+refused as `spec`, naming the key, a share's `project_disk_size` included.
+When a size key is set and its disk exists, filled, at another size, the
+starting client prints a notice naming the key, both sizes and the disk on
+stderr and starts with the disk unchanged; a joining client is not refused for a changed size key.
 `disk rm` and a new start create it again, empty, at the set size.
 
-An unknown key in the project's file or a profile's `pinfold.toml` is
-refused, naming the file and the key. `mounts` in a profile's file and
-`base` in the project's file are refused.
+An unknown key in the project's file or a profile's `pinfold.toml`, or a key
+in the file the table above does not allow it in (`mounts` in a profile's
+file, `base` in the project's), is refused, naming the file and the key.
 
 `pinfold config` summarizes the project folder, mount, folders, selected profile and
 its base chain (with the profile the project's file names when
@@ -2400,9 +2315,6 @@ catalog, so it needs neither KVM nor a runtime on PATH, and an absent
 catalog reports false. `image` is the selected reference; `image_source` is `explicit`,
 `project` or `profile`. `containerfile` is null for an explicit image,
 the project recipe's path, or `profile` for a profile recipe.
-
-`start` checks local image availability before recording project state, as
-`-- CMD` does. Joining does not pull or build an image.
 
 ## CLI
 
@@ -2496,8 +2408,8 @@ cut rows.
 | 8 | **Losing the owner fails closed.** If the owner dies, the box loses its way out, and the leftover can be removed. | SIGKILL of `box up`. On Apple the guest survives: `box exec` runs a script in it that prints a marker and then requests an allowlisted host; the marker appears and the request gets no upstream response. On Linux the VM ends with its owner. Another state root sees the owner dead, and `box prune` in a state root whose daily pass is due removes the leftover; the name is reusable. SIGKILL of a detached project owner while a session runs makes the client exit 125, and on Linux leaves no host process below the owner, the VMM included. Control: before the kill, another state root lists the owner alive, and on Apple the same in-box request succeeds. |
 | 10 | **Disk-project branches and tags cross only through the Git remote.** A fetch writes box branches only under `refs/remotes/box/*` and adds only new tags; it never moves or deletes the host's own branches or tags, except as the threat model lists. A push lands only in the box's `refs/remotes/host/*` and its tags. Crossing carries no hook or configuration. | (a) A box that writes its own listing names a branch at a host-only commit. `git fetch box` fails naming that branch, no ref under `refs/remotes/box/` changes, and `.git/objects` is unchanged. So does a bundle whose pack also carries an unreachable tag of a tag of a missing commit, failing naming that commit; and, with the host a partial clone of a local promisor, a listing that names the branch at a commit only the promisor holds and a bundle naming it as a prerequisite. (b) Separately, a valid listing carries a tag named like a host tag at another object. After `git fetch --force --tags --prune --prune-tags box`, every host tag is where it was. The box then commits hooks under every client-side name, `core.hooksPath`, `.husky/` and `.githooks/`; the host fetches, merges and checks out twice, and nothing planted runs. With `push.followTags`, `git push box main` lands main only in the box's `refs/remotes/host/main` and its annotated tags as box tags, and changes no box working-tree file; after it and after a repeat, the host's `refs/remotes/box/main` is the box's own main. A fresh start leaves the project disk empty and the host's `.git/config` byte-identical; the first push creates the box repository. Control: a host hook runs, and a legitimate branch and new tag land under `refs/remotes/box/*` and `refs/tags/*`. |
 | 11 | **Disks persist and attach exclusively.** A disk outlives its box. One box at a time writes it, and a disk left unclean is not read until a writable run recovers it. On Linux, free extents of at least 1 MiB inside a disk are returned to the host by the next stop. | Two writable `up`s race for one new disk: exactly one runs, and the other is refused `disk-in-use`. After the writer's owner is SIGKILLed, a read-only attachment is refused `disk-in-use` while the dead box's claim stands; once `box prune` retires it, the same attachment is refused `disk-unclean` until a writable run ends. `disk rm` of an attached disk is refused `disk-in-use`. On Linux, the writable run that recovers the disk writes a 256 MiB file, deletes it and makes the disk's root mode 0700; the image's allocated bytes on the host are still at least 240 MiB above the start, and after the stop at least 240 MiB below that. Control: a file one box writes is read by the next box that attaches the disk and, on Linux after that trim, by the read-only box; the image grew by at least 240 MiB when the file was written. |
-| 15 | **Cleanup removes only what pinfold made, and never a live project.** `clean` never removes a live project's state or disks, or host files; `clean --idle` without `--all-projects` removes only the current folder's project; and `clean --dry-run` removes nothing. | A kept project with a live box and no clients, beside an idle project, and an artifact version no pin names. `clean --dry-run` from a state root whose daily pass is due keeps that version. `clean --idle 0s` from the live project's folder keeps the idle project's state and disks. Then `clean --idle 0s --all-projects` keeps the live project's: a write still reads back through its box. The idle project's checkout tree and configuration file are unchanged. Control: `clean --idle 0s` from the idle project's own folder removes its state and disks and the unpinned version. |
-| 26 | **Credentials stay on the host.** pinfold adds a route's credential at the proxy, on every request to a routed host, followed URLs included, and never puts it in the box; an upstream that returns it can still hand it back (threat model). A `from` variable's, 1Password reference's or `PINFOLD_ENV_` value reaches the box's environment, never host argv, the runtime's records or a file pinfold writes. | One box with an injecting route, a Claude login route, a GitHub login route and a Pi `openrouter` login route, each pointed at a host fixture that echoes no credential, an allowlist naming `api.anthropic.com` exactly and `.github.com`, plus a `from` variable, a 1Password reference env entry and a `PINFOLD_ENV_` value. A stand-in `op` first on the client's PATH gives the Claude route's token, which the GitHub route names too, and the env entry's value. Before the session, a launch whose configuration differs from the session's only in the Claude route's reference, one the stand-in refuses (printing a decoy on stdout and stderr), exits 125 with empty stdout, its stderr naming the reference and not holding the decoy, the stand-in logged that reference, and `box list` shows no box for the project. Through the injecting route the guest sends its own value for the injected header, in another letter case; the fixture receives only the host's. The guest sends its own mixed-case `Authorization` and an `X-Api-Key` to `github.com` and `api.github.com`, over TLS it trusts with no client option, each host also allowlisted: a Git request to `https://github.com/…` arrives with only `Basic` and the host's own base64 of `x-access-token:` and the reference's value; an API request arrives with only `Bearer` and the value, and so does the request a client sends, with its own credential again, on following the absolute `https://uploads.github.com/…` `upload_url` the fixture returns. A request to `api.github.com` whose `Host` names `example.com` arrives with the fixture's own authority. A `?per_page=2;Access%5Ftoken=` query on `api.github.com` gets 403 `login credential query` and no upstream request. Through the Pi login route the guest sends mixed-case duplicate `Authorization` and `X-Api-Key` fields; the fixture receives only the host credential, and an off-list field no `Connection` field names arrives unchanged. A later request whose `Connection` field nominates that field and `Authorization` delivers the host credential without the nominated field. A `?api_key=` query on that login route gets 403 `login credential query` and no upstream request. No route credential, plain or as that Basic value, is in the box's environment, any file it can read, its home disk or the egress log. On the host no secret, plain, hex or as that Basic value, is in any file under the state, config or cache roots or in any process argv; on Apple, neither in `container inspect`, the container's directory nor the box's new volumes. A configuration literal is in its own file and no other file under those roots. Control: the same login request without the query succeeds in the same box; the box search finds a canary on the home disk, and `ps` finds the session's argv canary; the `from` variable's, the reference's and the `PINFOLD_ENV_` values arrive in the box's environment; the session that differs only in the refused reference starts; Claude and Pi each complete one fixture exchange at their real hosts through their generated configuration. |
+| 15 | **Cleanup removes only what pinfold made, and never a live project.** Linux only. `clean` never removes a live project's state or disks, or host files; `clean --idle` without `--all-projects` removes only the current folder's project; and `clean --dry-run` removes nothing. | A kept project with a live box and no clients, beside an idle project, and an artifact version no pin names. `clean --dry-run` from a state root whose daily pass is due keeps that version. `clean --idle 0s` from the live project's folder keeps the idle project's state and disks. Then `clean --idle 0s --all-projects` keeps the live project's: a write still reads back through its box. The idle project's checkout tree and configuration file are unchanged. Control: `clean --idle 0s` from the idle project's own folder removes its state and disks and the unpinned version. |
+| 26 | **Credentials stay on the host.** pinfold adds a route's credential at the proxy, on every request to a routed host, followed URLs included, and never puts it in the box; an upstream that returns it can still hand it back (threat model). A `from` variable's, 1Password reference's or `PINFOLD_ENV_` value reaches the box's environment, never host argv, the runtime's records or a file pinfold writes. | One box with an injecting route and Claude, GitHub and Pi login routes at host fixtures, plus a `from` variable, a 1Password reference (a stand-in `op`) and a `PINFOLD_ENV_` value. A launch whose reference the stand-in refuses exits 125 naming the reference, with none of `op`'s output, and starts no box. The guest sends its own credential fields, in other letter cases and under a `Connection` nomination, through each route, a followed `upload_url` included: each fixture receives only the host's credential, and a credential query gets 403 `login credential query` with no upstream request. No route credential, plain, hex or as the GitHub Basic value, is in the box's environment, any file it can read, its home disk or the egress log. On the host no secret, plain, hex or as that Basic value, is in any file under the state, config or cache roots or in any process argv; on Apple, neither in `container inspect`, the container's directory nor the box's new volumes. A configuration literal is in its own file and no other. Control: the same request without the query succeeds; the `from`, reference and `PINFOLD_ENV_` values arrive in the box's environment; the box search finds a canary on the home disk and `ps` one in the session's argv; the session differing only in the refused reference starts; Claude and Pi each complete a fixture exchange through their generated configuration. |
 | 38 | **Every egress decision is recorded, or the box stops.** Each run has its own egress log and launch record. The launch record is the policy applied at start. | The live egress log is padded to one byte below its 128 MiB cap. The next route request stops the owner with `audit-log` and exit 1, and the log's length is unchanged. Control: in a second run of the same name under another allowlist and memory, an allowed and a refused request each appear once in that run's log, and the first run's log still holds only its own; `inspect` answers with no runtime on PATH. Each run's launch record names the allowlist, routes, cpus and memory it applied, and env names without values. |
 | 43 | **The VMM reaches only its own box.** Linux only. Each VMM runs as the user in its own jail and sees only its own box's files. | Two boxes up, one with a detached owner. Each VMM process is the user's, with `CapBnd` 0, in user, mount, PID, network, IPC and UTS namespaces of its own. Through `/proc/PID/root` it sees its own disk and not the other box's; no directory from the home is mounted in it; its jail holds no socket but those in its own vsock socket directory, so no project session or shutdown control socket; every descriptor it holds is in its jail, `/dev/null` or an anonymous kernel object. Control: its own disk is visible. |
 | 44 | **Linux image work stays in its own VM.** Linux only. A build's RUN steps have no network but the production proxy, which lets out only allowed hosts and audits each decision. | In one build, a RUN step's direct connection to a public address, bypassing the proxy, fails; through the proxy `api.github.com` answers while `example.com` gets a 403, with the denial in the build's egress log. Control: the same build with `--allow example.com` reaches it. |
@@ -2542,4 +2454,3 @@ data, `crates/pinfold/public_suffix_list.dat`, embedded with `include_str!`.
   Configurable, or documented.
 - Linux arm64 returns once a KVM host can run its suite; GitHub's arm64
   runners have none.
-- Where herdr reads `HERDR_AGENT`.
