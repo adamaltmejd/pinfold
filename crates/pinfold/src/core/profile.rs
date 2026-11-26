@@ -66,6 +66,8 @@ pub enum Share {
 
 /// The copy's directory in a box's state dir.
 const SHARE_COPY: &str = "profile-share";
+/// Where a box mounts its profile's share, read-only.
+pub const SHARE_GUEST: &str = "/opt/pinfold/profile";
 
 impl Share {
     /// The host mount path for box `name`, without creating it.

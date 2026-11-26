@@ -405,7 +405,7 @@ impl Snapshot {
                         profile: config.profile.name.clone(),
                     },
                 },
-                guest: Bytes::path(Path::new("/opt/pinfold/profile")),
+                guest: Bytes::path(Path::new(crate::core::profile::SHARE_GUEST)),
                 kind: MountKind::Readonly,
             });
         }

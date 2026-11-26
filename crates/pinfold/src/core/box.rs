@@ -1327,7 +1327,7 @@ fn resolve_profile(plan: &mut Plan, supplied: Option<Profile>) -> io::Result<Opt
 fn profile_share(share: &Share, name: &str) -> io::Result<Mount> {
     Ok(Mount {
         host: share.path(name)?,
-        guest: PathBuf::from("/opt/pinfold/profile"),
+        guest: PathBuf::from(super::profile::SHARE_GUEST),
         kind: MountKind::Readonly,
     })
 }

@@ -1137,7 +1137,7 @@ fn object_id(oid: &str, width: usize) -> bool {
     oid.len() == width && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn git(repo: &Path, args: &[&str], cancel: &AtomicBool) -> io::Result<Output> {
+pub(crate) fn git(repo: &Path, args: &[&str], cancel: &AtomicBool) -> io::Result<Output> {
     git_input(repo, args, b"", &[], cancel)
 }
 
