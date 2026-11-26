@@ -262,7 +262,7 @@ async fn maintenance(root: &Path, signals: &mut Signals) -> io::Result<File> {
             FlockArg::LockSharedNonblock,
         ) {
             Ok(lock) => return Ok(close_only(lock)),
-            Err((_, nix::errno::Errno::EAGAIN)) => wait_tick(signals, deadline).await?,
+            Err((_, nix::errno::Errno::EAGAIN)) => wait_tick(signals, Some(deadline)).await?,
             Err((_, error)) => return Err(error.into()),
         }
     }
@@ -280,10 +280,7 @@ async fn launch_lock(root: &Path, signals: &mut Signals, noticed: &mut bool) -> 
             )
             .await?;
         }
-        tokio::select! {
-            _ = signals.recv() => return Err(io::ErrorKind::Interrupted.into()),
-            _ = tokio::time::sleep(Duration::from_millis(20)) => {},
-        }
+        wait_tick(signals, None).await?;
     }
 }
 
@@ -321,10 +318,14 @@ async fn locked_discovery(
         let launch = launch_lock(root, signals, noticed).await?;
         let deadline = Instant::now() + CONTROL;
         let discovery_root = root.to_path_buf();
-        match control_work(signals, deadline, move || Ok(discover(&discovery_root)?.0)).await {
+        match control_work(signals, Some(deadline), move || {
+            Ok(discover(&discovery_root)?.0)
+        })
+        .await
+        {
             Ok(discovered) => return Ok((launch, deadline, discovered)),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                wait_tick(signals, deadline).await?;
+                wait_tick(signals, Some(deadline)).await?;
             }
             Err(error) => return Err(error),
         }
@@ -409,7 +410,7 @@ async fn connect(
     deadline: Instant,
 ) -> io::Result<UnixStream> {
     let generation = locator.generation.clone().ok_or_else(unavailable)?;
-    let socket = control_work(signals, deadline, move || {
+    let socket = control_work(signals, Some(deadline), move || {
         let socket = sockets::Sockets::open(&generation)?
             .connect_control_until(deadline.into_std())
             .map_err(|_| unavailable_at("connect"))?;
@@ -460,6 +461,38 @@ async fn probe_reply(
     )
     .await?;
     Ok(reply)
+}
+
+/// One admission exchange with the discovered owner. `None` means that owner
+/// was retiring or draining and has gone, so discovery runs again.
+async fn admission(
+    locator: &Locator,
+    request: Request,
+    signals: &mut Signals,
+    deadline: Instant,
+    reply_bound: Option<Duration>,
+) -> io::Result<Option<(UnixStream, Reply)>> {
+    let (stream, reply) = match exchange(locator, request, signals, deadline, reply_bound).await {
+        Ok(value) => value,
+        Err(_error) if retired_or_removing(locator)? => {
+            wait_name(&locator.name, signals, None).await?;
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    };
+    match &reply {
+        Reply::Draining { generation } if Some(generation) == locator.generation.as_ref() => {
+            wait_name(&locator.name, signals, None).await?;
+            Ok(None)
+        }
+        Reply::Admitted { name, generation }
+        | Reply::Kept {
+            name, generation, ..
+        } if name != &locator.name || Some(generation) != locator.generation.as_ref() => {
+            Err(reply_error(reply))
+        }
+        _ => Ok(Some((stream, reply))),
+    }
 }
 
 async fn probe(
@@ -700,11 +733,11 @@ async fn admit(
             let mount = match probe(root, &locator, signals, deadline).await {
                 Ok(Some(mount)) => mount,
                 Ok(None) => {
-                    wait_name_owned(&locator.name, signals).await?;
+                    wait_name(&locator.name, signals, None).await?;
                     continue;
                 }
                 Err(_error) if retired_or_removing(&locator)? => {
-                    wait_name_owned(&locator.name, signals).await?;
+                    wait_name(&locator.name, signals, None).await?;
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -731,19 +764,13 @@ async fn admit(
                 },
             };
             let reply_bound = matches!(intent, Intent::KeepRex).then_some(rex::REPLY_DEADLINE);
-            let exchanged = exchange(&locator, request, signals, deadline, reply_bound).await;
-            let (stream, reply) = match exchanged {
-                Ok(value) => value,
-                Err(_error) if retired_or_removing(&locator)? => {
-                    wait_name_owned(&locator.name, signals).await?;
-                    continue;
-                }
-                Err(error) => return Err(error),
+            let Some((stream, reply)) =
+                admission(&locator, request, signals, deadline, reply_bound).await?
+            else {
+                continue;
             };
             match reply {
-                Reply::Admitted { name, generation }
-                    if name == locator.name && Some(&generation) == locator.generation.as_ref() =>
-                {
+                Reply::Admitted { name, generation } => {
                     return Ok(Some(Lease::new(
                         stream,
                         name,
@@ -752,24 +779,13 @@ async fn admit(
                         config.mount,
                     )));
                 }
-                Reply::Kept {
-                    name,
-                    generation,
-                    rex,
-                } if name == locator.name && Some(&generation) == locator.generation.as_ref() => {
+                Reply::Kept { rex, .. } => {
                     drop(launch);
                     let _ =
                         forward_diagnostics(b"pinfold start: already running".to_vec(), signals)
                             .await;
                     let _ = rex::report(rex, &key(root), signals).await;
                     return Ok(None);
-                }
-                Reply::Draining { generation }
-                    if Some(&generation) == locator.generation.as_ref() =>
-                {
-                    wait_name_owned(&locator.name, signals).await?;
-                    drop(launch);
-                    continue;
                 }
                 Reply::Error { reason, fields } if reason == "config-changed" => {
                     return Err(join_changed(&fields, &locator, &config));
@@ -879,28 +895,20 @@ async fn resolve_spec(
     startup: bool,
     signals: &mut Signals,
 ) -> io::Result<Resolved> {
-    let cancel = Arc::new(AtomicBool::new(false));
-    let worker_cancel = cancel.clone();
     let root = root.to_path_buf();
-    let mut worker = tokio::task::spawn_blocking(move || {
-        crate::core::process::with_cancellation(worker_cancel, || {
-            let resolved = Snapshot::resolve(&root, expected_mount, None, startup)?;
-            let warnings = if startup {
-                launch::image_warnings(
-                    &resolved.config,
-                    resolved.plan.image.as_deref().ok_or_else(unavailable)?,
-                )?
-            } else {
-                Vec::new()
-            };
-            Ok::<_, io::Error>((resolved, warnings))
-        })
-    });
-    let (resolved, warnings) = tokio::select! {
-        biased;
-        _ = signals.recv() => { cancel.store(true, Ordering::Release); let _ = worker.await; Err(io::ErrorKind::Interrupted.into()) },
-        result = &mut worker => result.map_err(|_| io::Error::other("configuration worker failed"))?,
-    }?;
+    let (resolved, warnings) = control_work(signals, None, move || {
+        let resolved = Snapshot::resolve(&root, expected_mount, None, startup)?;
+        let warnings = if startup {
+            launch::image_warnings(
+                &resolved.config,
+                resolved.plan.image.as_deref().ok_or_else(unavailable)?,
+            )?
+        } else {
+            Vec::new()
+        };
+        Ok((resolved, warnings))
+    })
+    .await?;
     for warning in warnings {
         forward_diagnostics(warning.into_bytes(), signals).await?;
     }
@@ -913,23 +921,15 @@ async fn read_op(mut resolved: Resolved, signals: &mut Signals) -> io::Result<Re
     if !resolved.plan.reads_op() {
         return Ok(resolved);
     }
-    let cancel = Arc::new(AtomicBool::new(false));
-    let worker_cancel = cancel.clone();
-    let mut worker = tokio::task::spawn_blocking(move || {
-        crate::core::process::with_cancellation(worker_cancel, || {
-            resolved.values.read_op(&resolved.plan);
-            resolved
-                .plan
-                .check_variables(&resolved.values)
-                .map_err(io::Error::other)?;
-            Ok(resolved)
-        })
-    });
-    tokio::select! {
-        biased;
-        _ = signals.recv() => { cancel.store(true, Ordering::Release); let _ = worker.await; Err(io::ErrorKind::Interrupted.into()) },
-        result = &mut worker => result.map_err(|_| io::Error::other("configuration worker failed"))?,
-    }
+    control_work(signals, None, move || {
+        resolved.values.read_op(&resolved.plan);
+        resolved
+            .plan
+            .check_variables(&resolved.values)
+            .map_err(io::Error::other)?;
+        Ok(resolved)
+    })
+    .await
 }
 
 struct Diagnostics {
@@ -2051,25 +2051,14 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                         }
                         if locator.generation.is_some() {
                             // A completed observation remains the target across replacement.
-                            wait_name(&locator.name, &mut signals, deadline).await?;
+                            wait_name(&locator.name, &mut signals, Some(deadline)).await?;
                             let Some(lock) = ownership::try_name_lock(&locator.name)? else {
                                 continue;
                             };
                             if ownership::record(&locator.name)?.is_some() {
                                 continue;
                             }
-                            let locator = locator.clone();
-                            return control_work(&mut signals, deadline, move || {
-                                let removed = clean::remove_orphan(
-                                    runtime(),
-                                    &locator.name,
-                                    locator.generation.as_deref(),
-                                    &lock,
-                                )?;
-                                remove_matching_locator(&locator)?;
-                                Ok(removed)
-                            })
-                            .await;
+                            return remove_orphan_box(locator, lock, &mut signals, deadline).await;
                         }
                     }
                     if let Some(_launch) = try_launch(&root)? {
@@ -2080,17 +2069,10 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                             let Some(lock) = ownership::try_name_lock(&locator.name)? else {
                                 return Err(unavailable());
                             };
-                            let locator = locator.clone();
-                            return control_work(&mut signals, deadline, move || {
-                                let removed =
-                                    clean::remove_orphan(runtime(), &locator.name, None, &lock)?;
-                                remove_matching_locator(&locator)?;
-                                Ok(removed)
-                            })
-                            .await;
+                            return remove_orphan_box(locator, lock, &mut signals, deadline).await;
                         }
                         let discovery_root = root.clone();
-                        match control_work(&mut signals, deadline, move || {
+                        match control_work(&mut signals, Some(deadline), move || {
                             discover(&discovery_root)
                         })
                         .await?
@@ -2102,7 +2084,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                             (None, removed) => return Ok(removed),
                         }
                     }
-                    wait_tick(&mut signals, deadline).await?;
+                    wait_tick(&mut signals, Some(deadline)).await?;
                 }
             }
             .await?;
@@ -2170,7 +2152,7 @@ async fn stop_target(
 
 async fn control_work<T: Send + 'static>(
     signals: &mut Signals,
-    deadline: Instant,
+    deadline: Option<Instant>,
     work: impl FnOnce() -> io::Result<T> + Send + 'static,
 ) -> io::Result<T> {
     let cancel = Arc::new(AtomicBool::new(false));
@@ -2186,21 +2168,41 @@ async fn control_work<T: Send + 'static>(
             let _ = worker.await;
             Err(io::ErrorKind::Interrupted.into())
         }
-        _ = tokio::time::sleep_until(deadline) => {
+        _ = async {
+            match deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending().await,
+            }
+        } => {
             cancel.store(true, Ordering::Release);
             let _ = worker.await;
             Err(timed_out())
         }
     }
 }
-fn remove_matching_locator(locator: &Locator) -> io::Result<()> {
-    if let Some(current) = read_locator(&locator.root)?
-        && current.name == locator.name
-        && current.generation == locator.generation
-    {
-        current.remove()?;
-    }
-    Ok(())
+async fn remove_orphan_box(
+    locator: &Locator,
+    lock: Flock<File>,
+    signals: &mut Signals,
+    deadline: Instant,
+) -> io::Result<bool> {
+    let locator = locator.clone();
+    control_work(signals, Some(deadline), move || {
+        let removed = clean::remove_orphan(
+            runtime(),
+            &locator.name,
+            locator.generation.as_deref(),
+            &lock,
+        )?;
+        if let Some(current) = read_locator(&locator.root)?
+            && current.name == locator.name
+            && current.generation == locator.generation
+        {
+            current.remove()?;
+        }
+        Ok(removed)
+    })
+    .await
 }
 fn retired_or_removing(locator: &Locator) -> io::Result<bool> {
     Ok(match ownership::record(&locator.name)? {
@@ -2208,24 +2210,16 @@ fn retired_or_removing(locator: &Locator) -> io::Result<bool> {
         None => true,
     })
 }
-async fn wait_tick(signals: &mut Signals, deadline: Instant) -> io::Result<()> {
+async fn wait_tick(signals: &mut Signals, deadline: Option<Instant>) -> io::Result<()> {
+    let tick = Instant::now() + Duration::from_millis(20);
     tokio::select! {
         _ = signals.recv() => Err(io::ErrorKind::Interrupted.into()),
-        _ = tokio::time::sleep_until((Instant::now() + Duration::from_millis(20)).min(deadline)) => {
-            if Instant::now() >= deadline { Err(timed_out()) } else { Ok(()) }
+        _ = tokio::time::sleep_until(deadline.map_or(tick, |deadline| tick.min(deadline))) => {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) { Err(timed_out()) } else { Ok(()) }
         },
     }
 }
-async fn wait_name_owned(name: &str, signals: &mut Signals) -> io::Result<()> {
-    while ownership::name_alive(name)? {
-        tokio::select! {
-            _ = signals.recv() => return Err(io::ErrorKind::Interrupted.into()),
-            _ = tokio::time::sleep(Duration::from_millis(20)) => {},
-        }
-    }
-    Ok(())
-}
-async fn wait_name(name: &str, signals: &mut Signals, deadline: Instant) -> io::Result<()> {
+async fn wait_name(name: &str, signals: &mut Signals, deadline: Option<Instant>) -> io::Result<()> {
     while ownership::name_alive(name)? {
         wait_tick(signals, deadline).await?;
     }
@@ -2390,45 +2384,25 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
         let (launch, deadline, discovered) = locked_discovery(root, signals, &mut noticed).await?;
         let lease = if let Some(locator) = discovered {
             let generation = locator.generation.clone().ok_or_else(unavailable)?;
-            let (stream, reply) = match exchange(
-                &locator,
-                Request::Borrow {
-                    root: root.into(),
-                    generation,
-                    roots: Roots::resolve()?,
-                    share_only: false,
-                },
-                signals,
-                deadline,
-                None,
-            )
-            .await
-            {
-                Ok(value) => value,
-                Err(_error) if retired_or_removing(&locator)? => {
-                    wait_name_owned(&locator.name, signals).await?;
-                    continue;
-                }
-                Err(error) => return Err(error),
+            let request = Request::Borrow {
+                root: root.into(),
+                generation,
+                roots: Roots::resolve()?,
+                share_only: false,
+            };
+            let Some((stream, reply)) =
+                admission(&locator, request, signals, deadline, None).await?
+            else {
+                continue;
             };
             match reply {
-                Reply::Admitted { name, generation }
-                    if name == locator.name && Some(&generation) == locator.generation.as_ref() =>
-                {
-                    Some(Lease::new(
-                        stream,
-                        name,
-                        generation,
-                        None,
-                        ProjectMount::Disk,
-                    ))
-                }
-                Reply::Draining { generation }
-                    if Some(&generation) == locator.generation.as_ref() =>
-                {
-                    wait_name_owned(&locator.name, signals).await?;
-                    continue;
-                }
+                Reply::Admitted { name, generation } => Some(Lease::new(
+                    stream,
+                    name,
+                    generation,
+                    None,
+                    ProjectMount::Disk,
+                )),
                 other => return Err(reply_error(other)),
             }
         } else {
