@@ -2238,8 +2238,8 @@ its current values only for the admission comparison. A `from` name the
 box spec refuses (Process interface), a missing variable and a missing
 injecting or login route variable each refuse the start before any owner
 starts: the client names the key and the variable on stderr and exits 125. The value travels as a
-`PINFOLD_ENV_` value does: in the environment of the detached owner and
-its runtime client, and in the admission snapshot, held in memory and
+`PINFOLD_ENV_` value does: in the environment of the detached owner and,
+on macOS, its runtime client, and in the admission snapshot, held in memory and
 sent over the private project socket. The owner starts the box with the
 snapshot's values. An `op` value is read only by the client whose
 launch starts a new box, after every other launch check and just before it
