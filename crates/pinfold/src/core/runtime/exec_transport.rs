@@ -76,11 +76,15 @@ pub fn exec(
     let stderr = StdioRelay::new(errors, false)?;
     let mut exec = FrameWriter::default();
     exec.start(EXEC, &payload)?;
-    // A descendant can hold a native client's stdin open after the client exits.
-    while !exec.flush(&mut to_box)? {
+    // Cancellation during setup must not start the command. A descendant can
+    // hold a native client's stdin open after the client exits.
+    loop {
         cancelled(cancel)?;
         if native_exited()? {
             return Err(io::Error::other("the box ended the exec before it exited"));
+        }
+        if exec.flush(&mut to_box)? {
+            break;
         }
         let mut ready = [nix::poll::PollFd::new(
             to_box.as_fd(),
