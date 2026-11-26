@@ -18,6 +18,7 @@ use super::vsock;
 use crate::core::artifacts;
 use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::image::linux;
+use crate::core::pipe::check_cancel;
 use crate::core::plan::{Plan, Values};
 use crate::core::runtime::output;
 use crate::core::runtime::sockets::Sockets;
@@ -117,7 +118,7 @@ pub(crate) fn write_init_disk(disk: &Path) -> io::Result<()> {
 /// Copy the host directory `host` into a new read-only ext4 image at
 /// `disk`, sized to the tree.
 pub(crate) fn mount_image(host: &Path, disk: &Path) -> io::Result<()> {
-    let (kib, entries) = tree_size(host)?;
+    let (kib, entries) = tree_size(host, None)?;
     let _ = fs::remove_file(disk);
     // 10% and 16 MiB for metadata, an inode per entry, as the root disk.
     output(&[
@@ -139,19 +140,21 @@ pub(crate) fn mount_image(host: &Path, disk: &Path) -> io::Result<()> {
 }
 
 /// A tree's KiB in 4 KiB blocks, and its entries.
-fn tree_size(dir: &Path) -> io::Result<(u64, u64)> {
+pub(crate) fn tree_size(dir: &Path, cancel: Option<&AtomicBool>) -> io::Result<(u64, u64)> {
+    cancel.map_or(Ok(()), check_cancel)?;
     let (mut kib, mut entries) = (4, 1);
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let metadata = entry.metadata()?;
         if metadata.is_dir() {
-            let (inner_kib, inner_entries) = tree_size(&entry.path())?;
+            let (inner_kib, inner_entries) = tree_size(&entry.path(), cancel)?;
             kib += inner_kib;
             entries += inner_entries;
         } else {
             kib += metadata.len().div_ceil(4096) * 4;
             entries += 1;
         }
+        cancel.map_or(Ok(()), check_cancel)?;
     }
     Ok((kib, entries))
 }

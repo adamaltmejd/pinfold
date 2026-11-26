@@ -5,7 +5,7 @@ use crate::core::process::{AsyncCommandGuard, CommandGuard, GroupChild};
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
 use std::io::{self, Write};
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
@@ -20,6 +20,7 @@ use tokio::process::{Child, ChildStderr, Command};
 
 use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::plan::{MountKind, Plan, Values};
+use crate::core::runtime::exec_transport::Cancellable;
 use crate::core::runtime::{
     BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, Unreachable,
     parse_json, spawn_error,
@@ -231,28 +232,8 @@ pub fn trust_bundle(
 ) -> io::Result<std::path::PathBuf> {
     let image = plan.image.as_deref().expect("up resolved the image");
     let user = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
-    // Under the box's name, which its owner holds: another root's
-    // maintenance prunes an unnamed helper as a dead box.
-    let mut command = std::process::Command::new("container");
+    let mut command = helper(plan, init, &plan.labels[ownership::GENERATION_LABEL], &user);
     command
-        .args(["run", "--name", &plan.name, "--progress", "none"])
-        .args(["--network", "none"])
-        .args(["--read-only", "--cap-drop", "ALL", "--workdir", "/"])
-        .args(["--user", &user])
-        .arg("--label")
-        .arg(format!(
-            "{}={}",
-            ownership::GENERATION_LABEL,
-            plan.labels[ownership::GENERATION_LABEL]
-        ))
-        .arg("--label")
-        .arg(format!(
-            "{}={}",
-            clean::OWNER_LABEL,
-            plan.labels[clean::OWNER_LABEL]
-        ))
-        .arg("--mount")
-        .arg(init_mount(init))
         .arg("--entrypoint")
         .arg(init)
         .arg(image)
@@ -317,6 +298,29 @@ pub fn trust_bundle(
     let path = dir.join("ca-certificates.crt");
     std::fs::write(&path, bundle)?;
     Ok(path)
+}
+
+/// A networkless, read-only helper box with no capabilities and init
+/// mounted. Under the box's name, which its owner holds: another root's
+/// maintenance prunes an unnamed helper as a dead box.
+fn helper(plan: &Plan, init: &Path, generation: &str, user: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("container");
+    command
+        .args(["run", "--name", &plan.name, "--progress", "none"])
+        .args(["--network", "none"])
+        .args(["--read-only", "--cap-drop", "ALL", "--workdir", "/"])
+        .args(["--user", user])
+        .arg("--label")
+        .arg(format!("{}={generation}", ownership::GENERATION_LABEL))
+        .arg("--label")
+        .arg(format!(
+            "{}={}",
+            clean::OWNER_LABEL,
+            plan.labels[clean::OWNER_LABEL]
+        ))
+        .arg("--mount")
+        .arg(init_mount(init));
+    command
 }
 
 /// A helper's removal: its record as inspected first, whether each step
@@ -726,42 +730,6 @@ impl Drop for StderrDrain {
     }
 }
 
-struct PreparationInput<'a> {
-    input: std::process::ChildStdin,
-    cancel: &'a AtomicBool,
-}
-
-impl Write for PreparationInput<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        loop {
-            if self.cancel.load(Ordering::Acquire) {
-                // Buffered writers retry Interrupted rather than ending the fill.
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionAborted,
-                    "disk preparation cancelled",
-                ));
-            }
-            match self.input.write(bytes) {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    let mut ready = [nix::poll::PollFd::new(
-                        self.input.as_fd(),
-                        nix::poll::PollFlags::POLLOUT,
-                    )];
-                    match nix::poll::poll(&mut ready, 20u16) {
-                        Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                result => return result,
-            }
-        }
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        self.input.flush()
-    }
-}
-
 /// Wait for a preparation helper, or end it at once after a failed send.
 /// Its group is killed before the leader is reaped, so no host descendant
 /// keeps a transfer pipe.
@@ -985,26 +953,11 @@ impl Runtime for Apple {
         let name = &plan.name;
         let image = plan.image.as_deref().expect("up resolved the image");
         let owner = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
-        let mut command = std::process::Command::new("container");
-        command
-            .args(["run", "-i", "--progress", "none", "--network", "none"])
-            .args(["--read-only", "--cap-drop", "ALL", "--cap-add", "CAP_CHOWN"])
-            .args(["--workdir", "/"])
-            .args(["--name", name])
-            .args(["--user", "0:0", "--mount"])
-            .arg(init_mount(init));
+        let mut command = helper(plan, init, generation, "0:0");
+        command.args(["-i", "--cap-add", "CAP_CHOWN"]);
         if !directories.is_empty() || !fills.is_empty() {
             command.args(["--cap-add", "CAP_SETUID", "--cap-add", "CAP_SETGID"]);
         }
-        command
-            .arg("--label")
-            .arg(format!("{}={generation}", ownership::GENERATION_LABEL))
-            .arg("--label")
-            .arg(format!(
-                "{}={}",
-                clean::OWNER_LABEL,
-                plan.labels[clean::OWNER_LABEL]
-            ));
         let mut setup: Vec<OsString> = vec!["init".into(), "setup".into()];
         let disks: Vec<_> = plan
             .disks
@@ -1069,7 +1022,7 @@ impl Runtime for Apple {
             let sent = (|| {
                 let input = child.take_stdin().expect("setup stdin is piped");
                 crate::core::pipe::nonblocking(&input, "disk preparation")?;
-                let mut input = PreparationInput { input, cancel };
+                let mut input = Cancellable::preparation(input, cancel);
                 for fill in fills {
                     disk::send(fill, &mut input)?;
                 }
@@ -1189,7 +1142,7 @@ fn copy_in(name: &str, init: &Path, seeding: &Seeding, cancel: &AtomicBool) -> i
         disk::send_seeds(
             &seeding.relative,
             &seeding.seeds,
-            &mut PreparationInput { input, cancel },
+            &mut Cancellable::preparation(input, cancel),
         )
     })();
     let status = wait_preparation(&mut child, sent.is_err(), cancel);

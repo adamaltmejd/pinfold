@@ -147,14 +147,11 @@ pub(super) fn relay(
                 libc::POLLIN,
             ),
         ];
-        let timeout = match (
-            session.as_ref().map_or(-1, Session::timeout),
-            super::session::millis(drain.filter(|_| connected)),
-        ) {
-            (-1, drain) => drain,
-            (timeout, -1) => timeout,
-            (timeout, drain) => timeout.min(drain),
-        };
+        let deadlines = [
+            session.as_ref().and_then(Session::deadline),
+            drain.filter(|_| connected),
+        ];
+        let timeout = super::session::millis(deadlines.into_iter().flatten().min());
         // Safety: poll only updates this array of live descriptors.
         if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) } < 0 {
             let error = io::Error::last_os_error();

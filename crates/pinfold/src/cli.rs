@@ -147,12 +147,7 @@ fn project_intro(unconfigured: &mut bool) -> io::Result<Option<Option<PathBuf>>>
     };
     context.check_metadata(config.mount)?;
     config.check_host_paths(root)?;
-    // A preview has no saved profile for PINFOLD_PROFILE to override.
-    let profile = if configured {
-        terminal_text(&config.profile.name) + &profile_override(&config)
-    } else {
-        terminal_text(&config.profile.name)
-    };
+    let profile = terminal_text(&config.profile.name) + &profile_override(&config);
     println!("Profile   {profile}");
     println!("Files     {}", project_files(config.mount, root));
     let reference = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(root));
@@ -683,11 +678,14 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
     match args {
         [verb] if verb == "list" => {
             let attached = disk::attachments(None)?;
-            let origins = if json {
-                BTreeMap::new()
-            } else {
-                crate::pi::state::disk_origins()?
-            };
+            let mut origins = BTreeMap::new();
+            if !json {
+                for project in crate::pi::state::state_dirs()? {
+                    for name in crate::pi::state::disk_names(&project.id) {
+                        origins.insert(name, project.root.clone());
+                    }
+                }
+            }
             let mut disks = runtime.list_disks()?;
             let mut rows = vec![
                 [
@@ -1886,9 +1884,9 @@ fn config_report(
         "egress": { "allow": &config.allow, "routes": &config.routes },
         "cpus": config.cpus,
         "memory": &config.memory,
-        "home_disk_size": config.home_disk_size.as_deref().unwrap_or(crate::config::DEFAULT_DISK_SIZE),
+        "home_disk_size": config.home_disk_size.as_deref().unwrap_or(crate::core::plan::DEFAULT_DISK_SIZE),
         // A share has no project disk.
-        "project_disk_size": (config.mount == crate::config::ProjectMount::Disk).then(|| config.project_disk_size.as_deref().unwrap_or(crate::config::DEFAULT_DISK_SIZE)),
+        "project_disk_size": (config.mount == crate::config::ProjectMount::Disk).then(|| config.project_disk_size.as_deref().unwrap_or(crate::core::plan::DEFAULT_DISK_SIZE)),
         // The project box ignores a configured HOME.
         "env": config.env.iter().filter(|(name, _)| *name != "HOME").collect::<std::collections::BTreeMap<_, _>>(),
         "project": {
@@ -2160,10 +2158,9 @@ fn image_refused(
     if json {
         return refused("image", name, reason, detail);
     }
-    let reason = serde_json::json!(reason);
     eprintln!(
         "pinfold image {verb}: {}: {}",
-        reason.as_str().unwrap_or("refused"),
+        reason.token(),
         terminal_text(detail)
     );
     1

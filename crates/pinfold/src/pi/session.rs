@@ -274,11 +274,7 @@ async fn launch_lock(root: &Path, signals: &mut Signals, noticed: &mut bool) -> 
         }
         if !*noticed {
             *noticed = true;
-            forward_diagnostics(
-                b"pinfold: waiting for the project box to start".to_vec(),
-                signals,
-            )
-            .await?;
+            forward_diagnostics("pinfold: waiting for the project box to start", signals).await?;
         }
         wait_tick(signals, None).await?;
     }
@@ -665,7 +661,7 @@ impl Lease {
     async fn report_end(&mut self, signals: &mut Signals) -> io::Result<()> {
         if let Some(reason) = self.reason.take() {
             let message = format!("pinfold: {}", ended_line(&reason, &self.generation));
-            forward_diagnostics(message.into_bytes(), signals).await?;
+            forward_diagnostics(&message, signals).await?;
         }
         Ok(())
     }
@@ -796,9 +792,7 @@ async fn admit(
                 }
                 Reply::Kept { rex, .. } => {
                     drop(launch);
-                    let _ =
-                        forward_diagnostics(b"pinfold start: already running".to_vec(), signals)
-                            .await;
+                    let _ = forward_diagnostics("pinfold start: already running", signals).await;
                     let _ = rex::report(rex, &key(root), signals).await;
                     return Ok(None);
                 }
@@ -895,7 +889,7 @@ async fn admit(
             }
             Reply::Kept { rex, .. } => {
                 let _ = child.1.try_wait();
-                let _ = forward_diagnostics(b"pinfold start: started".to_vec(), signals).await;
+                let _ = forward_diagnostics("pinfold start: started", signals).await;
                 let _ = rex::report(rex, &key(root), signals).await;
                 return Ok(None);
             }
@@ -930,7 +924,7 @@ async fn resolve_spec(
     })
     .await?;
     for warning in warnings {
-        forward_diagnostics(warning.into_bytes(), signals).await?;
+        forward_diagnostics(&warning, signals).await?;
     }
     Ok(resolved)
 }
@@ -968,7 +962,6 @@ fn spawn_owner(
         let _guard = crate::core::process::fork_guard();
         std::os::unix::net::UnixStream::pair()?
     };
-    wire::peer(&client)?;
     client.set_nonblocking(true)?;
     let client = UnixStream::from_std(client)?;
     let descriptors = [
@@ -1069,11 +1062,11 @@ async fn bootstrap_diagnostics(drain: &mut Diagnostics, signals: &mut Signals) -
     write_diagnostics(lines.join("\n"), signals).await
 }
 
-pub(crate) async fn forward_diagnostics(bytes: Vec<u8>, signals: &mut Signals) -> io::Result<()> {
-    if bytes.is_empty() {
+pub(crate) async fn forward_diagnostics(text: &str, signals: &mut Signals) -> io::Result<()> {
+    if text.is_empty() {
         return Ok(());
     }
-    write_diagnostics(terminal_text(&String::from_utf8_lossy(&bytes)), signals).await
+    write_diagnostics(terminal_text(text), signals).await
 }
 
 async fn write_diagnostics(text: String, signals: &mut Signals) -> io::Result<()> {
@@ -1126,7 +1119,7 @@ async fn setup_answer(message: String, signals: &mut Signals) -> io::Result<Opti
     }
     // SAFETY: this handle owns the nonblocking terminal descriptor.
     let reader = unsafe { tokio::io::unix::AsyncFd::register(terminal) }?;
-    forward_diagnostics(message.into_bytes(), signals).await?;
+    forward_diagnostics(&message, signals).await?;
     // One byte per read: input after the newline belongs to the next prompt or the guest.
     let mut answer = Vec::new();
     loop {
@@ -1178,16 +1171,15 @@ async fn confirm_first_run(
     };
     let (path, lines) = crate::config::setup_summary(root, &profile, mount)?;
     forward_diagnostics(
-        format!(
+        &format!(
             "These settings will be saved to {}:",
             terminal_text(&path.to_string_lossy())
-        )
-        .into_bytes(),
+        ),
         signals,
     )
     .await?;
     for line in lines {
-        forward_diagnostics(format!("  {line}").into_bytes(), signals).await?;
+        forward_diagnostics(&format!("  {line}"), signals).await?;
     }
     let question = match command {
         Some(command) => format!("Save and run {}?", terminal_text(command)),
@@ -1220,11 +1212,7 @@ async fn setup_profile(signals: &mut Signals) -> io::Result<Option<String>> {
     };
     crate::core::profile::Profile::load(&name)?;
     if forced.is_some() {
-        forward_diagnostics(
-            format!("Profile  {name}  (from PINFOLD_PROFILE)").into_bytes(),
-            signals,
-        )
-        .await?;
+        forward_diagnostics(&format!("Profile  {name}  (from PINFOLD_PROFILE)"), signals).await?;
     }
     Ok(Some(name))
 }
@@ -1238,7 +1226,7 @@ async fn setup_mount(
     if !cfg!(target_os = "macos") {
         // A Linux project is always a Git checkout.
         forward_diagnostics(
-            "Files    disk  (the only kind on Linux; a new disk starts empty)".into(),
+            "Files    disk  (the only kind on Linux; a new disk starts empty)",
             signals,
         )
         .await?;
@@ -1257,7 +1245,7 @@ async fn setup_mount(
         share.into(),
         "  disk   the box works on an isolated disk; a new disk starts empty".into(),
     ] {
-        forward_diagnostics(line.into_bytes(), signals).await?;
+        forward_diagnostics(&line, signals).await?;
     }
     let Some(answer) = setup_answer("Choose [share/disk] (share)".into(), signals).await? else {
         return Ok(None);
@@ -1428,7 +1416,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
                 let _ = crate::update::link_helper(&exe);
                 if crate::update::helper_on_path().is_none() {
                     let line = format!("Git needs git-remote-pinfold on PATH for this disk project: {}", crate::update::link_remedy(&exe));
-                    forward_diagnostics(line.into_bytes(), &mut signals).await?;
+                    forward_diagnostics(&line, &mut signals).await?;
                 }
             }
             admitted = admit(&root, &Ok(current), intent, &mut signals, &executable).await;
@@ -1457,7 +1445,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
             Err(error) => {
                 if !is_output_failure(&error) {
                     let report = format!("{label}: {error}");
-                    let _ = forward_diagnostics(report.into_bytes(), &mut signals).await;
+                    let _ = forward_diagnostics(&report, &mut signals).await;
                     if let Some(signal) = signals.last() { return Ok(128 + signal as i32); }
                 }
                 return Ok(125);
@@ -1466,7 +1454,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         crate::update::notice();
         if lease.mount == ProjectMount::Share && std::env::var_os("GIT_OPTIONAL_LOCKS").is_none_or(|value| value != "0") {
             // A failed write is not fatal, but a signal received during it is.
-            let _ = forward_diagnostics(OPTIONAL_LOCKS_WARNING.as_bytes().to_vec(), &mut signals).await;
+            let _ = forward_diagnostics(OPTIONAL_LOCKS_WARNING, &mut signals).await;
             if signals.last().is_some() {
                 return finish_client(lease, Ok(125), None, &mut signals).await;
             }
@@ -1510,7 +1498,7 @@ fn client(args: Option<&[String]>) -> io::Result<i32> {
         match result {
             Ok(code) => Ok(code),
             Err(error) => {
-                let _ = forward_diagnostics(format!("{label}: {error}").into_bytes(), &mut signals).await;
+                let _ = forward_diagnostics(&format!("{label}: {error}"), &mut signals).await;
                 Ok(signals.last().map_or(125, |signal| 128 + signal as i32))
             }
         }
@@ -1526,17 +1514,14 @@ async fn finish_client(
     let code = match result {
         Ok(code) => code,
         Err(error) => {
-            let _ = forward_diagnostics(format!("pinfold: command: {error}").into_bytes(), signals)
-                .await;
+            let _ = forward_diagnostics(&format!("pinfold: command: {error}"), signals).await;
             125
         }
     };
     match leave {
         Err(error) => {
             if error.kind() != io::ErrorKind::Interrupted || signals.last().is_none() {
-                let _ =
-                    forward_diagnostics(format!("pinfold: leave: {error}").into_bytes(), signals)
-                        .await;
+                let _ = forward_diagnostics(&format!("pinfold: leave: {error}"), signals).await;
             }
         }
         Ok(()) if signals.last().is_none() => clean::maintain(),
@@ -2129,7 +2114,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
         } else {
             "pinfold stop: no box running"
         };
-        let _ = forward_diagnostics(line.as_bytes().to_vec(), &mut signals).await;
+        let _ = forward_diagnostics(line, &mut signals).await;
         Ok(0)
     })
 }

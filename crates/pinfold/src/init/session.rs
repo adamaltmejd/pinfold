@@ -83,8 +83,8 @@ impl Session {
         result
     }
 
-    pub(super) fn timeout(&self) -> i32 {
-        millis(self.deadline)
+    pub(super) fn deadline(&self) -> Option<Instant> {
+        self.deadline
     }
 
     fn signal(&self, signal: Signal) -> io::Result<()> {

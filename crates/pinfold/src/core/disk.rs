@@ -17,6 +17,7 @@ use crate::core::r#box::RefusalReason;
 use crate::core::ownership::{self, Attachment, Claim};
 use crate::core::pipe::check_cancel;
 use crate::core::plan::{Disk, Plan};
+use crate::core::process::{diagnostic, with_deadline};
 use crate::core::profile::Seed;
 use crate::core::runtime::Runtime;
 use crate::dirs;
@@ -77,15 +78,14 @@ impl Claimed {
             .map(|disk| disk.name.as_str())
             .chain(self.marked.iter().map(String::as_str))
             .collect();
-        crate::core::process::with_deadline(std::time::Duration::from_secs(300), |cancel| {
-            match startup_locks(&names, cancel) {
+        with_deadline(
+            std::time::Duration::from_secs(300),
+            |cancel| match startup_locks(&names, cancel) {
                 Ok(_locks) => {
                     let attached = match complete_attachments(Some(name)) {
                         Ok(attached) => attached,
                         Err(error) => {
-                            crate::core::process::diagnostic(format_args!(
-                                "startup cleanup: disk attachments: {error}"
-                            ));
+                            diagnostic(format_args!("startup cleanup: disk attachments: {error}"));
                             return;
                         }
                     };
@@ -99,7 +99,7 @@ impl Claimed {
                             .and_then(|()| unmark(&disk.name, UNCLEAN))
                             .and_then(|()| unmark(&disk.name, UNFILLED));
                         if let Err(error) = result {
-                            crate::core::process::diagnostic(format_args!(
+                            diagnostic(format_args!(
                                 "startup cleanup: disk {:?}: {error}",
                                 disk.name
                             ));
@@ -111,17 +111,13 @@ impl Claimed {
                         .filter(|disk| !attached.contains_key(*disk))
                     {
                         if let Err(error) = unmark(disk, UNCLEAN) {
-                            crate::core::process::diagnostic(format_args!(
-                                "startup cleanup: disk {disk:?}: {error}"
-                            ));
+                            diagnostic(format_args!("startup cleanup: disk {disk:?}: {error}"));
                         }
                     }
                 }
-                Err(error) => crate::core::process::diagnostic(format_args!(
-                    "startup cleanup: disk locks: {error}"
-                )),
-            }
-        });
+                Err(error) => diagnostic(format_args!("startup cleanup: disk locks: {error}")),
+            },
+        );
     }
 }
 
@@ -321,9 +317,7 @@ pub fn claim(
         }
         match claim.retire() {
             Ok(()) => claimed.undo(runtime, name),
-            Err(error) => crate::core::process::diagnostic(format_args!(
-                "startup cleanup: retirement: {error}"
-            )),
+            Err(error) => diagnostic(format_args!("startup cleanup: retirement: {error}")),
         }
         return Err(Err(error));
     }
@@ -349,7 +343,7 @@ pub fn attachments(except: Option<&str>) -> io::Result<BTreeMap<String, Vec<(Str
         match result {
             Ok(record) => records.push(record),
             Err(error) => {
-                crate::core::process::diagnostic(format_args!("disk attachments: {error}"));
+                diagnostic(format_args!("disk attachments: {error}"));
             }
         }
     }
@@ -376,10 +370,7 @@ fn record_attachments(
             Ok(state) if state.parent() != Some(boxes.as_path()) => continue,
             Ok(_) => {}
             Err(error) => {
-                crate::core::process::diagnostic(format_args!(
-                    "disk attachments {:?}: {error}",
-                    record.name
-                ));
+                diagnostic(format_args!("disk attachments {:?}: {error}", record.name));
             }
         }
         if record.retiring && !ownership::name_alive(&record.name).unwrap_or(true) {

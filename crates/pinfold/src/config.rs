@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::plan::{Env, Mount, MountKind, Route, disk_gibibytes, guest_path};
+use crate::core::plan::{
+    DEFAULT_DISK_SIZE, Env, Mount, MountKind, Route, disk_gibibytes, guest_path,
+};
 use crate::core::profile::Profile;
 use crate::dirs;
 use crate::formatting::terminal_text;
@@ -19,8 +21,6 @@ use crate::pi::state::project_id;
 pub(crate) const DEFAULT_PROFILE: &str = "default";
 const DEFAULT_CPUS: f64 = 4.0;
 const DEFAULT_MEMORY: &str = "8G";
-/// The box spec's default disk `size`, shown in the template and `config --json`.
-pub(crate) const DEFAULT_DISK_SIZE: &str = "64G";
 const DEFAULT_ALLOW: [&str; 9] = [
     "api.anthropic.com",
     "platform.claude.com",

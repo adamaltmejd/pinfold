@@ -876,15 +876,12 @@ pub struct Disk {
 impl Disk {
     /// The size in bytes; `validate` has checked the spelling.
     pub fn bytes(&self) -> u64 {
-        self.size
-            .as_deref()
-            .and_then(disk_gibibytes)
-            .unwrap_or(DEFAULT_DISK_GIB)
-            << 30
+        disk_gibibytes(self.size.as_deref().unwrap_or(DEFAULT_DISK_SIZE)).unwrap_or_default() << 30
     }
 }
 
-const DEFAULT_DISK_GIB: u64 = 64;
+/// A disk's `size` when the spec gives none.
+pub(crate) const DEFAULT_DISK_SIZE: &str = "64G";
 
 /// A disk size: a whole number of gibibytes, at least 1, then `G`.
 pub(crate) fn disk_gibibytes(size: &str) -> Option<u64> {

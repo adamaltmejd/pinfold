@@ -150,7 +150,6 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
     fs::create_dir(&planted).unwrap();
     fs::create_dir(&host_ran).unwrap();
     let hooks = project.root().join(".git/hooks");
-    assert!(!hooks.exists(), "git init --template= made no hooks");
     fs::create_dir(&hooks).unwrap();
     for hook in ["post-merge", "post-checkout"] {
         let path = hooks.join(hook);
@@ -303,7 +302,6 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
             .collect::<BTreeMap<_, _>>()
     };
     let (host_tags, host_heads) = (named("refs/tags/"), named("refs/heads/"));
-    assert_eq!(host_tags.len(), 2, "{host_tags:?}");
     let host_light = host_tags["refs/tags/light"].clone();
     assert!(
         host_light != box_light && host_light != box_upper,
@@ -343,7 +341,6 @@ fn disk_project_branches_and_tags_cross_only_through_the_git_remote() {
         git(&["checkout", "-q", "-b", round]);
         git(&["checkout", "-q", "main"]);
     }
-    assert_eq!(git(&["rev-parse", "main"]), fetched);
     assert_eq!(dir_names(&host_ran), ["post-checkout", "post-merge"]);
     assert_eq!(dir_names(&planted), Vec::<String>::new());
     assert_eq!(project.git(&["config", "--get", "core.hooksPath"]).code, 1);

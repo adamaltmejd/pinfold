@@ -110,10 +110,10 @@ fn losing_the_owner_fails_closed() {
         })),
         "box prune: {pruned:?}"
     );
-    drop(hold);
     #[cfg(target_os = "macos")]
     assert!(!apple_lists(&name), "the runtime still lists {name}");
     assert!(other.listed(leftover.run_id()).is_empty());
+    drop(hold);
     drop(leftover);
 
     // The name is reusable.

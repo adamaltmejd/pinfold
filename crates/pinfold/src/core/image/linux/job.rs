@@ -27,6 +27,7 @@ use crate::core::image::BuildRequest;
 use crate::core::ownership::{self, Claim};
 use crate::core::pipe::check_cancel;
 use crate::core::plan::{Egress, Plan};
+use crate::core::runtime::exec_transport::put;
 use crate::core::runtime::firecracker::{jail, vm};
 use crate::core::{artifacts, clean, pipe, proxy, runs, sha256_hex};
 use crate::formatting::terminal_text;
@@ -1077,11 +1078,6 @@ async fn clean_cache(
     Ok(())
 }
 
-fn put(output: &mut Vec<u8>, bytes: &[u8]) {
-    output.extend((bytes.len() as u32).to_be_bytes());
-    output.extend(bytes);
-}
-
 async fn cancelled(cancel: &AtomicBool) {
     while !cancel.load(Ordering::Acquire) {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1285,7 +1281,7 @@ fn mkfs() -> io::Result<Command> {
 }
 
 fn input_disk(input: &Path, disk: &Path, cancel: &AtomicBool) -> io::Result<()> {
-    let (kib, entries) = tree_size(input, cancel)?;
+    let (kib, entries) = vm::tree_size(input, Some(cancel))?;
     let mut command = mkfs()?;
     command
         .args(["-O", "^has_journal", "-N"])
@@ -1393,25 +1389,6 @@ fn run_process(mut command: Command, cancel: &AtomicBool) -> io::Result<()> {
         )));
     }
     check_cancel(cancel)
-}
-
-fn tree_size(path: &Path, cancel: &AtomicBool) -> io::Result<(u64, u64)> {
-    check_cancel(cancel)?;
-    let (mut kib, mut entries) = (4, 1);
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let metadata = fs::symlink_metadata(entry.path())?;
-        if metadata.is_dir() {
-            let (inner_kib, inner_entries) = tree_size(&entry.path(), cancel)?;
-            kib += inner_kib;
-            entries += inner_entries;
-        } else {
-            kib += metadata.len().div_ceil(4096) * 4;
-            entries += 1;
-        }
-        check_cancel(cancel)?;
-    }
-    Ok((kib, entries))
 }
 
 fn copy_file(
@@ -1532,7 +1509,7 @@ fn copy_directory(
 
 fn write_job(input: &Path, job: &Job<'_>, budget: &mut InputBudget) -> io::Result<()> {
     let bytes = serde_json::to_vec(job)?;
-    if bytes.len() > 1 << 20 {
+    if bytes.len() > JSON_BYTES {
         return Err(io::Error::other("resource: builder job metadata"));
     }
     budget.charge(bytes.len() as u64)?;
@@ -1582,7 +1559,7 @@ fn source_policy(
         }));
     }
     let bytes = serde_json::to_vec(&serde_json::json!({"version":1,"rules":rules}))?;
-    if bytes.len() > 1 << 20 {
+    if bytes.len() > JSON_BYTES {
         return Err(io::Error::other("resource: builder source policy"));
     }
     budget.charge(bytes.len() as u64)?;

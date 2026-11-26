@@ -155,7 +155,7 @@ pub(crate) fn push_cancellable(
     refspecs: &[String],
     cancel: &AtomicBool,
 ) -> Result<(), CrossingError> {
-    check_args(repo, guest_repo, cancel)?;
+    check_guest_repo(guest_repo)?;
     let format = object_format(object_width(repo, cancel)?);
     if sources.is_empty() {
         return Err(spec(format!(
@@ -227,7 +227,7 @@ pub(crate) fn pushed_cancellable(
     guest_repo: &str,
     cancel: &AtomicBool,
 ) -> Result<Refs, CrossingError> {
-    check_args(repo, guest_repo, cancel)?;
+    check_guest_repo(guest_repo)?;
     let width = object_width(repo, cancel)?;
     let child = BoxChild::spawn(
         runtime,
@@ -272,7 +272,14 @@ pub(crate) fn pushed_cancellable(
 }
 /// REPO's object id length in hex, which every id the box sends has.
 fn object_width(repo: &Path, cancel: &AtomicBool) -> Result<usize, CrossingError> {
-    let format = succeeded(git(repo, &["rev-parse", "--show-object-format"], cancel)?)?;
+    let format = git(repo, &["rev-parse", "--show-object-format"], cancel)?;
+    if !format.status.success() {
+        return Err(spec(format!(
+            "{} is not a git repository: {}",
+            terminal_text(&repo.to_string_lossy()),
+            terminal_text(String::from_utf8_lossy(&format.stderr).trim())
+        )));
+    }
     match String::from_utf8_lossy(&format.stdout).trim() {
         "sha1" => Ok(40),
         "sha256" => Ok(64),
@@ -314,7 +321,7 @@ pub(crate) fn fetch_cancellable(
             "remote name {remote:?} must start alphanumeric and hold only [A-Za-z0-9._-]"
         )));
     }
-    check_args(repo, guest_repo, cancel)?;
+    check_guest_repo(guest_repo)?;
     let width = object_width(repo, cancel)?;
     let namespace = format!("refs/remotes/{remote}/");
     let held = String::from_utf8_lossy(
@@ -632,18 +639,10 @@ fn object_format(width: usize) -> &'static str {
     if width == 64 { "sha256" } else { "sha1" }
 }
 
-fn check_args(repo: &Path, guest_repo: &str, cancel: &AtomicBool) -> Result<(), CrossingError> {
+fn check_guest_repo(guest_repo: &str) -> Result<(), CrossingError> {
     if !guest_repo.starts_with('/') {
         return Err(spec(format!(
             "guest repository {guest_repo:?} is not absolute"
-        )));
-    }
-    let found = git_input(repo, &["rev-parse", "--git-dir"], b"", &[], cancel)?;
-    if !found.status.success() {
-        return Err(spec(format!(
-            "{} is not a git repository: {}",
-            terminal_text(&repo.to_string_lossy()),
-            terminal_text(String::from_utf8_lossy(&found.stderr).trim())
         )));
     }
     Ok(())
@@ -1135,9 +1134,7 @@ fn bundle_heads(
 /// Whether `oid` is a full object name of WIDTH hex digits, 40 (sha1)
 /// or 64 (sha256).
 fn object_id(oid: &str, width: usize) -> bool {
-    matches!(width, 40 | 64)
-        && oid.len() == width
-        && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
+    oid.len() == width && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn git(repo: &Path, args: &[&str], cancel: &AtomicBool) -> io::Result<Output> {
