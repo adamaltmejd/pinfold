@@ -1213,8 +1213,7 @@ network listener, no token: the socket identifies the box.
   parsed, including `connection cap` and a 400 from parsing the head or
   the CONNECT target, has `Content-Length: 0` and no body. Neither holds
   anything from the request. Refusals that
-  get no response (`header timeout`, the ClientHello checks, `tls
-  handshake`), the empty
+  get no response (`header timeout`, the ClientHello checks), the empty
   502 for an upstream that cannot be reached, and responses relayed from
   an upstream are unchanged.
 
@@ -1560,7 +1559,7 @@ the project's own `.pi/` and `.agents/skills`.
 Every built-in seeds only `/opt/pinfold/profile/pi` as its pi package,
 sets `defaultProjectTrust: "always"` and adds pi's built-in `codemode` tool
 to the default tools. Its operating-context extension writes into pi's
-system prompt at every start the allowlist from `PINFOLD_ALLOW` and that a
+system prompt at every start the hosts in `PINFOLD_ALLOW` and that a
 403 carrying `Proxy-Status: pinfold` is the sandbox's final refusal, which
 `curl -v` shows. pi therefore gets the refusal line even when an existing
 instruction file blocks the seed. The seeded instructions carry the same

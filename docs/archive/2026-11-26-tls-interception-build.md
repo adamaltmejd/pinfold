@@ -81,6 +81,36 @@ Clients in a probe image built from profile-adam:
 
 Java's failure was logged `closed`, reason `tls handshake`.
 
+Each trust variable, at `api.github.com`, with it set and unset:
+
+| Client | Set | Unset |
+|---|---|---|
+| Official Node 22 (bundled roots) | OK | `UNABLE_TO_VERIFY_LEAF_SIGNATURE` (`NODE_EXTRA_CA_CERTS`) |
+| Debian's `nodejs` (system store) | OK | OK |
+| Bun 1.2 | 200 | 200 |
+| `requests` from pip, with certifi | 200 | `SSLError` (`REQUESTS_CA_BUNDLE`) |
+| Python `urllib` | 200 | 200 (`SSL_CERT_FILE`); pointed at an empty file, verify failed |
+| PHP streams | TLS completed; GitHub answered 403 to the missing User-Agent | |
+
+On a Debian image the replaced file alone serves OpenSSL, GnuTLS, Go and
+Debian's Node; `SSL_CERT_FILE` matters for clients whose default path
+differs.
+
+## Agents and Upgrade
+
+Codex's run shows two `GET /backend-api/codex/responses` answered 405
+before its POSTs succeeded. The proxy drops `Upgrade`, so Codex's
+WebSocket attempt reaches the upstream as a plain GET, and Codex falls
+back to HTTP. Codex works at `chatgpt.com` only through that fallback.
+
+Claude at `api.anthropic.com`, one short exchange each, on the Mac:
+
+- A claude login route from a 1Password setup-token reference: answered;
+  `POST /v1/messages` 200 as `route`.
+- An injecting route to `https://api.anthropic.com` setting `x-api-key`
+  from a 1Password reference, the box's `ANTHROPIC_API_KEY` a
+  placeholder: answered; `POST /v1/messages` 200 as `route`.
+
 Agents at their real hosts with no base-URL override, on the host's
 Codex login:
 
