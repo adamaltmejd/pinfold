@@ -13,32 +13,20 @@ const MAX_HELLO: usize = 16 * 1024;
 const MALFORMED: &str = "malformed clienthello";
 
 /// Read until rustls has one whole ClientHello, and check that its SNI
-/// names `host`. It returns every byte read, the ClientHello and anything
-/// the client sent after it in the same reads, to forward to the server
-/// unchanged; the error is the refusal's log reason.
-pub fn read_client_hello(reader: &mut impl Read, host: &str) -> Result<Vec<u8>, &'static str> {
+/// names `host`. It also returns every byte read, the ClientHello and
+/// anything the client sent after it in the same reads, for a tunnel to
+/// forward to the server unchanged; the error is the refusal's log reason.
+pub fn read_client_hello(
+    reader: &mut impl Read,
+    host: &str,
+) -> Result<(Accepted, Vec<u8>), &'static str> {
     let mut tee = Tee {
         reader,
         bytes: Vec::new(),
     };
-    hello(&mut tee, host)?;
-    Ok(tee.bytes)
-}
-
-/// Read one whole ClientHello whose SNI names `host`, for the proxy to end
-/// the TLS itself.
-pub fn accept(reader: &mut impl Read, host: &str) -> Result<Accepted, &'static str> {
-    let mut tee = Tee {
-        reader,
-        bytes: Vec::new(),
-    };
-    hello(&mut tee, host)
-}
-
-fn hello<R: Read>(tee: &mut Tee<'_, R>, host: &str) -> Result<Accepted, &'static str> {
     let mut acceptor = Acceptor::default();
     let accepted = loop {
-        match acceptor.read_tls(tee) {
+        match acceptor.read_tls(&mut tee) {
             Ok(0) => return Err(MALFORMED),
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -53,7 +41,7 @@ fn hello<R: Read>(tee: &mut Tee<'_, R>, host: &str) -> Result<Accepted, &'static
     match accepted.client_hello().server_name() {
         None => Err("sni missing"),
         Some(sni) if !sni.eq_ignore_ascii_case(host) => Err("sni mismatch"),
-        Some(_) => Ok(accepted),
+        Some(_) => Ok((accepted, tee.bytes)),
     }
 }
 
