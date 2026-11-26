@@ -464,13 +464,16 @@ async fn probe_reply(
 }
 
 /// One admission exchange with the discovered owner. `None` means that owner
-/// was retiring or draining and has gone, so discovery runs again.
+/// was retiring or draining and has gone, so discovery runs again. After a
+/// drain, `launch` is released before the stream closes, so a racing stop
+/// takes the lock instead of timing out on it.
 async fn admission(
     locator: &Locator,
     request: Request,
     signals: &mut Signals,
     deadline: Instant,
     reply_bound: Option<Duration>,
+    launch: &mut Option<File>,
 ) -> io::Result<Option<(UnixStream, Reply)>> {
     let (stream, reply) = match exchange(locator, request, signals, deadline, reply_bound).await {
         Ok(value) => value,
@@ -483,6 +486,7 @@ async fn admission(
     match &reply {
         Reply::Draining { generation } if Some(generation) == locator.generation.as_ref() => {
             wait_name(&locator.name, signals, None).await?;
+            drop(launch.take());
             Ok(None)
         }
         Reply::Admitted { name, generation }
@@ -764,8 +768,16 @@ async fn admit(
                 },
             };
             let reply_bound = matches!(intent, Intent::KeepRex).then_some(rex::REPLY_DEADLINE);
-            let Some((stream, reply)) =
-                admission(&locator, request, signals, deadline, reply_bound).await?
+            let mut launch = Some(launch);
+            let Some((stream, reply)) = admission(
+                &locator,
+                request,
+                signals,
+                deadline,
+                reply_bound,
+                &mut launch,
+            )
+            .await?
             else {
                 continue;
             };
@@ -2391,7 +2403,7 @@ pub(crate) async fn borrow(root: &Path, signals: &mut Signals) -> io::Result<Cro
                 share_only: false,
             };
             let Some((stream, reply)) =
-                admission(&locator, request, signals, deadline, None).await?
+                admission(&locator, request, signals, deadline, None, &mut None).await?
             else {
                 continue;
             };
