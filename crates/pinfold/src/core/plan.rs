@@ -905,6 +905,13 @@ impl Plan {
                 "memory {memory:?} must be a whole number of M or G, at least 256M"
             )));
         }
+        if let Some(cpus) = self.cpus
+            && !(cpus >= 1.0 && cpus.fract() == 0.0)
+        {
+            return Err(invalid(format!(
+                "cpus {cpus} must be a positive whole number"
+            )));
+        }
         for mount in &self.mounts {
             if !mount.host.is_absolute() || !mount.guest.is_absolute() {
                 return Err(invalid(format!(
