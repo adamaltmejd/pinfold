@@ -47,10 +47,10 @@ Real redirects, host `gh` with `GH_DEBUG=api` against `cli/cli`
 v2.106.0:
 
 - An asset: `api.github.com/…/releases/assets/ID` answers 302 to a signed
-  `release-assets.githubusercontent.com` URL; `gh` follows it without
-  `Authorization`.
+  `release-assets.githubusercontent.com` URL, which `gh` follows.
 - `--archive`: `api.github.com/…/tarball/TAG` answers 302 to
-  `codeload.github.com` (signed for a private repository).
+  `codeload.github.com`. The repository was public; a private one's
+  redirect was not observed.
 - Upstream GitHub negotiates HTTP/2 with `gh`; under interception it
   gets HTTP/1.1, which Go's client accepts.
 
@@ -70,7 +70,7 @@ Native Claude and standalone Pi are Bun-compiled executables (Pi:
 is Go. Debian's `git-remote-https` links `libcurl-gnutls` (GnuTLS);
 Debian's `curl` uses OpenSSL.
 
-Box probe, 2026-11-26: two `pinfold box up` boxes on
+Box probe, 2026-11-26, on macOS (Apple `container`) only: two `pinfold box up` boxes on
 `profile-default:latest`, no egress. A read-only mount held a test CA, a
 leaf for `localhost` and two probe binaries cross-built on the host: a Go
 `net/http` GET (`gh`'s stack) and a `bun build --compile` fetch
@@ -116,6 +116,20 @@ From documentation and source only, not run in a box:
 - On the macOS host, a Bun executable added `SSL_CERT_FILE` to its
   bundled roots, while Node 26 replaced them; neither matters in a
   shipped image.
+- A client with compiled-in roots only (`webpki-roots`) ignores both
+  mechanisms and fails closed at a routed host. None ships.
+
+Not verified:
+
+- Claude, Codex and Pi end to end through an intercepting proxy without
+  their base-URL overrides (only their TLS stacks were probed).
+- Anything on Linux (Firecracker): the trust mount over a non-empty
+  image directory, and the stacks' behaviour there.
+- The generated-path rule fails startup on a symlink along the path. An
+  image whose `/etc/ssl/certs` is a symlink (Fedora's points into
+  `/etc/pki`) would then not start with a routed host. Debian, Ubuntu
+  and Alpine have a real directory. If that matters, the alternative in
+  open question 2 avoids the path.
 
 Conclusion: the system bundle path plus `NODE_EXTRA_CA_CERTS` covers
 every stack shipped. `SSL_CERT_FILE` alone misses Git; the variable set
@@ -150,6 +164,10 @@ compatibility path.
 `to` keeps its meaning for login routes: the box still talks to the
 agent's real host; the proxy dials `to`. That keeps e2e row 26 on plain
 HTTP host fixtures, with the box side fully intercepted.
+
+A routed host is terminated even when the allowlist also names it, as
+the default allowlist does for the model hosts. An `https` target on a
+port other than 443 is refused as `spec`.
 
 Plain HTTP to a routed host is refused 403 `route`, as CONNECT to a
 route name is today. CONNECT to a routed host on a port other than 443
@@ -245,9 +263,10 @@ Consequences:
   against the host's roots, not the image's. The two are both Mozilla's
   set in practice; on macOS the host set also holds admin-trusted roots,
   which is what a host behind a corporate TLS proxy needs anyway.
-- An image that keeps its bundle elsewhere (Fedora's `/etc/pki`) gets no
-  trust and fails closed for routed hosts; its recipe or `env` can set
-  `SSL_CERT_FILE` to the mounted bundle.
+- An image that keeps its bundle elsewhere gets no trust and fails
+  closed for routed hosts; its recipe or `env` can set `SSL_CERT_FILE`
+  to the mounted bundle. One whose `/etc/ssl/certs` is a symlink does
+  not start (see Not verified).
 - The mount follows the generated-mount rules: a caller mount at or over
   `/etc/ssl/certs` is refused.
 
@@ -317,13 +336,15 @@ nothing is intercepted and no CA exists during a build.
 Protects, newly:
 
 - **Host-header fronting on routed hosts.** The proxy sets `Host`.
-- **Foreign credentials on routed hosts.** Today `api.anthropic.com`
+- **Foreign credentials on login-routed hosts.** Today `api.anthropic.com`
   is in the default allowlist, so the box can CONNECT to it with an
   attacker's API key and send project contents to the attacker's
   account; likewise `github.com` with an attacker's token when allowed.
-  Under interception every request to a routed host has the box's
-  credential headers, cookies and credential query names removed and the
-  user's credential added. Writes at a routed host go only to what the
+  Under interception every request to a login route's host has the box's
+  credential headers, cookies and credential query names removed (the
+  login policy) and the user's credential added. An `https` injecting
+  route replaces only its named headers, so another credential header
+  the box sends still passes there. Writes at a routed host go only to what the
   user's credential reaches (or to an upstream's anonymous endpoints).
 - **Audit.** Every request to a routed host is a log line with method
   and path, where passthrough logged only the host.

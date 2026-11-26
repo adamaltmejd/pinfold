@@ -946,17 +946,18 @@ network listener, no token: the socket identifies the box.
 
 - **CONNECT:** port 443 only, to an allowlisted host (exact name, or
   `.suffix` for the name and its subdomains) or a routed host. The
-  ClientHello SNI must equal the CONNECT host. To an allowlisted host the
-  tunnel is passed through unread; to a routed host the proxy terminates
-  TLS (Interception).
+  ClientHello SNI must equal the CONNECT host. A routed host is always
+  terminated (Interception), even when an allowlist entry, exact or
+  `.suffix`, also names it; any other allowlisted host's tunnel is passed
+  through unread.
 - **Plain HTTP:** port 80 only, one request per connection. A body is
   framed by one `Content-Length`, or by a `Transfer-Encoding` whose only
   coding is `chunked`; the proxy decodes chunks, re-encodes them upstream
-  and drops trailers. Both framings, a repeated one, another coding, a
-  malformed chunk and bare LF get 400 `ambiguous framing` (a malformed
-  chunk after the head was forwarded closes the connection), as does any
-  head the parser rejects, folded headers included; a CONNECT head is
-  parsed the same way. `Expect` is never forwarded. On an HTTP/1.1 request, its
+  and drops trailers. Both framings, a repeated one, another coding and
+  bare LF get 400 `ambiguous framing`; a malformed chunk does too before
+  the head is forwarded, and closes the connection after. Any head the
+  parser rejects, folded headers included, gets 400 `malformed request`;
+  a CONNECT head is parsed the same way. `Expect` is never forwarded. On an HTTP/1.1 request, its
   fields form one comma-separated list, empty members ignored; when it
   has a member and each,
   trimmed of SP and HTAB and compared ignoring ASCII case, is
@@ -979,7 +980,8 @@ network listener, no token: the socket identifies the box.
   target is served the same way, at its name.
 - **Routed hosts:** an injecting route with an `https` target is served at
   that target's host, and a login route at its agent's hosts (below), by
-  their real names; the route's name is only its label. A routed host
+  their real names on port 443; the route's name is only its label. An
+  `https` target on another port is refused as `spec`. A routed host
   needs no allowlist entry. Two routes serving one host must carry the
   same credential (the same header names, `from` sources and prefixes,
   or both the host's Codex login); otherwise `spec`. Plain HTTP to a
@@ -1165,7 +1167,8 @@ network listener, no token: the socket identifies the box.
   Either can prevent recording a request already forwarded to its upstream;
   teardown follows the owner notification.
 - **Refusal responses:** every response the proxy sends for a refusal,
-  plain HTTP or CONNECT, at any status, names the reason its log line
+  plain HTTP, CONNECT or a request inside an intercepted connection, at
+  any status, names the reason its log line
   records, the same string. It carries `Proxy-Status: pinfold;
   error=TOKEN; details="REASON"` (RFC 9209), where TOKEN is
   `http_request_denied` for `not allowlisted`, `route`, `port not
@@ -1176,8 +1179,9 @@ network listener, no token: the socket identifies the box.
   `destination_ip_prohibited` for `ip literal` and a refused address's
   class. The header is always sent. A `text/plain` body is sent only
   when the request parsed (a CONNECT whose target splits at its last `:`
-  into a non-empty host and a port, valid or not, or a plain HTTP head
-  that passed the checks above) and its method is not `HEAD`. It says
+  into a non-empty host and a port, valid or not, or a plain HTTP or
+  intercepted head that passed the checks above) and its method is not
+  `HEAD`. It says
   the pinfold sandbox refused the request, gives the reason, and says
   allowed hosts and routes are set on the host. A refused parsed `HEAD`
   has no body and no `Content-Length`. Every refusal before the request
