@@ -344,9 +344,8 @@ fn guest_vars(plan: &Plan, values: &Values) -> Vec<(String, OsString)> {
             Some((name.clone(), value?))
         })
         .collect();
-    // Node's fetch reads the proxy
-    // variables only with this set. These override any spec entries with the
-    // same names.
+    // Node's fetch reads the proxy variables only with this set. These
+    // override any spec entries with the same names.
     vars.push(("NODE_USE_ENV_PROXY".into(), "1".into()));
     if plan.egress.is_some() {
         vars.push(("HTTPS_PROXY".into(), PROXY_URL.into()));

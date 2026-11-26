@@ -66,7 +66,7 @@ pub fn exec(
     payload.push(u8::from(tty));
     put(&mut payload, metadata.encode().as_bytes());
     // Terminal setup must finish before EXEC can start the command.
-    let raw = if tty { Raw::enter()? } else { None };
+    let _raw = if tty { Raw::enter()? } else { None };
     let winch = if tty { Some(Winch::install()?) } else { None };
     let [input, output, errors] = context
         .stdio
@@ -102,16 +102,14 @@ pub fn exec(
         }
     }
 
-    let result = relay(
+    relay(
         from_box,
         to_box,
         native_exited,
         context,
         [stdin, stdout, stderr],
         winch.as_ref(),
-    );
-    drop((winch, raw));
-    result
+    )
 }
 
 fn relay(
@@ -470,17 +468,6 @@ impl<T: Read + AsFd> Read for Cancellable<'_, T> {
             }
         }
     }
-
-    fn read_exact(&mut self, mut buffer: &mut [u8]) -> io::Result<()> {
-        // The default retries Interrupted, which is this relay's cancellation.
-        while !buffer.is_empty() {
-            match self.read(buffer)? {
-                0 => return Err(io::ErrorKind::UnexpectedEof.into()),
-                read => buffer = &mut buffer[read..],
-            }
-        }
-        Ok(())
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -504,17 +491,6 @@ impl<T: Write + AsFd> Write for Cancellable<'_, T> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn write_all(&mut self, mut buffer: &[u8]) -> io::Result<()> {
-        // Cancellation must end the frame rather than restart its write.
-        while !buffer.is_empty() {
-            match self.write(buffer)? {
-                0 => return Err(io::ErrorKind::WriteZero.into()),
-                written => buffer = &buffer[written..],
-            }
-        }
         Ok(())
     }
 }
