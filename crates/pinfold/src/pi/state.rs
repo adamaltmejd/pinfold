@@ -11,18 +11,14 @@ use crate::core::{now, sha256_hex};
 use crate::dirs;
 use crate::formatting::terminal_text;
 
-/// What `state.json` records for Maintenance: the checkout to check, the
-/// last run to age, and whether a run used a project disk.
+/// What `state.json` records for Maintenance: the checkout to check and the
+/// last run to age.
 #[derive(Serialize, Deserialize)]
 struct StateFile {
     /// The canonical project root.
     root: PathBuf,
     /// Seconds since the epoch.
     last_run: u64,
-    /// Set by the first disk-mount run and kept. Without it a disk of the
-    /// project disk's name is a caller's; absent reads as false.
-    #[serde(default)]
-    project_disk: bool,
 }
 
 /// `$HOME` in a pi box: the home disk's guest path.
@@ -42,7 +38,7 @@ pub fn guest_root(mount: crate::config::ProjectMount, root: &Path) -> &Path {
 pub fn disk_origins() -> io::Result<BTreeMap<String, PathBuf>> {
     let mut origins = BTreeMap::new();
     for project in state_dirs()? {
-        for name in project.disks() {
+        for name in disk_names(&project.id) {
             origins.insert(name, project.root.clone());
         }
     }
@@ -50,22 +46,15 @@ pub fn disk_origins() -> io::Result<BTreeMap<String, PathBuf>> {
 }
 
 /// Record this run in the project's `state.json`. `root` is canonical.
-pub fn record_run(root: &Path, mount: crate::config::ProjectMount) -> io::Result<()> {
+pub fn record_run(root: &Path) -> io::Result<()> {
     let dir = dirs::state_dir()?.join("projects").join(project_id(root));
     fs::create_dir_all(&dir)?;
-    let path = dir.join("state.json");
-    let project_disk = mount == crate::config::ProjectMount::Disk
-        || fs::read(&path)
-            .ok()
-            .and_then(|json| serde_json::from_slice::<StateFile>(&json).ok())
-            .is_some_and(|state| state.root == root && state.project_disk);
     let state = StateFile {
         root: root.to_path_buf(),
         last_run: now(),
-        project_disk,
     };
     let json = serde_json::to_vec(&state).map_err(io::Error::other)?;
-    fs::write(path, json)
+    fs::write(dir.join("state.json"), json)
 }
 
 /// Read only this root's record when damaged Git metadata prevents discovery.
@@ -86,7 +75,8 @@ pub(crate) fn recorded(root: &Path) -> io::Result<bool> {
 /// The project's home disk, attached at [`HOME`], and its project disk,
 /// attached at the project's own path. `id` is a [`project_id`].
 pub fn disk_names(id: &str) -> [String; 2] {
-    [format!("pi-{id}-home"), format!("pi-{id}-project")]
+    use crate::core::plan::PROJECT_DISK_PREFIX as PIN;
+    [format!("{PIN}{id}-home"), format!("{PIN}{id}-project")]
 }
 
 /// Canonicalize `path`, naming it in the error.
@@ -131,20 +121,6 @@ pub struct StateDir {
     pub root: PathBuf,
     /// Seconds since the epoch of the last run.
     pub last_run: u64,
-    project_disk: bool,
-}
-
-impl StateDir {
-    /// The project's disks: its home disk, and its project disk once a run
-    /// used one.
-    pub fn disks(&self) -> Vec<String> {
-        let [home, project] = disk_names(&self.id);
-        let mut disks = vec![home];
-        if self.project_disk {
-            disks.push(project);
-        }
-        disks
-    }
 }
 
 /// Every project state dir with a readable `state.json`. A dir without one
@@ -163,7 +139,6 @@ pub fn state_dirs() -> io::Result<Vec<StateDir>> {
                 dir,
                 root: state.root,
                 last_run: state.last_run,
-                project_disk: state.project_disk,
             })
         })
         .collect())

@@ -846,7 +846,7 @@ fn credentials_stay_on_the_host() {
         let own: Vec<(String, PathBuf)> = volumes()
             .into_iter()
             .filter(|(volume, _)| {
-                !volumes_before.contains_key(volume) && volume.contains(&format!("-pi-{id}-"))
+                !volumes_before.contains_key(volume) && volume.contains(&format!("-pin-{id}-"))
             })
             .collect();
         assert!(

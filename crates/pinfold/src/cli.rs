@@ -894,7 +894,11 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
     plan.print(dry_run);
     if !dry_run {
         let (disk_count, before) = (plan.disk_count, plan.sizes());
-        let idle_state = plan.idle_state.clone();
+        let idle_state: Vec<PathBuf> = plan
+            .idle_projects
+            .iter()
+            .map(|project| project.dir.clone())
+            .collect();
         let removal = plan.remove(runtime);
         // A failed measurement leaves the removal's outcome as it was.
         match CleanPlan::measure(runtime, idle.as_ref()) {
@@ -956,11 +960,8 @@ struct CleanPlan {
     /// Retired runs' directories.
     runs: Vec<PathBuf>,
     run_bytes: u64,
-    /// Projects `--idle` selected and their disks, by project id.
-    project_disks: BTreeMap<String, Vec<String>>,
-    /// The selected projects' state dirs, and the checkouts they record.
-    idle_state: Vec<PathBuf>,
-    idle_roots: Vec<PathBuf>,
+    /// The projects `--idle` selected.
+    idle_projects: Vec<IdleProject>,
     /// The selected projects' disks no live box attaches: those removal
     /// removes, after it prunes the dead boxes.
     idle_disks: usize,
@@ -974,6 +975,17 @@ struct CleanPlan {
     project_state: u64,
     build_cache_bytes: u64,
     idle: Option<Idle>,
+}
+
+/// A project `--idle` selected, as measured.
+struct IdleProject {
+    id: String,
+    dir: PathBuf,
+    /// The checkout its state records.
+    root: PathBuf,
+    /// Its disks a live box attaches, each with one holder: they stay, and
+    /// keep its state.
+    attached: Vec<(String, String)>,
 }
 
 /// `--idle`: the age, and which projects it may select.
@@ -1019,44 +1031,46 @@ impl CleanPlan {
             .sum();
 
         let disks = runtime.list_disks()?;
-        let mut project_disks = BTreeMap::new();
+        let attached = match idle {
+            Some(_) => disk::attachments(None)?,
+            None => BTreeMap::new(),
+        };
+        let dead: BTreeSet<&str> = boxes.dead.iter().map(|dead| dead.id.as_str()).collect();
+        let mut idle_projects = Vec::new();
+        let mut idle_disks = 0;
         let mut project_state = 0;
-        let mut idle_state = Vec::new();
-        let mut idle_roots = Vec::new();
         let mut moved = Vec::new();
         for project in crate::pi::state::state_dirs()? {
             if !project.root.exists() {
                 moved.push(project.root.clone());
             }
-            if Self::idle(&project, &boxes.live_projects, idle) {
-                project_state += clean::path_bytes(&project.dir);
-                idle_state.push(project.dir.clone());
-                idle_roots.push(project.root.clone());
-                let names: Vec<String> = project
-                    .disks()
-                    .into_iter()
-                    .filter(|name| disks.iter().any(|disk| &disk.name == name))
-                    .collect();
-                project_disks.insert(project.id, names);
+            if !Self::idle(&project, &boxes.live_projects, idle) {
+                continue;
             }
+            project_state += clean::path_bytes(&project.dir);
+            let mut kept = Vec::new();
+            for name in crate::pi::state::disk_names(&project.id) {
+                if !disks.iter().any(|disk| disk.name == name) {
+                    continue;
+                }
+                // The removal prunes dead boxes first.
+                let holder = attached.get(&name).and_then(|holders| {
+                    holders
+                        .iter()
+                        .find(|(holder, _)| !dead.contains(holder.as_str()))
+                });
+                match holder {
+                    Some((holder, _)) => kept.push((name, holder.clone())),
+                    None => idle_disks += 1,
+                }
+            }
+            idle_projects.push(IdleProject {
+                id: project.id,
+                dir: project.dir,
+                root: project.root,
+                attached: kept,
+            });
         }
-        let idle_disks = if project_disks.is_empty() {
-            0
-        } else {
-            let attached = disk::attachments(None)?;
-            let dead: BTreeSet<&str> = boxes.dead.iter().map(|dead| dead.id.as_str()).collect();
-            project_disks
-                .values()
-                .flatten()
-                .filter(|name| {
-                    attached.get(*name).is_none_or(|holders| {
-                        holders
-                            .iter()
-                            .all(|(holder, _)| dead.contains(holder.as_str()))
-                    })
-                })
-                .count()
-        };
 
         Ok(CleanPlan {
             boxes,
@@ -1070,9 +1084,7 @@ impl CleanPlan {
             automatic,
             run_bytes,
             runs,
-            project_disks,
-            idle_state,
-            idle_roots,
+            idle_projects,
             idle_disks,
             disk_bytes: disks.iter().map(|disk| disk.allocated).sum(),
             disk_count: disks.len(),
@@ -1129,12 +1141,26 @@ impl CleanPlan {
                 "    remove with `pinfold clean --idle AGE` (this folder's project, if not run for AGE; add --all-projects for every project) or `pinfold disk rm NAME|--all`"
             );
         }
-        for root in &self.idle_roots {
-            println!(
-                "  {} idle project: {}",
-                if dry_run { "would remove" } else { "removes" },
-                terminal_text(&root.to_string_lossy())
-            );
+        for project in &self.idle_projects {
+            let root = terminal_text(&project.root.to_string_lossy());
+            if project.attached.is_empty() {
+                println!(
+                    "  {} idle project: {root}",
+                    if dry_run { "would remove" } else { "removes" }
+                );
+            } else {
+                println!(
+                    "  {} idle project's state: {root}",
+                    if dry_run { "would keep" } else { "keeps" }
+                );
+                for (name, holder) in &project.attached {
+                    println!(
+                        "    disk {} is attached to box {}",
+                        terminal_text(name),
+                        terminal_text(holder)
+                    );
+                }
+            }
         }
         // Under `--idle --all-projects` an idle project's state and disks
         // go too.
@@ -1164,9 +1190,9 @@ impl CleanPlan {
         clean::remove_paths(self.automatic)?;
         clean::remove_paths(self.runs)?;
         let mut locks = BTreeMap::new();
-        for id in self.project_disks.keys() {
-            if let Some(lock) = crate::core::ownership::try_project_lock(id)? {
-                locks.insert(id.as_str(), lock);
+        for project in &self.idle_projects {
+            if let Some(lock) = crate::core::ownership::try_project_lock(&project.id)? {
+                locks.insert(project.id.as_str(), lock);
             }
         }
         let mut disk_failure = None;
@@ -1183,10 +1209,12 @@ impl CleanPlan {
                 }
                 if Self::idle(&project, &live, self.idle.as_ref()) {
                     // Disks first: a kept disk keeps the state that names
-                    // its origin, so a later clean still finds it. A disk a
-                    // box attaches stays; `disk::remove` checks.
+                    // its origin, so a later clean still finds it. The
+                    // names, not the measurement, pick the disks, so one
+                    // made since goes too; `disk::remove` checks the
+                    // inventory and attachments under the disk's lock.
                     let mut kept = false;
-                    for name in self.project_disks.get(&project.id).into_iter().flatten() {
+                    for name in &crate::pi::state::disk_names(&project.id) {
                         match disk::remove(runtime, name) {
                             Ok(disk::Removal::Removed { existed }) => {
                                 removed += usize::from(existed)

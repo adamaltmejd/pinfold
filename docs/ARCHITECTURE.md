@@ -540,7 +540,8 @@ The box spec `up` reads from stdin:
   name does. Its value follows a variable's value rules, but never enters
   an environment on the host.
 - A label key starting with `dev.pinfold.` is refused as `spec`, naming
-  it: the namespace is pinfold's.
+  it: the namespace is pinfold's. So is a disk `name` starting with
+  `pin-`: only a project creates such a disk (pi layer).
 - `profile` applies the profile's `home/` and `share/` (see Profiles), and
   its image if `image` is absent; egress, env and resources come only
   from the spec.
@@ -597,8 +598,8 @@ The box spec `up` reads from stdin:
 - On Linux a box attaches at most 14 disks and mounts, pinfold's own
   (the profile's `share/` and each generated configuration directory) included;
   more are refused as `spec`.
-- A disk `name` is validated like a profile name, and named once per
-  spec. `size` is a whole number
+- A disk `name` is validated like a profile name, does not start with
+  `pin-`, and is named once per spec. `size` is a whole number
   followed by `G`, at least `1G`, default `64G`; it caps a disk pinfold
   creates and is ignored for one that exists (`disk list` reports its
   size). A disk is created on first use, empty or filled from `from`.
@@ -1706,11 +1707,9 @@ direction touches a working tree.
 
 `disk` prints human-readable output by default. `list` shows each disk's
 allocated storage, capacity, clean state, attachments and recorded full
-origin path. A project's home disk shows its canonical root, read from
-its project state, and so does its project disk once that state records
-a run that used it. Caller-created disks, one named like a project disk
-no run used among them, and a disk whose project state is gone show no
-origin. Paths are descriptive,
+origin path. A project's disks, named by its id, show its canonical
+root, read from its project state. Caller-created disks, and a disk
+whose project state is gone, show no origin. Paths are descriptive,
 never deletion authority, and terminal controls are escaped. Human sizes
 use B, KiB, MiB and GiB as appropriate.
 
@@ -1800,7 +1799,7 @@ turns off both the update check and the `bundled-profiles-changed` notice. The t
 
 pinfold only removes what it created: its images and boxes carry `dev.pinfold.*` labels,
 and its state lives under its own dirs. Each project's state records its
-checkout path, last run, and whether any run used a project disk.
+checkout path and last run.
 
 Automatic, never prompting:
 - After a build: keep the newest two builds per source (a profile, a
@@ -1863,7 +1862,9 @@ of NAME, whatever its age, and no other name's.
   says so in one line. The listing names each project it removes by its
   recorded checkout. A project's disks go before its state; a disk a box
   attaches, or one clean fails to remove, is kept with its project's
-  state, and clean says so; only a failure exits nonzero.
+  state, and clean says so; only a failure exits nonzero. The listing
+  names each attached disk and its box under its project, as keeping the
+  state.
   `--all-projects` without `--idle` is a usage error. Never automatic: a
   project disk holds unfetched work, and a home disk sessions and logins.
 
@@ -1906,8 +1907,9 @@ its project.
   The executable word must be nonempty. No shell or implicit agent is added.
 - **State:** a project has host state under
   `~/.local/state/pinfold/projects/<name>-<hash>/` and a persistent
-  `pi-<name>-<hash>-home` disk at `/home/pinfold`. A disk project also has
-  `pi-<name>-<hash>-project`. The hash is of the canonical project root
+  `pin-<name>-<hash>-home` disk at `/home/pinfold`. A disk project also has
+  `pin-<name>-<hash>-project`. The `pin-` prefix is reserved: a box spec
+  may not name it, so these disks are the project's. The hash is of the canonical project root
   path. Agent settings, sessions and caches sit at their default paths in
   the home disk. The cosmetic name is at most 32 ASCII bytes.
 - **Project mount:** a share appears at the canonical host project path,
