@@ -31,14 +31,17 @@ const HELPER_DEADLINE: Duration = Duration::from_secs(5);
 pub(crate) const REPLY_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The owner's answer to a start that asked for the relay.
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Status {
     /// No runnable `rex` in the box.
     Absent,
     RemoteControl,
     Failed,
-    Relayed,
+    /// The socket the owner bound, so a start prints that one.
+    Relayed {
+        socket: PathBuf,
+    },
 }
 
 /// A start asks for the relay only in a Rex pane, with terminals.
@@ -64,19 +67,12 @@ pub(crate) fn remove_left(id: &str) {
 }
 
 /// Print a start's outcome on stderr. An absent `rex` prints nothing.
-pub(crate) async fn report(
-    status: Option<Status>,
-    id: &str,
-    signals: &mut Signals,
-) -> io::Result<()> {
+pub(crate) async fn report(status: Option<Status>, signals: &mut Signals) -> io::Result<()> {
     let lines = match status {
         // The address alone on its line, so it selects and copies cleanly.
-        Some(Status::Relayed) => vec![
+        Some(Status::Relayed { socket }) => vec![
             "pinfold start: rex: add this address in the Rex app under Add Remote Host…".into(),
-            format!(
-                "unix://{}",
-                ownership::host_dir()?.join(leaf(id)).display()
-            ),
+            format!("unix://{}", socket.display()),
         ],
         Some(Status::RemoteControl) => vec![
             "pinfold start: rex-remote-control: Remote Control is on or unreadable in the Rex app; no Rex host was set up.".into(),
@@ -195,7 +191,7 @@ impl State {
             return Status::RemoteControl;
         }
         if self.relay.is_some() {
-            return Status::Relayed;
+            return self.relayed();
         }
         self.open().await
     }
@@ -242,7 +238,16 @@ impl State {
             stop,
             accept,
         });
-        Status::Relayed
+        self.relayed()
+    }
+
+    fn relayed(&self) -> Status {
+        match ownership::host_dir() {
+            Ok(dir) => Status::Relayed {
+                socket: dir.join(&self.leaf),
+            },
+            Err(_) => Status::Failed,
+        }
     }
 
     /// Wait for the started server, then bind the host socket.

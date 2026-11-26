@@ -29,6 +29,18 @@ use crate::init::Deadline;
 /// The loopback URL clients reach through `pinfold init`'s relay.
 pub const PROXY_URL: &str = "http://127.0.0.1:3128";
 
+/// The box's `NO_PROXY`: its own loopback servers are not egress (#497).
+pub const NO_PROXY: &str = "localhost,127.0.0.1,::1";
+
+/// Whether clients honouring [`NO_PROXY`] skip the proxy for `name`, as
+/// curl does: an entry matches itself and, as a domain, its subdomains.
+pub fn bypassed(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    NO_PROXY
+        .split(',')
+        .any(|entry| name == entry || name.ends_with(&format!(".{entry}")))
+}
+
 /// One request head, or an upstream's status line. The cap only keeps a
 /// client or upstream from growing the buffer without bound.
 const MAX_HEAD: usize = 8 * 1024;

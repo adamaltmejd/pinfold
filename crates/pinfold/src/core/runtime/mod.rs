@@ -21,7 +21,7 @@ use serde::de::DeserializeOwned;
 
 use crate::core::disk::{Directory, Fill, Seeding};
 use crate::core::plan::{Env, Plan, Values};
-use crate::core::proxy::PROXY_URL;
+use crate::core::proxy::{NO_PROXY, PROXY_URL};
 
 /// The box runtime for this OS: Apple `container` on macOS, Firecracker on
 /// Linux, the only targets pinfold builds for.
@@ -350,9 +350,8 @@ fn guest_vars(plan: &Plan, values: &Values) -> Vec<(String, OsString)> {
     if plan.egress.is_some() {
         vars.push(("HTTPS_PROXY".into(), PROXY_URL.into()));
         vars.push(("http_proxy".into(), PROXY_URL.into()));
-        // The box's own loopback servers are not egress (#497).
         for name in ["NO_PROXY", "no_proxy"] {
-            vars.push((name.into(), "localhost,127.0.0.1,::1".into()));
+            vars.push((name.into(), NO_PROXY.into()));
         }
     }
     vars

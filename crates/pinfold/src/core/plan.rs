@@ -1245,6 +1245,16 @@ impl Plan {
                     }
                 }
             }
+            // The box's NO_PROXY sends these names to its own loopback.
+            if let Some(name) = labels
+                .iter()
+                .chain(routed.keys())
+                .find(|name| proxy::bypassed(name))
+            {
+                return Err(invalid(format!(
+                    "route name {name:?} is one the box reaches on its own loopback"
+                )));
+            }
             // A label that is also a routed host would leave the box two
             // meanings for one name.
             if let Some(label) = labels.iter().find(|label| routed.contains_key(*label)) {

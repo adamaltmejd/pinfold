@@ -793,7 +793,7 @@ async fn admit(
                 Reply::Kept { rex, .. } => {
                     drop(launch);
                     let _ = forward_diagnostics("pinfold start: already running", signals).await;
-                    let _ = rex::report(rex, &state::project_id(root), signals).await;
+                    let _ = rex::report(rex, signals).await;
                     return Ok(None);
                 }
                 Reply::Error { reason, fields } if reason == "config-changed" => {
@@ -890,7 +890,7 @@ async fn admit(
             Reply::Kept { rex, .. } => {
                 let _ = child.1.try_wait();
                 let _ = forward_diagnostics("pinfold start: started", signals).await;
-                let _ = rex::report(rex, &state::project_id(root), signals).await;
+                let _ = rex::report(rex, signals).await;
                 return Ok(None);
             }
             other => return Err(reply_error(other)),

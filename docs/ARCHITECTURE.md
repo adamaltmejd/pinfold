@@ -976,7 +976,9 @@ network listener, no token: the socket identifies the box.
   (IPv4-mapped, IPv4-compatible, NAT64 `64:ff9b::/96`, 6to4) is checked as
   that IPv4 address. Resolve once; dial the checked address.
 - **Routes:** names are unique ignoring ASCII case; a collision refuses
-  `up` as `spec` before creation. A name maps to one host service, e.g.
+  `up` as `spec` before creation. A name or routed host that the box's
+  `NO_PROXY` covers (`localhost` and its subdomains, `127.0.0.1`, `::1`) is
+  refused as `spec`. A name maps to one host service, e.g.
   `api.internal → 127.0.0.1:7777`. Plain HTTP only, Host header rewritten,
   `Upgrade` dropped (no WebSocket). CONNECT to a route is refused. The host
   service authenticates its callers. An injecting route with an `http`
