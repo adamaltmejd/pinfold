@@ -1014,7 +1014,9 @@ impl BoxUp {
 
     /// Wait for the owner within `timeout`, without blocking past it.
     fn reap(&mut self, timeout: Duration) -> Option<ExitStatus> {
-        try_wait_until(&mut self.child.take()?, Instant::now() + timeout)
+        let status = try_wait_until(self.child.as_mut()?, Instant::now() + timeout)?;
+        self.child = None;
+        Some(status)
     }
 
     fn fail(&mut self, what: &str) {
@@ -1073,8 +1075,12 @@ impl Below {
     /// Wait, bounded, until each process has exited: gone from /proc, or a
     /// zombie no one has reaped yet.
     pub fn wait_gone(&self) {
+        let deadline = Instant::now() + COMMAND;
         for (pid, _) in &self.0 {
-            wait_exited(*pid);
+            while !exited(*pid) {
+                assert!(Instant::now() < deadline, "{pid} did not exit");
+                thread::sleep(Duration::from_millis(10));
+            }
         }
     }
 }
