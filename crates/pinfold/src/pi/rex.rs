@@ -86,7 +86,7 @@ pub(crate) async fn report(
         Some(Status::Absent) | None => vec![],
     };
     for line in lines {
-        forward_diagnostics(line.into_bytes(), signals).await?;
+        forward_diagnostics(&line, signals).await?;
     }
     Ok(())
 }
