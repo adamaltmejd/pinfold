@@ -28,19 +28,16 @@ pub fn resolve(host: &str, port: u16) -> Result<SocketAddr, ResolveError> {
         .map_err(|_| ResolveError::Unresolved)?
         .collect();
     for address in &addresses {
-        if let Some(reason) = forbidden(address.ip()) {
+        // The log reason when the address must not be dialed.
+        let forbidden = match address.ip() {
+            IpAddr::V4(ip) => forbidden_v4(ip),
+            IpAddr::V6(ip) => forbidden_v6(ip),
+        };
+        if let Some(reason) = forbidden {
             return Err(ResolveError::Forbidden(reason));
         }
     }
     addresses.first().copied().ok_or(ResolveError::Unresolved)
-}
-
-/// Whether an address must not be dialed, and the log reason.
-pub fn forbidden(ip: IpAddr) -> Option<&'static str> {
-    match ip {
-        IpAddr::V4(ip) => forbidden_v4(ip),
-        IpAddr::V6(ip) => forbidden_v6(ip),
-    }
 }
 
 fn forbidden_v4(ip: Ipv4Addr) -> Option<&'static str> {

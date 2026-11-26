@@ -448,8 +448,12 @@ fn parse_head(
     log: &AuditLog,
     host: &str,
 ) -> Option<(String, u8, String, Vec<(String, Vec<u8>)>)> {
-    let head = match read_head(client) {
-        Ok(head) => head,
+    // A bare-LF blank line also ends the read, so it is refused below
+    // instead of blocking. EOF and a head over the cap end silently.
+    let end = |head: &[u8]| head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n");
+    let head = match read_until(client, end) {
+        Ok(head) if end(&head) => head,
+        Ok(_) => return None,
         Err(error) if timed_out(&error) => {
             let _ = record(log, host, "refused", "header timeout", None);
             return None;
@@ -673,7 +677,7 @@ fn plain(
     }
     let _ = forward(
         client,
-        dial(address, connection).map(DeadlineStream::new),
+        dial(address, connection).map(|server| DeadlineStream(Some(server))),
         request,
         &request.authority,
         "",
@@ -755,7 +759,7 @@ fn route(
         let server = lookup(&target.host, target.port, false, connection)
             .ok()
             .and_then(|address| dial(address, connection))
-            .map(DeadlineStream::new);
+            .map(|server| DeadlineStream(Some(server)));
         let _ = forward(
             client,
             server,
@@ -829,12 +833,6 @@ fn resolve_checked(
 // including writes while reading or flushing the TLS stream.
 struct DeadlineStream(Option<TcpStream>);
 
-impl DeadlineStream {
-    fn new(stream: TcpStream) -> Self {
-        Self(Some(stream))
-    }
-}
-
 impl Read for DeadlineStream {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         self.0
@@ -879,7 +877,7 @@ fn dial_tls(
 ) -> Option<StreamOwned<ClientConnection, DeadlineStream>> {
     let name = ServerName::try_from(host.to_string()).ok()?;
     let mut connection = ClientConnection::new(tls_config(), name).ok()?;
-    let mut server = DeadlineStream::new(dial(address, request)?);
+    let mut server = DeadlineStream(Some(dial(address, request)?));
     while connection.is_handshaking() {
         connection.complete_io(&mut server).ok()?;
     }
@@ -1251,18 +1249,6 @@ pub fn hop_by_hop(name: &str) -> bool {
     HOP_BY_HOP.iter().any(|hop| name.eq_ignore_ascii_case(hop))
 }
 
-/// Read one request head, ending at the blank line. A bare-LF blank line
-/// also ends the read, so the caller can refuse it instead of blocking. EOF
-/// and a head over the cap are `UnexpectedEof`; a timeout keeps its kind.
-fn read_head(client: &mut impl Read) -> io::Result<Vec<u8>> {
-    let end = |head: &[u8]| head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n");
-    let head = read_until(client, end)?;
-    if !end(&head) {
-        return Err(io::ErrorKind::UnexpectedEof.into());
-    }
-    Ok(head)
-}
-
 /// Read one byte at a time until `done`, EOF or MAX_HEAD bytes.
 fn read_until(reader: &mut impl Read, done: impl Fn(&[u8]) -> bool) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(256);
@@ -1353,16 +1339,9 @@ fn lookup(
 }
 
 /// Connect to an already resolved address and bound idle reads/writes.
+/// The socket is registered before connect so teardown can interrupt a
+/// pending dial.
 fn dial(address: SocketAddr, connection: &Connection) -> Option<TcpStream> {
-    let server = connect_upstream(address, connection)?;
-    server.set_read_timeout(Some(IDLE_TIMEOUT)).ok()?;
-    // Deadline still needs this fallback on Darwin's blocking sockets.
-    server.set_write_timeout(Some(IDLE_TIMEOUT)).ok()?;
-    Some(server)
-}
-
-/// Register the socket before connect so teardown can interrupt a pending dial.
-fn connect_upstream(address: SocketAddr, connection: &Connection) -> Option<TcpStream> {
     use nix::sys::socket::{AddressFamily, SockFlag, SockType, SockaddrStorage, connect, socket};
     let domain = if address.is_ipv4() {
         AddressFamily::Inet
@@ -1410,6 +1389,9 @@ fn connect_upstream(address: SocketAddr, connection: &Connection) -> Option<TcpS
         return None;
     }
     server.set_nonblocking(false).ok()?;
+    server.set_read_timeout(Some(IDLE_TIMEOUT)).ok()?;
+    // Deadline still needs this fallback on Darwin's blocking sockets.
+    server.set_write_timeout(Some(IDLE_TIMEOUT)).ok()?;
     Some(server)
 }
 
