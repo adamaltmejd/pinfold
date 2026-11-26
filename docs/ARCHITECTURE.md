@@ -1003,9 +1003,10 @@ network listener, no token: the socket identifies the box.
   framing and `Expect` as for plain HTTP, `Connection: close` upstream and
   one request per connection.
 - **Box trust:** a box with a routed host gets `/etc/ssl/certs/ca-certificates.crt`
-  replaced, read-only, by the image's own file at that path (empty when
-  absent; a symlink on the path fails the start) followed by the box CA,
-  and `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and `REQUESTS_CA_BUNDLE`
+  replaced, read-only, by the image's own file at that path followed by
+  the box CA. Box images are Debian-based: where the image has no regular
+  file there, reached without a link, the start fails, its `failed`
+  detail naming the file. The box gets `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and `REQUESTS_CA_BUNDLE`
   naming it. On Linux PID 1 writes it into the root's overlay before the
   root turns read-only; on macOS a networkless helper box on the image
   reads the image's file and the box gets the result as a single-file

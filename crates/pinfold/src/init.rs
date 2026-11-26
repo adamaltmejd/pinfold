@@ -677,14 +677,14 @@ pub const BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
 pub const MAX_BUNDLE: usize = 4 * 1024 * 1024;
 
 /// The image's CA bundle below the open root `root`, walked without
-/// following a link; empty when the image has none.
+/// following a link. Box images are Debian-based, so an image without a
+/// regular file there fails the start.
 pub(crate) fn image_bundle(root: &OwnedFd) -> io::Result<Vec<u8>> {
     use nix::fcntl::OFlag;
-    let refuse = |error: nix::errno::Errno| match error {
-        nix::errno::Errno::ENOENT => None,
-        error => Some(io::Error::other(format!(
-            "the image's {BUNDLE} is not a plain file: {error}"
-        ))),
+    let missing = || {
+        io::Error::other(format!(
+            "the image has no regular file at {BUNDLE}; box images are Debian-based"
+        ))
     };
     let path = Path::new(BUNDLE).strip_prefix("/").expect("absolute");
     let mut parts: Vec<_> = path.components().map(|part| part.as_os_str()).collect();
@@ -698,18 +698,21 @@ pub(crate) fn image_bundle(root: &OwnedFd) -> io::Result<Vec<u8>> {
             nix::sys::stat::Mode::empty(),
         ) {
             Ok(directory) => directory,
-            Err(error) => return refuse(error).map_or(Ok(Vec::new()), Err),
+            Err(_) => return Err(missing()),
         };
     }
-    let bundle = match nix::fcntl::openat(
+    // Non-blocking, so a FIFO there cannot stall the open.
+    let bundle = nix::fcntl::openat(
         &directory,
         file,
-        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
         nix::sys::stat::Mode::empty(),
-    ) {
-        Ok(bundle) => fs::File::from(bundle),
-        Err(error) => return refuse(error).map_or(Ok(Vec::new()), Err),
-    };
+    )
+    .map(fs::File::from)
+    .map_err(|_| missing())?;
+    if !bundle.metadata()?.is_file() {
+        return Err(missing());
+    }
     let mut bytes = Vec::new();
     bundle.take(MAX_BUNDLE as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > MAX_BUNDLE {

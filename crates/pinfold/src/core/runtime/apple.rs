@@ -214,8 +214,11 @@ pub fn trust_bundle(
 ) -> io::Result<std::path::PathBuf> {
     let image = plan.image.as_deref().expect("up resolved the image");
     let user = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
+    // Under the box's name, which its owner holds: another root's
+    // maintenance prunes an unnamed helper as a dead box.
     let output = std::process::Command::new("container")
-        .args(["run", "--rm", "--progress", "none", "--network", "none"])
+        .args(["run", "--name", &plan.name, "--progress", "none"])
+        .args(["--network", "none"])
         .args(["--read-only", "--cap-drop", "ALL", "--workdir", "/"])
         .args(["--user", &user])
         .arg("--label")
@@ -238,11 +241,19 @@ pub fn trust_bundle(
         .args(["init", "bundle"])
         .stdin(Stdio::null())
         .output_guarded()
-        .map_err(|error| spawn_error("container", error))?;
+        .map_err(|error| spawn_error("container", error));
+    let (stopped, removed, _) = remove_helper(&plan.name);
+    let output = output?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "read the image's CA bundle: {}",
             terminal_text(String::from_utf8_lossy(&output.stderr).trim())
+        )));
+    }
+    if let Err(error) = stopped.and(removed) {
+        return Err(io::Error::other(format!(
+            "remove the CA bundle helper {}: {error}",
+            plan.name
         )));
     }
     let mut bundle = output.stdout;
@@ -256,6 +267,21 @@ pub fn trust_bundle(
     let path = state_dir.join("ca-certificates.crt");
     std::fs::write(&path, bundle)?;
     Ok(path)
+}
+
+/// Stop and remove a helper run under the box's name: whether each step
+/// succeeded, and whether the name may still be taken. The box reuses the
+/// name, so the helper must be gone first. Apple reports a container
+/// `running` for a moment after `run` returns, and `rm` refuses it then;
+/// `run --rm` removes it just as late. `stop` returns once it has stopped,
+/// after which `rm` succeeds.
+fn remove_helper(name: &str) -> (io::Result<Vec<u8>>, io::Result<Vec<u8>>, bool) {
+    crate::core::process::with_deadline(REMOVAL_TIMEOUT, |_| {
+        let stopped = output(&["container", "stop", name]);
+        let removed = output(&["container", "rm", name]);
+        let unremoved = removed.is_err() && !matches!(container(name), Ok(None));
+        (stopped, removed, unremoved)
+    })
 }
 
 fn bind(host: &Path, guest: &Path, readonly: bool) -> OsString {
@@ -1085,17 +1111,7 @@ impl Runtime for Apple {
         if !spawned {
             return result.map(drop);
         }
-        // The box reuses the helper's name, so the helper must be gone first.
-        // Apple reports a container `running` for a moment after `run` returns,
-        // and `rm` refuses it then; `run --rm` removes it just as late. `stop`
-        // returns once it has stopped, after which `rm` succeeds.
-        let (stopped, removed, unremoved) =
-            crate::core::process::with_deadline(REMOVAL_TIMEOUT, |_| {
-                let stopped = output(&["container", "stop", name]);
-                let removed = output(&["container", "rm", name]);
-                let unremoved = removed.is_err() && !matches!(container(name), Ok(None));
-                (stopped, removed, unremoved)
-            });
+        let (stopped, removed, unremoved) = remove_helper(name);
         let leftover = match (&stopped, &removed) {
             (Ok(_), Ok(_)) => String::new(),
             _ => format!("; removing helper {name}: {stopped:?}, {removed:?}"),
