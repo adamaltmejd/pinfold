@@ -147,12 +147,7 @@ fn project_intro(unconfigured: &mut bool) -> io::Result<Option<Option<PathBuf>>>
     };
     context.check_metadata(config.mount)?;
     config.check_host_paths(root)?;
-    // A preview has no saved profile for PINFOLD_PROFILE to override.
-    let profile = if configured {
-        terminal_text(&config.profile.name) + &profile_override(&config)
-    } else {
-        terminal_text(&config.profile.name)
-    };
+    let profile = terminal_text(&config.profile.name) + &profile_override(&config);
     println!("Profile   {profile}");
     println!("Files     {}", project_files(config.mount, root));
     let reference = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(root));
@@ -2160,10 +2155,9 @@ fn image_refused(
     if json {
         return refused("image", name, reason, detail);
     }
-    let reason = serde_json::json!(reason);
     eprintln!(
         "pinfold image {verb}: {}: {}",
-        reason.as_str().unwrap_or("refused"),
+        reason.token(),
         terminal_text(detail)
     );
     1
