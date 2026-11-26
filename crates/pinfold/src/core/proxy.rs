@@ -334,16 +334,10 @@ fn serve(
     let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
     let accepted = (|| {
         while !control.cancelled.load(Ordering::Acquire) && !log.failed() {
-            let mut index = 0;
-            while index < workers.len() {
-                if workers[index].is_finished() {
-                    workers
-                        .swap_remove(index)
-                        .join()
-                        .map_err(|_| io::Error::other("proxy request worker panicked"))?;
-                } else {
-                    index += 1;
-                }
+            for worker in workers.extract_if(.., |worker| worker.is_finished()) {
+                worker
+                    .join()
+                    .map_err(|_| io::Error::other("proxy request worker panicked"))?;
             }
             let mut ready = [PollFd::new(listener.as_fd(), PollFlags::POLLIN)];
             match poll(&mut ready, 100u16) {
@@ -418,16 +412,8 @@ fn handle(mut socket: UnixStream, rules: &Rules, log: &AuditLog, connection: &Co
     {
         return;
     }
-    let head = match read_head(&mut socket) {
-        Ok(head) => head,
-        Err(error) if timed_out(&error) => {
-            let _ = record(log, "", "refused", "header timeout", None);
-            return;
-        }
-        Err(_) => return,
-    };
     let client = &mut Client::Plain(&mut socket);
-    let Some((method, version, target, headers)) = parse_head(client, log, "", &head) else {
+    let Some((method, version, target, headers)) = parse_head(client, log, "") else {
         return;
     };
     if method == "CONNECT" {
@@ -439,16 +425,25 @@ fn handle(mut socket: UnixStream, rules: &Rules, log: &AuditLog, connection: &Co
     }
 }
 
-/// A head's method, minor version, target and headers, or `None` once it
-/// is refused. One parse for every head; httparse rejects a folded header,
-/// a fourth token on the request line and more than MAX_HEADERS headers.
+/// Read one head and return its method, minor version, target and headers,
+/// or `None` once it is refused or the read fails. One parse for every
+/// head; httparse rejects a folded header, a fourth token on the request
+/// line and more than MAX_HEADERS headers.
 #[allow(clippy::type_complexity)]
 fn parse_head(
     client: &mut Client,
     log: &AuditLog,
     host: &str,
-    head: &[u8],
 ) -> Option<(String, u8, String, Vec<(String, Vec<u8>)>)> {
+    let head = match read_head(client) {
+        Ok(head) => head,
+        Err(error) if timed_out(&error) => {
+            let _ = record(log, host, "refused", "header timeout", None);
+            return None;
+        }
+        Err(_) => return None,
+    };
+    let head = head.as_slice();
     if !head_well_formed(head) {
         refuse(client, log, host, None, 400, "ambiguous framing");
         return None;
@@ -522,13 +517,10 @@ fn connect(
     if respond(client, 200).is_err() {
         return;
     }
-    let Client::Plain(client) = client else {
-        unreachable!("a tunnel's client is the socket")
-    };
     // The client sends its ClientHello only after the 200, so it is read
     // here and forwarded unchanged once the SNI checks out.
-    let hello = match tls::read_client_hello(client, host) {
-        Ok(hello) => hello,
+    let hello = match tls::read_client_hello(socket, host) {
+        Ok((_, hello)) => hello,
         Err(reason) => {
             let _ = record(log, host, "refused", reason, None);
             return;
@@ -544,7 +536,7 @@ fn connect(
         {
             return;
         }
-        tunnel(client, server, log, host);
+        tunnel(socket, server, log, host);
     }
 }
 
@@ -566,8 +558,8 @@ fn intercept(
     if respond(&mut Client::Plain(&mut *socket), 200).is_err() {
         return;
     }
-    let accepted = match tls::accept(socket, host) {
-        Ok(accepted) => accepted,
+    let accepted = match tls::read_client_hello(socket, host) {
+        Ok((accepted, _)) => accepted,
         Err(reason) => {
             let _ = record(log, host, "refused", reason, None);
             return;
@@ -589,15 +581,7 @@ fn intercept(
         }
     }
     let client = &mut Client::Tls(Box::new(StreamOwned::new(server, side)));
-    let head = match read_head(client) {
-        Ok(head) => head,
-        Err(error) if timed_out(&error) => {
-            let _ = record(log, host, "refused", "header timeout", None);
-            return;
-        }
-        Err(_) => return,
-    };
-    let Some((method, version, target, headers)) = parse_head(client, log, host, &head) else {
+    let Some((method, version, target, headers)) = parse_head(client, log, host) else {
         return;
     };
     let request = match parse_origin(&method, version, &target, host, &headers) {
@@ -1357,9 +1341,6 @@ fn lookup(
 
 /// Connect to an already resolved address and bound idle reads/writes.
 fn dial(address: SocketAddr, connection: &Connection) -> Option<TcpStream> {
-    if connection.cancelled() {
-        return None;
-    }
     let server = connect_upstream(address, connection)?;
     server.set_read_timeout(Some(IDLE_TIMEOUT)).ok()?;
     // Deadline still needs this fallback on Darwin's blocking sockets.
@@ -1577,7 +1558,6 @@ fn refuse_with(
         // `ip literal` and a refused address's class.
         _ => "destination_ip_prohibited",
     };
-    let details = reason.replace('\\', "\\\\").replace('"', "\\\"");
     // A HEAD's Content-Length must be its GET's (RFC 9110, 8.6), so a
     // refused HEAD sends none; `Connection: close` ends it.
     let (framing, body) = match method {
@@ -1598,7 +1578,7 @@ fn refuse_with(
     };
     let response = format!(
         "HTTP/1.1 {code} {}\r\n\
-         Proxy-Status: pinfold; error={error}; details=\"{details}\"\r\n\
+         Proxy-Status: pinfold; error={error}; details=\"{reason}\"\r\n\
          {framing}Connection: close\r\n\r\n{body}",
         phrase(code),
     );
