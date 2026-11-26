@@ -899,8 +899,8 @@ fn digits(number: &str) -> Option<u64> {
 
 /// One environment entry. It serializes as declared, never as a value read
 /// from the caller.
-#[derive(Debug, Clone, Serialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum Env {
     /// A literal value from the spec.
     Exact(String),
@@ -915,35 +915,6 @@ impl Env {
             Env::Exact(_) => None,
             Env::Secret { from } => Some(Source::declared(from)),
         }
-    }
-}
-
-impl<'de> Deserialize<'de> for Env {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-        impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = Env;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a string or an object with only a from key")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Env, E> {
-                Ok(Env::Exact(value.to_string()))
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Env, A::Error> {
-                #[derive(Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct Secret {
-                    from: String,
-                }
-                let Secret { from } =
-                    Secret::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
-                Ok(Env::Secret { from })
-            }
-        }
-        deserializer.deserialize_any(Visitor)
     }
 }
 
