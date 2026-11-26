@@ -86,3 +86,26 @@ Codex login:
 
 - `codex exec`: answered; requests logged at `chatgpt.com` as `route`.
 - `pi --provider openai-codex --model gpt-5.6-luna`: answered.
+
+## Linux checks
+
+Scope, set by the operator: no credential goes to the dev VM. The auth
+and route logic is shared between runtimes; Linux differs only in how
+trust reaches the box. So Linux was checked for transport only, and
+Linux CI's row 26 covers the login routes through fixtures at the real
+host names.
+
+On the dev VM (Debian 13, Firecracker), a probe image (Debian trixie
+with curl, Python, `requests`, Ruby and a JDK) built with `pinfold image
+build`, and one injecting route to `https://api.github.com` carrying a
+non-secret header, `pi.dev` allowed:
+
+- The three variables name `/etc/ssl/certs/ca-certificates.crt`: the
+  image's 148 roots plus the CA, root-owned, not writable by box work.
+  The rest of `/etc/ssl/certs` is the image's.
+- `PINFOLD_ALLOW` was `pi.dev,api.github.com`.
+- curl, Python `urllib`, `requests` and Ruby: 200 at `api.github.com`
+  (logged `route`) and at `pi.dev` (passthrough).
+- Plain HTTP to `api.github.com`: 403 `route`.
+- Java: 200 at `pi.dev`; handshake failure at `api.github.com`, logged
+  `closed`, reason `tls handshake`.
