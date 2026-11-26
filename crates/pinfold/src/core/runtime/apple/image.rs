@@ -190,11 +190,18 @@ pub fn list_images() -> io::Result<Vec<ImageInfo>> {
 }
 
 pub fn resolve_image(reference: &str) -> io::Result<Result<ImageInfo, String>> {
-    // `image inspect` prints the same entries as `image list`.
-    match inspect_image(reference)? {
-        Ok(image) => image_info(image).map(Ok),
-        Err(stderr) => Ok(Err(stderr)),
-    }
+    // `image inspect` prints the same entries as `image list`. Its stderr is
+    // the inner `Err` when the runtime cannot resolve the reference.
+    let json = match captured(&["container", "image", "inspect", reference])? {
+        Ok(json) => json,
+        Err(stderr) => return Ok(Err(stderr)),
+    };
+    let images: Vec<ListedImage> = parse_json("container image inspect", &json)?;
+    let image = images
+        .into_iter()
+        .next()
+        .ok_or_else(|| io::Error::other("container image inspect returned no image"))?;
+    image_info(image).map(Ok)
 }
 
 pub fn remove_image(reference: &str) -> io::Result<()> {
@@ -301,21 +308,6 @@ fn refresh_base(containerfile: &[u8]) -> io::Result<()> {
         }
         _ => Ok(()),
     }
-}
-
-/// Run `container image inspect <reference>` and return its first entry. The
-/// inner `Err` is the runtime's stderr when it cannot resolve the reference.
-fn inspect_image(reference: &str) -> io::Result<Result<ListedImage, String>> {
-    let json = match captured(&["container", "image", "inspect", reference])? {
-        Ok(json) => json,
-        Err(stderr) => return Ok(Err(stderr)),
-    };
-    let images: Vec<ListedImage> = parse_json("container image inspect", &json)?;
-    images
-        .into_iter()
-        .next()
-        .map(Ok)
-        .ok_or_else(|| io::Error::other("container image inspect returned no image"))
 }
 
 /// Run `container build` for `request`. stdout and stderr are captured

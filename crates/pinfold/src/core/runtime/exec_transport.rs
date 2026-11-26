@@ -400,8 +400,12 @@ pub(super) fn cancelled(cancel: Option<&AtomicBool>) -> io::Result<()> {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn wait(fd: libc::c_int, events: libc::c_short, cancel: Option<&AtomicBool>) -> io::Result<()> {
+fn wait(
+    fd: libc::c_int,
+    events: libc::c_short,
+    cancel: Option<&AtomicBool>,
+    interval_ms: libc::c_int,
+) -> io::Result<()> {
     loop {
         cancelled(cancel)?;
         let mut fds = [libc::pollfd {
@@ -410,7 +414,7 @@ fn wait(fd: libc::c_int, events: libc::c_short, cancel: Option<&AtomicBool>) -> 
             revents: 0,
         }];
         // SAFETY: poll reads and updates the live pollfd value.
-        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 100) };
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, interval_ms) };
         if ready < 0 {
             let error = io::Error::last_os_error();
             if error.kind() == io::ErrorKind::Interrupted {
@@ -424,32 +428,49 @@ fn wait(fd: libc::c_int, events: libc::c_short, cancel: Option<&AtomicBool>) -> 
     }
 }
 
-#[cfg(target_os = "linux")]
+/// A nonblocking connection whose reads and writes end on `cancel`, checked
+/// at least every `interval_ms` while blocked.
 pub(super) struct Cancellable<'a, T> {
     connection: T,
     cancel: Option<&'a AtomicBool>,
+    operation: &'static str,
+    interval_ms: libc::c_int,
 }
 
-#[cfg(target_os = "linux")]
 impl<'a, T> Cancellable<'a, T> {
+    #[cfg(target_os = "linux")]
     pub(super) fn startup(connection: T, cancel: &'a AtomicBool) -> Self {
         Self {
             connection,
             cancel: Some(cancel),
+            operation: "startup",
+            interval_ms: 100,
+        }
+    }
+
+    pub(super) fn preparation(connection: T, cancel: &'a AtomicBool) -> Self {
+        Self {
+            connection,
+            cancel: Some(cancel),
+            operation: "disk preparation",
+            interval_ms: 20,
         }
     }
 
     fn cancellation(&self, error: io::Error) -> io::Error {
         if error.kind() == io::ErrorKind::Interrupted {
-            // Buffered copy routines retry Interrupted rather than ending BOOT.
-            io::Error::new(io::ErrorKind::ConnectionAborted, "startup cancelled")
+            // Buffered copy routines retry Interrupted rather than ending the
+            // transfer.
+            io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                format!("{} cancelled", self.operation),
+            )
         } else {
             error
         }
     }
 }
 
-#[cfg(target_os = "linux")]
 impl<T: Read + AsFd> Read for Cancellable<'_, T> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         loop {
@@ -460,6 +481,7 @@ impl<T: Read + AsFd> Read for Cancellable<'_, T> {
                         self.connection.as_fd().as_raw_fd(),
                         libc::POLLIN,
                         self.cancel,
+                        self.interval_ms,
                     )
                     .map_err(|error| self.cancellation(error))?;
                 }
@@ -470,7 +492,6 @@ impl<T: Read + AsFd> Read for Cancellable<'_, T> {
     }
 }
 
-#[cfg(target_os = "linux")]
 impl<T: Write + AsFd> Write for Cancellable<'_, T> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         loop {
@@ -481,6 +502,7 @@ impl<T: Write + AsFd> Write for Cancellable<'_, T> {
                         self.connection.as_fd().as_raw_fd(),
                         libc::POLLOUT,
                         self.cancel,
+                        self.interval_ms,
                     )
                     .map_err(|error| self.cancellation(error))?;
                 }
