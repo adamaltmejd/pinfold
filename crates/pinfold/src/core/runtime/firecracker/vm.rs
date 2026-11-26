@@ -352,7 +352,8 @@ impl Vm {
     /// the guest synced and unmounted them.
     pub async fn down(&mut self, _name: &str) -> io::Result<bool> {
         let worker = self.cancel_boot().await;
-        if !self.vmm.running() {
+        // A failed check takes the full path: unmount, then kill.
+        if matches!(self.vmm.exited(), Ok(true)) {
             self.vmm.wait().await?;
             return worker.map(|()| false);
         }

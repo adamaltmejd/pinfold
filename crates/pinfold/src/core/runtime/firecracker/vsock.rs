@@ -14,33 +14,6 @@ use crate::formatting::terminal_text;
 use crate::init::exec_wire::{ENV, FAILED, read_frame, write_frame};
 use crate::init::firecracker::{CONTROL_PORT, ENV_SET, EXEC_PORT, STAT, UNMOUNT};
 
-/// A host-initiated connection to the guest's `port`, for a caller without
-/// cancellation.
-pub fn connect(sockets: &Sockets, port: u32) -> io::Result<UnixStream> {
-    let mut stream = sockets.connect()?;
-    // Box work runs as the exec service's user and can stop it from
-    // answering, so every request has a deadline. An exec's relay makes
-    // the stream nonblocking, where it no longer applies.
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    stream.write_all(format!("CONNECT {port}\n").as_bytes())?;
-    // One byte at a time: what follows the line is the guest's.
-    let mut line = Vec::new();
-    let mut byte = [0];
-    while line.len() < 64 {
-        match stream.read(&mut byte)? {
-            0 => break,
-            _ if byte[0] == b'\n' => break,
-            _ => line.push(byte[0]),
-        }
-    }
-    if !line.starts_with(b"OK ") {
-        return Err(io::Error::other(format!(
-            "the box does not answer on vsock port {port}"
-        )));
-    }
-    Ok(stream)
-}
-
 /// Read the answer to a request: the payload of a frame of `kind`, or the
 /// guest's FAILED text as the error.
 fn answer(stream: &mut impl Read, kind: u8) -> io::Result<Vec<u8>> {
@@ -56,6 +29,10 @@ fn answer(stream: &mut impl Read, kind: u8) -> io::Result<Vec<u8>> {
 
 use super::super::exec_transport::{Cancellable, cancelled, env_payload};
 
+/// Box work runs as the exec service's user and can stop it from
+/// answering, so every exec-service handshake and request has a deadline.
+const EXEC_DEADLINE: Duration = Duration::from_secs(10);
+
 /// Give the exec service the box's environment, once.
 pub fn set_env(
     sockets: &Sockets,
@@ -63,8 +40,8 @@ pub fn set_env(
     cancel: &AtomicBool,
 ) -> io::Result<()> {
     cancelled(Some(cancel))?;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let stream = connect_until(sockets, EXEC_PORT, deadline, Some(cancel), "exec handshake")?;
+    let deadline = Instant::now() + EXEC_DEADLINE;
+    let stream = connect(sockets, EXEC_PORT, deadline, Some(cancel), "exec handshake")?;
     let mut transport = Cancellable::startup(&stream, cancel);
     write_frame(&mut transport, ENV, &env_payload(vars))?;
     answer(&mut transport, ENV_SET).map(drop)
@@ -73,9 +50,15 @@ pub fn set_env(
 /// The work cgroup's memory current and peak, pids current and max, and
 /// OOM kills.
 pub fn stat(sockets: &Sockets) -> io::Result<[Option<u64>; 5]> {
-    let mut stream = connect(sockets, EXEC_PORT)?;
-    write_frame(&mut stream, STAT, &[])?;
-    let payload = answer(&mut stream, STAT)?;
+    let deadline = Instant::now() + EXEC_DEADLINE;
+    let mut stream = connect(sockets, EXEC_PORT, deadline, None, "box stat")?;
+    let mut transport = Bounded {
+        stream: &mut stream,
+        deadline,
+        operation: "box stat",
+    };
+    write_frame(&mut transport, STAT, &[])?;
+    let payload = answer(&mut transport, STAT)?;
     let mut values = [None; 5];
     let (fields @ [_, _, _, _, _], []) = payload.as_chunks::<9>() else {
         return Err(io::Error::other("the box's STAT has the wrong length"));
@@ -91,10 +74,11 @@ pub fn stat(sockets: &Sockets) -> io::Result<[Option<u64>; 5]> {
 /// Ask PID 1 to kill the work cgroup, sync and unmount every attachment.
 pub fn unmount(sockets: &Sockets) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(30);
-    let mut stream = connect_until(sockets, CONTROL_PORT, deadline, None, "box unmount")?;
+    let mut stream = connect(sockets, CONTROL_PORT, deadline, None, "box unmount")?;
     let mut transport = Bounded {
         stream: &mut stream,
         deadline,
+        operation: "box unmount",
     };
     write_frame(&mut transport, UNMOUNT, &[])?;
     answer(&mut transport, crate::init::firecracker::CLEAN).map(drop)
@@ -103,17 +87,18 @@ pub fn unmount(sockets: &Sockets) -> io::Result<()> {
 struct Bounded<'a> {
     stream: &'a mut UnixStream,
     deadline: Instant,
+    operation: &'static str,
 }
 
 impl Read for Bounded<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        crate::core::pipe::read(self.stream, bytes, self.deadline, None, "box unmount")
+        crate::core::pipe::read(self.stream, bytes, self.deadline, None, self.operation)
     }
 }
 
 impl Write for Bounded<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        crate::core::pipe::write_all(self.stream, bytes, self.deadline, None, "box unmount")?;
+        crate::core::pipe::write_all(self.stream, bytes, self.deadline, None, self.operation)?;
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -121,16 +106,16 @@ impl Write for Bounded<'_> {
     }
 }
 
-/// [`connect`] bounded by `deadline` and `cancel`; the stream it returns
-/// is nonblocking.
-fn connect_until(
+/// A host-initiated connection to the guest's `port`, bounded by
+/// `deadline` and `cancel`; the stream it returns is nonblocking.
+fn connect(
     sockets: &Sockets,
     port: u32,
     deadline: Instant,
     cancel: Option<&AtomicBool>,
     operation: &str,
 ) -> io::Result<UnixStream> {
-    let mut connection = sockets.connect_until(deadline)?;
+    let mut connection = sockets.connect(deadline)?;
     connection.set_nonblocking(true)?;
     crate::core::pipe::write_all(
         &mut connection,
@@ -139,6 +124,7 @@ fn connect_until(
         cancel,
         operation,
     )?;
+    // One byte at a time: what follows the line is the guest's.
     let mut line = Vec::new();
     let mut byte = [0];
     while line.len() < 64 {
@@ -162,18 +148,13 @@ pub fn exec(
     context: &crate::core::runtime::ExecContext<'_>,
     argv: &[String],
 ) -> io::Result<i32> {
-    let connection = match context.cancel {
-        None => connect(sockets, EXEC_PORT)?,
-        Some(_) => {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            connect_until(
-                sockets,
-                EXEC_PORT,
-                deadline,
-                context.cancel,
-                "exec handshake",
-            )?
-        }
-    };
+    let deadline = Instant::now() + EXEC_DEADLINE;
+    let connection = connect(
+        sockets,
+        EXEC_PORT,
+        deadline,
+        context.cancel,
+        "exec handshake",
+    )?;
     super::super::exec_transport::exec(connection, context, argv)
 }

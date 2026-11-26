@@ -104,21 +104,6 @@ impl Vmm {
         Ok(result != 0)
     }
 
-    /// Whether the VMM still runs.
-    pub fn running(&mut self) -> bool {
-        if self.ended.is_some() {
-            return false;
-        }
-        self.ended = match self.status.try_recv() {
-            Err(oneshot::error::TryRecvError::Empty) => return true,
-            Ok(outcome) => Some(outcome.map_err(|error| error.to_string())),
-            Err(oneshot::error::TryRecvError::Closed) => Some(Err(
-                "the VMM's owner thread ended without a status".to_string(),
-            )),
-        };
-        false
-    }
-
     /// SIGKILL the VMM through its pidfd. One that has ended is left alone.
     pub fn kill(&self) -> io::Result<()> {
         kill(&self.pidfd)
