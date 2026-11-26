@@ -19,6 +19,7 @@ use nix::errno::Errno;
 use nix::fcntl::{OFlag, open};
 use nix::libc;
 use nix::mount::{MntFlags, MsFlags, mount, umount2};
+use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sched::CloneFlags;
 use nix::sys::stat::Mode;
 use nix::sys::statvfs::{FsFlags, statvfs};
@@ -92,16 +93,8 @@ impl Vmm {
 
     /// The pidfd becomes readable at exit, before the wait thread publishes status.
     pub fn exited(&self) -> io::Result<bool> {
-        let mut descriptor = libc::pollfd {
-            fd: self.pidfd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
-        if result < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(result != 0)
+        let mut fds = [PollFd::new(self.pidfd.as_fd(), PollFlags::POLLIN)];
+        Ok(poll(&mut fds, PollTimeout::ZERO)? != 0)
     }
 
     /// SIGKILL the VMM through its pidfd. One that has ended is left alone.
@@ -192,7 +185,7 @@ pub fn probe() -> io::Result<()> {
     loop {
         match crate::core::pipe::wait_ready(
             Some(pidfd.as_fd()),
-            nix::poll::PollFlags::POLLIN,
+            PollFlags::POLLIN,
             Instant::now() + Duration::from_millis(100),
             None,
             "namespace probe",

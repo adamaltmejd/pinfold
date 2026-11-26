@@ -1281,7 +1281,7 @@ fn mkfs() -> io::Result<Command> {
 }
 
 fn input_disk(input: &Path, disk: &Path, cancel: &AtomicBool) -> io::Result<()> {
-    let (kib, entries) = tree_size(input, cancel)?;
+    let (kib, entries) = vm::tree_size(input, Some(cancel))?;
     let mut command = mkfs()?;
     command
         .args(["-O", "^has_journal", "-N"])
@@ -1389,25 +1389,6 @@ fn run_process(mut command: Command, cancel: &AtomicBool) -> io::Result<()> {
         )));
     }
     check_cancel(cancel)
-}
-
-fn tree_size(path: &Path, cancel: &AtomicBool) -> io::Result<(u64, u64)> {
-    check_cancel(cancel)?;
-    let (mut kib, mut entries) = (4, 1);
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let metadata = fs::symlink_metadata(entry.path())?;
-        if metadata.is_dir() {
-            let (inner_kib, inner_entries) = tree_size(&entry.path(), cancel)?;
-            kib += inner_kib;
-            entries += inner_entries;
-        } else {
-            kib += metadata.len().div_ceil(4096) * 4;
-            entries += 1;
-        }
-        check_cancel(cancel)?;
-    }
-    Ok((kib, entries))
 }
 
 fn copy_file(
