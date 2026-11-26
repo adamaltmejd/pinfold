@@ -1337,8 +1337,10 @@ pinned BuildKit's native Dockerfile frontend; `#syntax` cannot select another.
 The host leases and validates every local image identity the build consults and
 supplies its OCI context; metadata lookup closes before RUN. The selected job and
 source policy are host-written on a separate read-only device attached blank
-at boot; the host syncs and closes its writers before authorizing use, and init
-leaves that device unopened until authorization, then mounts it read-only. A deleted identity
+at boot; the host writes it through its fixed backing without resizing or replacing
+it, then syncs and closes its writers before authorizing use; init leaves
+that device unopened until authorization, then invalidates its block cache
+and mounts it read-only. A deleted identity
 fails preparation and is never retargeted. A source policy refuses
 managed-image registry fallback and pins discovered external image digests for
 the build pass; those digests are internal metadata, not an attestation of

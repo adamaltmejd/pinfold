@@ -86,7 +86,8 @@ Sol reviewed the whole branch. Fixed: the image-preparation trim had dropped
 the builder input device barrier (restored); row 15's "Linux only" moved from
 the guarantee to its test; the clean.rs rewrite was reverted (race on the
 owner's maintenance lock); the e2e reap and group-exit waits keep their old
-bounds. Declined: the snapshot shape change breaks a client and owner from
+bounds, except that a teardown whose last 30-second reap times out (the test
+has already failed) no longer reaps a later exit. Declined: the snapshot shape change breaks a client and owner from
 different builds, as #464 and #477 already do in this release; the release
 notes tell callers to stop running owners before upgrading.
 
