@@ -32,12 +32,7 @@ static STATE: Mutex<State> = Mutex::new(State {
 });
 
 fn foreground() -> io::Result<bool> {
-    // SAFETY: tcgetpgrp reads stdin's foreground group; getpgrp has no arguments.
-    let group = unsafe { libc::tcgetpgrp(libc::STDIN_FILENO) };
-    if group < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(group == unsafe { libc::getpgrp() })
+    Ok(nix::unistd::tcgetpgrp(io::stdin())? == nix::unistd::getpgrp())
 }
 
 pub(crate) fn restore() -> io::Result<()> {

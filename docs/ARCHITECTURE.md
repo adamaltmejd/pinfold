@@ -177,14 +177,9 @@ One runtime per OS, not configurable:
 | Linux | Firecracker, pinned (Pinned artifacts), run as the user in pinfold's VMM jail | one VM per box, pinned guest kernel |
 
 Anything else is refused: podman or docker as a box runtime, Firecracker
-under its own jailer or outside pinfold's VMM jail. Nothing warns at run
-time; `doctor` reports the runtime. Image operations use Apple `container`
+under its own jailer or outside pinfold's VMM jail. `doctor` reports the runtime. Image operations use Apple `container`
 on macOS and a pinned BuildKit builder/converter on Firecracker on Linux,
-independently of the box execution interface. Common core owns image retention and in-use protection.
-Execution backends own native disk creation and ownership mechanics. Common
-core owns disk claims, exclusivity, recovery and cleanup policy.
-Backends complete guest initialization through readiness. The common box
-owner holds the child, proxy and cancellation and decides cleanup.
+independently of the box execution interface.
 Cancellation reaps preparation helpers and joins startup, proxy and diagnostic
 workers before completed teardown. Host name lookup has a ten-second deadline.
 At most 64 resolver workers may be outstanding per process; a full resolver
@@ -251,8 +246,7 @@ sysctl rather than the failing call.
    that drop. Ordinary boxes gain no capability. The helper carries the box's
    name, owner and generation labels, so `clean` removes a leftover.
 3. Runtime sockets use a checked private generation directory under the
-   host ownership directory, independently of state-root length. Session and
-   shutdown sockets remain host-only and outside the VMM's allowed socket directory.
+   host ownership directory, independently of state-root length.
 4. Run the box with no network interface and the socket carried in
    (Transport). PID 1 is `pinfold init`. On Linux each mount reaches the
    guest as a read-only ext4 image written from the host directory at this
@@ -273,7 +267,7 @@ sysctl rather than the failing call.
    validates the socket without following a symlink.
 7. `exec` work runs with `HTTPS_PROXY` and `http_proxy` set to
    `http://127.0.0.1:3128`, and `NO_PROXY` and `no_proxy` set to
-   `localhost,127.0.0.1,::1`, so the box's own servers bypass the proxy.
+   `localhost,127.0.0.1,::1`.
 8. Sync and unmount the disks (Linux: init, after ending box work with
    the work cgroup's `cgroup.kill`, trims each writable disk first;
    Apple: the runtime's stop),
@@ -282,8 +276,7 @@ sysctl rather than the failing call.
 
 The box owner does steps 1–6, holds the proxy, and does step 8 on shutdown.
 Public `box exec` and project commands are admitted only after steps 1–6
-complete, including the fixed root socket operation. No caller command runs
-before that boundary. Public `pinfold box up` ends on `down`, stdin EOF or
+complete, including the fixed root socket operation. Public `pinfold box up` ends on `down`, stdin EOF or
 SIGTERM. If the owner dies, the
 socket dies and the box has no way out (fails closed); `box prune` removes
 leftovers host-wide. A detached project owner uses the same lifecycle.
@@ -386,7 +379,7 @@ The caller keeps `up`'s stdin open for the life of the box; closing it is
 
 `REASON` is one of `stdin-closed`, `signal` (SIGTERM, SIGINT or an accepted
 `box down` request), `audit-log` (an egress log append failed or would exceed
-its 128 MiB cap), or `exited` (the box's init ended on its own;
+its cap), or `exited` (the box's init ended on its own;
 `detail` carries its exit status). `up` exits 0 for `stdin-closed` and
 `signal`, and 1 for `exited` or `audit-log`; `box` is null when a signal ended `up` before
 its spec parsed, and `run_id` is null when it ended `up` before `ready`.
@@ -656,7 +649,7 @@ value or prefix, a login token, argv or command output. `env` lists the
 names of the variables the box got, never their values: the declared ones,
 pinfold's own default `PINFOLD_ALLOW`, a github login route's variables,
 the three trust variables for a box with a routed host (Egress proxy)
-and, for a project box, `PINFOLD_PROJECT` (Process interface).
+and, for a project box, `PINFOLD_PROJECT` (pi layer).
 Always-applied names and Apple-generated Git configuration names are
 omitted unless the caller declared them. `routes` keys each name the proxy
 serves: a routed host by its real name, so a github login route appears as
@@ -889,7 +882,6 @@ process. Getting further needs a host kernel bug.
   succeeds. The exec service
   remains protected at -1000. This bounds score-based immunity; it does
   not guarantee guest liveness under arbitrary memory pressure.
-- After a SIGKILL of pinfold the terminal needs `stty sane`.
 
 ## Transport
 
@@ -1083,12 +1075,12 @@ network listener, no token: the socket identifies the box.
   text, header values or helper output.
 
   - `claude`: `{ "login": "claude", "from": VAR }`, where `$VAR` is a
-    `claude setup-token` token read once at start like an injecting route's.
+    `claude setup-token` token read like an injecting route's.
     The route goes to `https://api.anthropic.com` with `Authorization:
     Bearer`. It is served at `api.anthropic.com`. Claude's managed settings set a
     placeholder `CLAUDE_CODE_OAUTH_TOKEN` and blank `ANTHROPIC_API_KEY`.
   - `github`: `{ "login": "github", "from": VAR }`, where `$VAR` is a
-    GitHub token read once at start like an injecting route's. The route
+    GitHub token read like an injecting route's. The route
     is served at three hosts: `github.com` with `Authorization: Basic` and
     standard base64, padded, of `x-access-token:` and `$VAR` (Git smart
     HTTP); `api.github.com` (REST and GraphQL) and `uploads.github.com`
@@ -1133,7 +1125,7 @@ network listener, no token: the socket identifies the box.
   - `pi`: `{ "login": "pi", "provider": P, "from": VAR }`, where P is
     `openrouter`, `anthropic`, `openai` or `anthropic-subscription` and
     `$VAR` is that provider's API key, or for `anthropic-subscription` a
-    `claude setup-token` token, read once at start like an injecting
+    `claude setup-token` token, read like an injecting
     route's; or `{ "login": "pi", "provider": "openai-codex" }`, which
     uses the host's Codex login as a `codex` login route does: helper,
     in-memory token, JWT checks, refresh window, host-wide lock,
@@ -1234,7 +1226,6 @@ refuses as `image-invalid`, before state is created.
 Explicit images resolve locally. A project launch (`-- CMD` or `start`)
 checks local image availability before recording project state, and never
 pulls or imports an image itself; a confirmed managed build can pull its recipe's external base.
-A project recipe typically `FROM`s the profile image.
 
 - When starting a new box with interactive I/O (Configuration),
   `pinfold -- CMD`, and `pinfold start` right after its first-run setup,
@@ -1253,7 +1244,7 @@ A project recipe typically `FROM`s the profile image.
   Every managed build re-resolves built-in agent versions through its profile
   recipe. An isolated resolver stage
   writes only versions and their integrity metadata; installation uses that
-  file and reruns when its resolved versions change or with `--no-cache`.
+  file and reruns when its resolved versions change.
   Other recipe steps use the layer cache. Managed `build --no-cache` forces
   the full recipe to run. Launch never installs agents. A managed build
   first rebuilds, root first, every profile beneath it that has a recipe:
@@ -1271,7 +1262,7 @@ A project recipe typically `FROM`s the profile image.
 - A build's identity is its unique tag, never an image label. Every
   build is tagged `<repo>:<build>` and moves the stable `<repo>:latest` to
   it. A caller build whose layers and labels are unchanged returns the
-  existing image.
+  existing image, also under another name.
 - Every build sets `dev.pinfold.profile`, `dev.pinfold.project` and
   `dev.pinfold.base`; a label not its own is empty:
 
@@ -1288,7 +1279,7 @@ A project recipe typically `FROM`s the profile image.
   project and no project configuration. The Containerfile may lie outside
   the context. NAME is validated like a profile name. A box spec's `image` names
   either tag.
-  Identical inputs under two names build one image. It carries the
+  It carries the
   caller's `--label`s, none of which may start with `dev.pinfold.`.
 - A build never touches project homes.
 - Profile and project images record their Containerfile's SHA-256 as
@@ -1301,7 +1292,7 @@ A project recipe typically `FROM`s the profile image.
   names `image-outdated`, so a change at a chain's
   root names every image above it. Explicit
   images get no recipe freshness hints. Hints never refuse the launch.
-  Harness pins and home settings are not image inputs.
+  Home settings are not image inputs.
 
 ### Linux image preparation
 
@@ -1331,8 +1322,8 @@ accept repeatable `--allow HOST` exact DNS additions, independently of agent
 policy. A recipe grants no network authority. Denials keep the proxy's stable
 reasons. Apple rejects `--allow` additions and keeps its existing build egress
 policy. Build records name their audit log on stderr and use normal retained
-run records. Each Linux build's egress log has the same 128 MiB cap; exhausting
-it is an audit failure, which fails the build before the catalog commit and
+run records. Each Linux build's egress log has the same cap; exhausting
+it fails the build before the catalog commit and
 leaves the outcome after it. No credential value enters argv or a file.
 
 Caller context and local image metadata are frozen. The builder guest uses
@@ -1502,31 +1493,27 @@ with or without a TTY.
   each start. Changing a profile does not reset disks or overwrite saved seeds.
 - pinfold does not manage pi settings: `pi install` in a box changes that
   project home only.
-- Built-ins package all three agents on PATH. Missing-only home seeds
-  supply Pi's trust/settings defaults, Claude permission/sandbox defaults and
-  Codex approval, sandbox and update-check defaults (`.codex/config.toml` and
-  `.codex/app-server-daemon/settings.json`). In the `default`
-  image, `claude` on PATH is a launcher that, in a project box, first sets
-  Claude's onboarding, auto-mode nudge and `$PINFOLD_PROJECT` trust flags
-  in `~/.claude.json`, so no first-run screen undoes the seeded defaults. Native home instructions
-  are `.pi/agent/APPEND_SYSTEM.md`, `.claude/CLAUDE.md` and `.codex/AGENTS.md`.
-  Instructions are guidance and enforce nothing. Supported updater switches are
-  recipe environment defaults. Route-generated system files contain
-  authentication configuration only.
+- Built-ins package pi, Claude and Codex on PATH and seed missing-only home
+  defaults and instructions (`.pi/agent/APPEND_SYSTEM.md`,
+  `.claude/CLAUDE.md`, `.codex/AGENTS.md`); instructions are guidance and
+  enforce nothing. In the `default` image, `claude` on PATH is a launcher
+  that, in a project box, first sets Claude's onboarding, auto-mode nudge and
+  `$PINFOLD_PROJECT` trust flags in `~/.claude.json`. Supported updater
+  switches are recipe environment defaults; route-generated system files
+  contain authentication configuration only.
 
 pi's two config levels both load in every run: the user level (pi's agent
 dir under `$HOME`, seeded from `home/`, with packages from `share/`) and
 the project's own `.pi/` and `.agents/skills`.
 
 Every built-in seeds only `/opt/pinfold/profile/pi` as its pi package and sets
-`defaultProjectTrust: "always"`; only `default` carries home seeds, and the
-others inherit them. `default`'s operating-context extension writes into pi's system
-prompt at every start the hosts in `PINFOLD_ALLOW` and that a 403 carrying
-`Proxy-Status: pinfold` is the sandbox's final refusal, so pi gets that line
-even when an existing instruction file blocks the seed; the seeded instructions
-carry it for Claude and Codex. `adam`'s `allow` is the default list plus
-`github.com` and `api.github.com`; `default` and `documents` set no config
-besides `base`.
+`defaultProjectTrust: "always"`. Only `default` carries home seeds; the others
+inherit them. `default`'s operating-context extension writes the hosts in
+`PINFOLD_ALLOW` and the final-refusal meaning of a 403 carrying
+`Proxy-Status: pinfold` into pi's system prompt at every start, and the seeded
+instructions carry it for Claude and Codex. `adam`'s `allow` is the default
+list plus `github.com` and `api.github.com`; `default` and `documents` set no
+config besides `base`.
 
 ## Disks
 
@@ -1799,13 +1786,13 @@ of NAME, whatever its age, and no other name's.
   holds its lock and BuildKit lists no build without a completion time.
   Otherwise, or when the builder does not answer within a deadline,
   clean leaves it running and says so; that warning does not change the
-  exit code. Pinfold's own builds are always excluded by the lock. Builds
+  exit code. Builds
   started outside pinfold are seen only through the builder's own build
   records, so one it does not yet report (a client connected but not
   submitted, a builder configured to keep no history) can be failed by
   the stop. Linux: remove
   only an exclusively claimed idle owned builder cache)
-- with `--idle AGE`, state and disks of the current folder's project
+- with `--idle AGE` (a whole number followed by `s`, `m`, `h` or `d`), state and disks of the current folder's project
   (the id it resolves to, as project commands resolve it and check its
   mount) if it has not run for that long; with `--idle AGE
   --all-projects`, of every such project. A project's disks are those
@@ -1860,8 +1847,7 @@ its project.
 - **State:** a project has host state under
   `~/.local/state/pinfold/projects/<name>-<hash>/` and a persistent
   `pin-<name>-<hash>-home` disk at `/home/pinfold`. A disk project also has
-  `pin-<name>-<hash>-project`. A box spec may not name the `pin-` prefix
-  (Process interface). The hash is of the canonical project root
+  `pin-<name>-<hash>-project`. The hash is of the canonical project root
   path. Agent settings, sessions and caches sit at their default paths in
   the home disk. The cosmetic name is at most 32 ASCII bytes.
 - **Project mount:** a share appears at the canonical host project path,
@@ -1899,7 +1885,7 @@ its project.
   executing a command. On success `start` prints one stderr line,
   `pinfold start: started` or `pinfold start: already running`, before any
   Rex lines. `pinfold stop` targets the observed
-  generation, works without current configuration, and succeeds only after
+  generation and succeeds only after
   teardown or confirmed absence, printing on stderr `pinfold stop: stopped`
   or `pinfold stop: no box running`. For a share, it revokes that box’s filesystem
   access; existing edits remain. It neither commits nor rolls back files and
@@ -1957,11 +1943,8 @@ its project.
   so an omitted `headers` or `prefix` equals an empty one. Command
   metadata, refreshed Codex tokens, recipe freshness, and seed/shared-file
   contents are excluded. HOME is canonicalized like the other host roots.
-  Mount kind and canonical source and destination paths are startup
-  configuration. Shared-file contents, HEAD, refs, index contents and mtimes
-  are excluded. Host and box edits and commits do not cause `config-changed`.
-  Client resolution and owner re-resolution compare against the owner’s
-  in-memory snapshot. For a share, the owner also checks the root `.git`
+  HEAD, refs, index contents and mtimes are excluded too. Host and box edits
+  and commits do not cause `config-changed`. For a share, the owner also checks the root `.git`
   marker without following it, on every Probe and immediately before every
   Join or Keep grant: a marker that appeared, disappeared or is not a plain
   directory refuses as `config-changed` (`repository`) while that owner
@@ -2007,7 +1990,7 @@ its project.
   stderr after teardown. An interrupted crossing reports the same reason
   and generation, and the helper fails. Stop accepted during startup reports
   `stopped`. CMD owns stdout; diagnostics use stderr.
-  A share has no project disk, disk attachment, unfilled marker or clean/unclean
+  A share has no disk attachment, unfilled marker or clean/unclean
   state. Its home retains managed-disk claims and recovery rules. Owner discovery requires no project disk; unknown
   runtime liveness preserves ownership and prevents replacement.
 
@@ -2249,12 +2232,10 @@ starts: the client names the key and the variable on stderr and exits 125. The v
 `PINFOLD_ENV_` value does: in the environment of the detached owner and,
 on macOS, its runtime client, and in the admission snapshot, held in memory and
 sent over the private project socket. The owner starts the box with the
-snapshot's values. An `op` value is read only by the client whose
-launch starts a new box, after every other launch check and just before it
-spawns the owner, so a refusal before then runs no `op`; a failed read
-refuses before any owner starts, naming the key (`env` or `route`), the
-reference and the cause, and exits 125. A joining or keeping client never
-runs `op`, and the owner never does.
+snapshot's values. An `op` value is read as the Process interface
+specifies, by the starting client only; a failed read names the key (`env`
+or `route`). A joining or keeping client never runs `op`, and the owner
+never does.
 The value travels to the owner beside the startup snapshot, never in a
 host environment or in any snapshot a joining client sends; the owner refuses
 as `session-protocol`, before recording anything, values that are not
@@ -2334,7 +2315,7 @@ pinfold build [--profile NAME] [--no-cache] [--allow HOST]…   build this proje
 pinfold profile [list]           list profiles: base, and editable directory or built in
 pinfold profile new NAME [--from PROFILE]   copy a profile to edit as files
 pinfold disk list|rm|export … [--json]   list, remove or export managed disks (Disks)
-pinfold clean [--dry-run] [--idle AGE [--all-projects]]   reclaim unused disk space; --idle AGE also removes this folder's project's state and disks if not run for AGE, --all-projects every such project's
+pinfold clean [--dry-run] [--idle AGE [--all-projects]]   reclaim unused disk space; --idle AGE also removes this folder's project's state and disks if not run for AGE (a whole number and `s`, `m`, `h` or `d`), --all-projects every such project's
 pinfold doctor [--artifacts] [--json]   diagnose this host and project, or list artifact pins
 pinfold apparmor-profile         the AppArmor profile for this executable (Linux)
 pinfold update [--check]         check for a release, or download and install it

@@ -26,7 +26,6 @@ separate Git directories refuse.
 | Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces, Landlock and e2fsprogs |
 
 A disk project's Git remote expects host Git 2.29 or later.
-Linux image builds use the [pinned builder bootstrap](builder-root/README.md).
 
 On Ubuntu 24.04+, AppArmor may restrict user namespaces. If a launch is
 refused as `runtime` naming `userns-apparmor`, load pinfold's profile
@@ -99,8 +98,7 @@ Start Pi from your project folder.
 pinfold -- pi
 ```
 
-Use `pinfold -- sh` for a shell. Anything after `--` is the command and
-its arguments. Bare `pinfold --` exits with a usage error.
+Use `pinfold -- sh` for a shell. Bare `pinfold --` exits with a usage error.
 
 On the first interactive run, of `pinfold -- CMD` or `pinfold start`,
 choose the profile and confirm the settings. If your shell sets
@@ -128,8 +126,7 @@ Linux) and commented examples of the other keys. A project recipe is a
 `Containerfile` beside it. Moving or renaming a project gives it a new
 configuration path.
 
-Box work runs as your host uid; the built-in images name uids 501 and
-1000 `pinfold`. The project home, `/home/pinfold`, is a disk that persists.
+Box work runs as your host uid. The project home, `/home/pinfold`, is a disk that persists.
 A disk project also retains its project disk. Both are created at 64G
 unless `home_disk_size = "128G"` or `project_disk_size = "…"` is set in
 the project's configuration before the first start (a whole number and `G`,
@@ -180,17 +177,14 @@ adds the host credential, so a key the box sends to that host is
 replaced. A box with a login route or an `https` injecting route starts
 only if its image has a regular file at
 `/etc/ssl/certs/ca-certificates.crt`, which Debian's `ca-certificates`
-package provides. Codex is set to use HTTP, not WebSockets, which the
-proxy does not carry. Agent configuration precedence still applies. Launch agents through PATH.
-An explicit project `routes` table replaces the profile's routes. An API
-key can also arrive through the environment.
+package provides. Codex uses HTTP, not WebSockets. Launch agents through PATH.
+An explicit project `routes` table replaces the profile's routes.
 
 A login route grants every process in the box the host login's authority
 over every path at its origin; see [Login routes](docs/ARCHITECTURE.md#egress-proxy)
 and the [threat model](docs/ARCHITECTURE.md#threat-model).
 
-One detached owner serves each project. Each `pinfold -- CMD` starts or
-joins a session; the box ends when no session, Git crossing or `start`
+Each `pinfold -- CMD` starts or joins a session; the box ends when no session, Git crossing or `start`
 keep remains, and `pinfold stop` ends everything. When a client leaves early (a signal, a
 closed terminal, a lost connection), its command's process group gets
 TERM, then KILL. Joining keeps the running policy and credentials; changed
@@ -210,15 +204,14 @@ Project reports use readable text, including when piped. Add `--json` to
 `config`, `doctor` and `disk` for structured output. Use
 `pinfold doctor --artifacts --json` for artifact pins.
 
-Managed builds of a chain that contains the bundled `default` recipe
-re-resolve stable agent releases through it every time; installation
-reruns when a resolved version changes or with `--no-cache`, and other
-steps use the layer cache. Use `pinfold build` or
-`pinfold build --profile NAME` to update, and `--no-cache` to force the full
-recipe to run. Launch never installs agents.
-A build first rebuilds the profiles beneath it, root first. Other projects
-and profiles on a rebuilt image report `image-outdated` at their next
-launch if its identity changed.
+A managed build of a chain that contains the bundled `default` recipe
+re-resolves stable agent releases every time. Installation reruns when a
+resolved version changes or with `--no-cache`, which forces the full
+recipe; other steps use the layer cache. Update with `pinfold build` or
+`pinfold build --profile NAME`. Launch never installs agents. A build
+first rebuilds the profiles beneath it, root first. Other projects and
+profiles on a rebuilt image report `image-outdated` at their next launch
+if its identity changed.
 
 Every built-in image includes standalone Pi, native Claude and Codex with
 its code-mode host on PATH. Built-in profiles seed `.pi/agent/APPEND_SYSTEM.md`,
@@ -230,8 +223,7 @@ Linux build egress has its own allowlist. Add exact hosts with
 `pinfold build --allow HOST`. Apple builds reject `--allow` additions.
 
 For a share, host edits are live and the box stages and commits in the
-host's `.git`; a box commit is the host's commit. Pinfold reads that
-metadata as data and never runs Git on the host for the project. Host and
+host's `.git`; a box commit is the host's commit. Host and
 box Git at the same moment can lose commits or record files as deleted
 (see the threat model). Export `GIT_OPTIONAL_LOCKS=0` in the shell
 that runs `pinfold` and in host tools that poll `git status`; unless it is
@@ -245,9 +237,8 @@ mounts = [{ host = ".", kind = "disk" }]
 ```
 
 A project disk appears in the box at `/project`, where a share appears
-at the folder's own path; `$PINFOLD_PROJECT` holds that path unless your `env` sets it. A new disk starts empty; no start copies code
-into it or changes your repository. Clone inside the box, or send
-branches yourself. Only committed branches cross; commit local work (a
+at the folder's own path; `$PINFOLD_PROJECT` holds that path unless your `env` sets it.
+Clone inside the box, or send branches yourself. Only committed branches cross; commit local work (a
 WIP commit is enough) to send it in. After the first start has created the disk:
 
 ```sh
@@ -268,8 +259,7 @@ let the box's branches reach or delete your refs.
 Without a running box, crossing starts a transient one on the project
 disk, without egress.
 
-Outside Git on macOS, a share exposes the folder’s existing host files; an
-explicit disk starts empty and imports none. On Linux a folder outside Git
+Outside Git on macOS, a share exposes the folder’s existing host files. On Linux a folder outside Git
 is refused as `not-git`. See
 [Configuration](docs/ARCHITECTURE.md#configuration) for precedence and recipes.
 
@@ -291,7 +281,7 @@ Each one's directory under [profile/](profile) holds only what it adds.
 Every profile seeds these
 [Pi settings](profile/default/home/.pi/agent/settings.json).
 In a running box, `cat /opt/pinfold/agents/install.txt` shows the agent versions
-installed at build time. `cat ~/.pi/agent/settings.json` shows the current guest settings.
+installed at build time.
 
 Build and select one explicitly:
 
@@ -395,12 +385,11 @@ disk; shares use host files directly. To start fresh:
 4. Launch `pinfold -- pi` or `pinfold -- pi -p "TASK"` again. No image rebuild
    is needed; profiles, project configuration and the selected image remain intact.
 
-For a share, removing the home resets only home contents; it never clears
-host shared files. For a disk project, remove both disks for a fresh home
-and project. Removing only the home preserves the guest repository; removing
-only the project preserves sessions, settings and other home files.
-Everything on a deleted disk is lost, including uncommitted work; `git fetch
-box` brings back commits only.
+For a share, removing the home never clears host shared files. For a disk
+project, remove both disks for a fresh home and project. Removing only the
+home preserves the guest repository; removing only the project preserves
+sessions, settings and other home files. A deleted disk loses everything on
+it, including uncommitted work; `git fetch box` brings back commits only.
 
 `pinfold clean [--dry-run] [--idle AGE [--all-projects]]` reclaims disk
 space: it runs the automatic maintenance now and removes the unused build
@@ -493,6 +482,3 @@ read the box's CA bundle.
 ## Limits
 
 Read the [threat model](docs/ARCHITECTURE.md#threat-model) and [disks](docs/ARCHITECTURE.md#disks) before use.
-
-Developers integrating pinfold: see the spec's
-[Process interface](docs/ARCHITECTURE.md#process-interface).

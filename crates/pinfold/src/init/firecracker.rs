@@ -795,11 +795,8 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
     let mut host = BufReader::new(host);
     let started = (|| -> io::Result<(OwnedFd, Option<TcpListener>)> {
         become_box_user(request.uid, request.gid)?;
-        for (fill, missing) in &request.fills {
-            if !missing {
-                continue;
-            }
-            super::pid1::receive_into(fill, &mut host, *missing).map_err(|error| {
+        for (fill, _) in request.fills.iter().filter(|(_, missing)| *missing) {
+            super::pid1::receive_into(fill, &mut host, true).map_err(|error| {
                 io::Error::other(format!("copy into {}: {error}", fill.display()))
             })?;
         }

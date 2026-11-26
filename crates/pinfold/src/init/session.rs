@@ -14,16 +14,6 @@ pub(super) struct Session {
     deadline: Option<Instant>,
 }
 
-/// A poll timeout until `deadline`; -1 for none.
-pub(super) fn millis(deadline: Option<Instant>) -> i32 {
-    deadline.map_or(-1, |deadline| {
-        deadline
-            .saturating_duration_since(Instant::now())
-            .as_millis()
-            .min(i32::MAX as u128) as i32
-    })
-}
-
 impl Session {
     pub(super) fn new(mut child: Child) -> io::Result<Self> {
         let process = match super::firecracker::pidfd_open(child.id() as i32) {

@@ -249,12 +249,12 @@ pub fn build_cache_bytes() -> io::Result<u64> {
     allocated_bytes(&root.join("containers/buildkit"))
 }
 
-pub fn build(request: &BuildRequest) -> io::Result<Result<(), String>> {
+pub fn build(request: BuildRequest) -> io::Result<Result<(), String>> {
     // Through the post-build prune and trim, which also need the builder.
     let _building = Flock::lock(ownership::open_lock(BUILDER_LOCK)?, FlockArg::LockShared)
         .map_err(|(_, error)| io::Error::from(error))?;
-    refresh_base(&std::fs::read(request.containerfile)?)?;
-    let result = run_build(request)?;
+    refresh_base(&std::fs::read(&request.containerfile)?)?;
+    let result = run_build(&request)?;
     // Neither step fails the build.
     if prune_builder(&["--keep-storage", BUILDER_KEEP_MB]).is_err() {
         eprintln!("pinfold: could not prune the builder cache");
@@ -293,28 +293,25 @@ fn refresh_base(containerfile: &[u8]) -> io::Result<()> {
     if platform.is_some_and(|platform| platform.contains('$')) {
         return Ok(());
     }
-    match base {
-        Some("scratch") => Ok(()),
-        Some(base) if !base.contains('$') => {
-            // A pinfold-built base can never be pulled, so read its digest
-            // locally before spending the retries on a doomed pull. Every
-            // pinfold build records [`clean::BASE_LABEL`], empty when its
-            // own base did not resolve, so its presence marks the image; a
-            // caller image's family labels are all empty.
-            // An unreadable local index falls through to the pull.
-            if let Ok(Some(image)) = resolve_image(base)
-                && image.labels.contains_key(clean::BASE_LABEL)
-            {
-                return Ok(());
-            }
-            // A floating tag must be pulled for its digest to be current and
-            // present to inspect. An unresolvable base has no digest.
-            let platform = platform.unwrap_or("linux/arm64");
-            let _ = output(&["container", "image", "pull", "--platform", platform, base]);
-            Ok(())
-        }
-        _ => Ok(()),
+    let Some(base) = base.filter(|base| *base != "scratch" && !base.contains('$')) else {
+        return Ok(());
+    };
+    // A pinfold-built base can never be pulled, so read its digest locally
+    // before spending the retries on a doomed pull. Every pinfold build
+    // records [`clean::BASE_LABEL`], empty when its own base did not
+    // resolve, so its presence marks the image; a caller image's family
+    // labels are all empty.
+    // An unreadable local index falls through to the pull.
+    if let Ok(Some(image)) = resolve_image(base)
+        && image.labels.contains_key(clean::BASE_LABEL)
+    {
+        return Ok(());
     }
+    // A floating tag must be pulled for its digest to be current and
+    // present to inspect. An unresolvable base has no digest.
+    let platform = platform.unwrap_or("linux/arm64");
+    let _ = output(&["container", "image", "pull", "--platform", platform, base]);
+    Ok(())
 }
 
 /// Run `container build` for `request`. stdout and stderr are captured
@@ -336,19 +333,19 @@ fn run_build(request: &BuildRequest) -> io::Result<Result<(), String>> {
             Some("--no-cache")
         })
         .arg("--file")
-        .arg(request.containerfile);
-    if let Some((name, value)) = request.build_arg {
+        .arg(&request.containerfile);
+    if let Some((name, value)) = &request.build_arg {
         command.arg("--build-arg").arg(format!("{name}={value}"));
     }
-    for tag in request.tags {
+    for tag in &request.tags {
         command.arg("--tag").arg(tag);
     }
-    for (key, value) in request.labels {
+    for (key, value) in &request.labels {
         command.arg("--label").arg(format!("{key}={value}"));
     }
     command
         // A bare relative context such as `--json` would parse as an option.
-        .arg(std::path::absolute(request.context)?)
+        .arg(std::path::absolute(&request.context)?)
         .stdin(Stdio::null())
         .stdout(writer.try_clone()?)
         .stderr(writer);

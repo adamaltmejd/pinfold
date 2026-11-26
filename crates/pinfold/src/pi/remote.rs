@@ -12,7 +12,6 @@ use std::sync::atomic::AtomicBool;
 
 use crate::core::crossing::{self, CrossingError, Fetched, Refs};
 use crate::core::plan::valid_name;
-use crate::core::process::output_cancellable;
 use crate::formatting::terminal_text;
 use crate::pi::launch;
 
@@ -310,11 +309,11 @@ fn check(root: &Path, remote: &str, address: &str) -> io::Result<()> {
         )));
     };
     // Git writes through a symbolic ref to its target.
-    let mut command = crossing::git_command(root);
-    command
-        .args(["for-each-ref", "--format=%(refname) %(symref)", &namespace])
-        .stdin(std::process::Stdio::null());
-    let refs = output_cancellable(&mut command, None, &AtomicBool::new(false))?;
+    let refs = crossing::git(
+        root,
+        &["for-each-ref", "--format=%(refname) %(symref)", &namespace],
+        &AtomicBool::new(false),
+    )?;
     if !refs.status.success() {
         return Err(refused(
             "remote-repository: Git could not list the remote's refs",
@@ -371,11 +370,7 @@ fn listing(refs: &Refs, peeled: &Refs) -> io::Result<String> {
 
 /// `git rev-parse ARG`'s one line; WHAT names it in a refusal.
 fn rev_parse(arg: &str, what: &str) -> io::Result<String> {
-    let mut command = crossing::git_command(Path::new("."));
-    command
-        .args(["rev-parse", arg])
-        .stdin(std::process::Stdio::null());
-    let output = output_cancellable(&mut command, None, &AtomicBool::new(false))?;
+    let output = crossing::git(Path::new("."), &["rev-parse", arg], &AtomicBool::new(false))?;
     let line = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if !output.status.success() || line.is_empty() {
         return Err(refused(&format!(
@@ -388,12 +383,7 @@ fn rev_parse(arg: &str, what: &str) -> io::Result<String> {
 /// `git config ARGS` in ROOT: the value, `None` when unset, and a refusal
 /// when Git cannot read the configuration.
 fn config(root: &Path, args: &[&str]) -> io::Result<Option<String>> {
-    let mut command = crossing::git_command(root);
-    command
-        .arg("config")
-        .args(args)
-        .stdin(std::process::Stdio::null());
-    let output = output_cancellable(&mut command, None, &AtomicBool::new(false))?;
+    let output = crossing::git(root, &[&["config"], args].concat(), &AtomicBool::new(false))?;
     match output.status.code() {
         Some(0) => Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned())),
         Some(1) => Ok(None),
@@ -432,11 +422,9 @@ fn send(output: &mut File, text: &str) -> io::Result<()> {
 
 fn describe(error: &CrossingError) -> String {
     match error {
-        CrossingError::Refused(reason, detail) => format!(
-            "{}: {}",
-            serde_json::json!(reason).as_str().unwrap_or("refused"),
-            terminal_text(detail)
-        ),
+        CrossingError::Refused(reason, detail) => {
+            format!("{}: {}", reason.token(), terminal_text(detail))
+        }
         CrossingError::Failed(detail) => terminal_text(detail),
     }
 }

@@ -17,7 +17,7 @@
 //!   failed.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
 pub use super::linux::{
@@ -41,22 +41,22 @@ pub struct ImageInfo {
 
 /// One image build: a context, a Containerfile, the names to tag the result
 /// with, and the labels to record on it.
-pub struct BuildRequest<'a> {
+pub struct BuildRequest {
     /// The build context.
-    pub context: &'a Path,
+    pub context: PathBuf,
     /// The Containerfile, inside the context or not.
-    pub containerfile: &'a Path,
+    pub containerfile: PathBuf,
     /// The image names to tag the built image with.
-    pub tags: &'a [String],
+    pub tags: Vec<String>,
     /// Labels to put on the image, for Maintenance to find it by.
-    pub labels: &'a BTreeMap<String, String>,
+    pub labels: BTreeMap<String, String>,
     /// Whether the runtime may reuse its layer cache. Without it every step
     /// reruns.
     pub cache: bool,
     /// Additional explicit build-egress hosts; independent of agent egress.
     /// Only Linux builds read it: `check_build_allow` refuses it on macOS.
     #[cfg_attr(not(target_os = "linux"), expect(dead_code))]
-    pub allow: &'a [String],
+    pub allow: Vec<String>,
     /// One managed-build argument; absent for caller builds.
-    pub build_arg: Option<(&'a str, &'a str)>,
+    pub build_arg: Option<(String, String)>,
 }

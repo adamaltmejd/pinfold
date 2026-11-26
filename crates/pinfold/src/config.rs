@@ -43,13 +43,6 @@ pub enum ProjectMount {
 }
 
 impl ProjectMount {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Disk => "disk",
-            Self::Share => "share",
-        }
-    }
-
     pub(crate) fn default_kind() -> Self {
         if cfg!(target_os = "macos") {
             Self::Share
@@ -115,7 +108,10 @@ impl ProjectMount {
 # login = \"github\"
 # from = \"op://VAULT/ITEM/FIELD\"
 ",
-            self.as_str(),
+            match self {
+                Self::Disk => "disk",
+                Self::Share => "share",
+            },
             folder_share = if cfg!(target_os = "macos") {
                 "\n# A folder with kind = \"share\" is one the box can also write."
             } else {
@@ -545,16 +541,15 @@ fn check_paths_outside(
     bidirectional: bool,
 ) -> io::Result<()> {
     let project = project_dir(&fs::canonicalize(root)?)?;
-    crate::core::mounts::check_paths_outside(
-        checked,
+    let paths = crate::core::mounts::protected_paths(
         profile,
         [
             project.join("pinfold.toml"),
             project.join("Containerfile"),
             project,
         ],
-        bidirectional,
-    )
+    )?;
+    crate::core::mounts::check_paths_outside(checked, paths, bidirectional)
 }
 
 /// A file's bytes, `None` when it is absent. A dangling symlink or an

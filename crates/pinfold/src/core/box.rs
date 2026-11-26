@@ -451,19 +451,17 @@ impl Box {
             prepared_disks.map_err(|_| io::Error::other("disk preparation worker failed"))?;
         claim.restore_startup_control(control);
         if let Some(stopped) = stopped {
-            #[cfg(not(target_os = "linux"))]
-            if let Err(Err(error)) = &claimed
-                && runtime::apple::preparation_unremoved(error)
-            {
-                let _ = claim.finish(false).await;
-                return Err(match claimed {
-                    Err(Err(error)) => error.into(),
-                    _ => unreachable!(),
-                });
-            }
-            if let Ok(claimed) = &claimed {
-                claim.retire()?;
-                claimed.undo(runtime, &plan.name);
+            match claimed {
+                #[cfg(not(target_os = "linux"))]
+                Err(Err(error)) if runtime::apple::preparation_unremoved(&error) => {
+                    let _ = claim.finish(false).await;
+                    return Err(error.into());
+                }
+                Ok(claimed) => {
+                    claim.retire()?;
+                    claimed.undo(runtime, &plan.name);
+                }
+                _ => {}
             }
             claim.finish(true).await?;
             return Err(stopped);
@@ -1327,7 +1325,7 @@ fn resolve_profile(plan: &mut Plan, supplied: Option<Profile>) -> io::Result<Opt
 fn profile_share(share: &Share, name: &str) -> io::Result<Mount> {
     Ok(Mount {
         host: share.path(name)?,
-        guest: PathBuf::from("/opt/pinfold/profile"),
+        guest: PathBuf::from(super::profile::SHARE_GUEST),
         kind: MountKind::Readonly,
     })
 }

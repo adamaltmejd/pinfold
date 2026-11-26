@@ -91,6 +91,46 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     written
 }
 
+/// Rename `old` to `new` inside `directory`, failing with AlreadyExists
+/// where plain rename would replace an empty directory.
+pub(crate) fn rename_noreplace(
+    directory: &fs::File,
+    old: &std::ffi::CStr,
+    new: &std::ffi::CStr,
+) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let directory = directory.as_raw_fd();
+    #[cfg(target_os = "linux")]
+    // SAFETY: a live directory descriptor and terminated names.
+    let result = unsafe {
+        // Rust's bundled musl does not export the libc wrapper.
+        nix::libc::syscall(
+            nix::libc::SYS_renameat2,
+            directory,
+            old.as_ptr(),
+            directory,
+            new.as_ptr(),
+            nix::libc::RENAME_NOREPLACE,
+        ) as i32
+    };
+    #[cfg(target_os = "macos")]
+    // SAFETY: a live directory descriptor and terminated names.
+    let result = unsafe {
+        nix::libc::renameatx_np(
+            directory,
+            old.as_ptr(),
+            directory,
+            new.as_ptr(),
+            nix::libc::RENAME_EXCL,
+        )
+    };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 /// `result`, with a path that is already gone counted as removed.
 pub(crate) fn absent_ok(result: io::Result<()>) -> io::Result<()> {
     match result {

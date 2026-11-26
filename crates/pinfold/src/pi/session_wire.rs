@@ -57,8 +57,8 @@ pub(crate) enum Request {
 }
 
 impl Request {
-    /// The project root and owner generation a client request addresses.
-    pub(crate) fn target(&self) -> Option<(&Path, &str)> {
+    /// Whether a client request addresses this project root and owner generation.
+    pub(crate) fn addresses(&self, target_root: &Path, target_generation: &str) -> bool {
         match self {
             Self::Probe {
                 root, generation, ..
@@ -71,8 +71,8 @@ impl Request {
             }
             | Self::Borrow {
                 root, generation, ..
-            } => Some((root, generation)),
-            _ => None,
+            } => root == target_root && generation == target_generation,
+            _ => false,
         }
     }
 }

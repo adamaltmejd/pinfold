@@ -17,7 +17,7 @@ use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Command, ExitStatus, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -1049,16 +1049,14 @@ fn receive(
             box_status(status.code(), &String::from_utf8_lossy(&errors), guest_repo)?;
             return receiver.finish();
         }
-        let mut fds = Vec::new();
-        if let Some(pipe) = &stdin {
-            fds.push(PollFd::new(pipe.as_fd(), PollFlags::POLLOUT));
-        }
-        if let Some(pipe) = &stdout {
-            fds.push(PollFd::new(pipe.as_fd(), PollFlags::POLLIN));
-        }
-        if let Some(pipe) = &stderr {
-            fds.push(PollFd::new(pipe.as_fd(), PollFlags::POLLIN));
-        }
+        let mut fds: Vec<PollFd> = [
+            (stdin.as_ref().map(AsFd::as_fd), PollFlags::POLLOUT),
+            (stdout.as_ref().map(AsFd::as_fd), PollFlags::POLLIN),
+            (stderr.as_ref().map(AsFd::as_fd), PollFlags::POLLIN),
+        ]
+        .into_iter()
+        .filter_map(|(pipe, flags)| Some(PollFd::new(pipe?, flags)))
+        .collect();
         wait.poll(&mut fds)?;
     }
 }
@@ -1137,7 +1135,7 @@ fn object_id(oid: &str, width: usize) -> bool {
     oid.len() == width && oid.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn git(repo: &Path, args: &[&str], cancel: &AtomicBool) -> io::Result<Output> {
+pub(crate) fn git(repo: &Path, args: &[&str], cancel: &AtomicBool) -> io::Result<Output> {
     git_input(repo, args, b"", &[], cancel)
 }
 
@@ -1149,12 +1147,7 @@ fn git_input(
     cancel: &AtomicBool,
 ) -> io::Result<Output> {
     let mut command = git_command(repo);
-    command
-        .args(args)
-        .envs(env.iter().copied())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    command.args(args).envs(env.iter().copied());
     output_cancellable(&mut command, Some(input), cancel)
 }
 

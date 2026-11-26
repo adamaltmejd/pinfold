@@ -1088,9 +1088,7 @@ impl Plan {
             if !names.insert(&disk.name) {
                 return Err(invalid(format!("disk {:?} is named twice", disk.name)));
             }
-            if let Err(error) = profile::check_name("disk", &disk.name) {
-                return Err(invalid(error.to_string()));
-            }
+            profile::check_name("disk", &disk.name).map_err(invalid)?;
             if let Some(size) = &disk.size
                 && disk_gibibytes(size).is_none()
             {

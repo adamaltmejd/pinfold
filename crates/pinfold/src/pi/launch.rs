@@ -446,7 +446,7 @@ pub(crate) fn check_folder_guests(config: &Config, root: &Path) -> io::Result<()
         PathBuf::from(state::HOME),
     ];
     if config.profile.share.is_some() {
-        taken.push(PathBuf::from("/opt/pinfold/profile"));
+        taken.push(PathBuf::from(crate::core::profile::SHARE_GUEST));
     }
     for folder in &config.folders {
         if let Some(other) = taken
@@ -470,13 +470,8 @@ pub(crate) fn check_folder_guests(config: &Config, root: &Path) -> io::Result<()
 /// The plan both a project box and a transient crossing box start from: the
 /// image, the project label and resources, and nothing else.
 fn box_plan(config: &Config, id: &str, image: &str) -> io::Result<Plan> {
-    let mut random = [0u8; 6];
-    use ring::rand::SecureRandom;
-    ring::rand::SystemRandom::new()
-        .fill(&mut random)
-        .map_err(|_| io::Error::other("owner name generation failed"))?;
     Ok(Plan {
-        name: format!("pi-{id}-{}", crate::core::hex(&random)),
+        name: format!("pi-{id}-{}", &crate::core::random_hex()?[..12]),
         image: Some(image.to_string()),
         labels: BTreeMap::from([(clean::PROJECT_LABEL.to_string(), id.to_string())]),
         cpus: Some(config.cpus),
