@@ -17,6 +17,10 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Dropping only the live test passes: the owner's project lock still
     // keeps the project.
     // The idle project's state and disks going is the positive control.
+    // Sabotage (run): in cli.rs, make `CleanPlan::idle` ignore the
+    // `Scope::Project` filter. `clean --idle 0s` from the live project's
+    // folder then removes the idle project's state and disks;
+    // `--all-projects` removing them is the control.
     // Sabotage (run): in main.rs, drop the `clean` exemption
     // from the automatic pass. A dry run from a state root whose daily
     // pass is due then removes the unpinned artifact version; `clean`
@@ -91,7 +95,20 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "clean --dry-run removed {}",
         unpinned.display()
     );
-    let cleaned = run(env.command().args(["clean", "--idle", "0s"]), COMMAND);
+    // From another project's folder, `--idle` keeps the idle project.
+    let scoped = run(
+        &mut live.project.command(&["clean", "--idle", "0s"]),
+        COMMAND,
+    );
+    assert_eq!(scoped.code, 0, "{scoped:?}");
+    for path in idle.state() {
+        assert!(path.exists(), "{} after scoped clean", path.display());
+    }
+    let cleaned = run(
+        env.command()
+            .args(["clean", "--idle", "0s", "--all-projects"]),
+        COMMAND,
+    );
     drop(hold);
     assert_eq!(cleaned.code, 0, "{cleaned:?}");
     assert!(!unpinned.exists(), "clean kept {}", unpinned.display());

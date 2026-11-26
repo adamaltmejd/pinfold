@@ -403,13 +403,15 @@ Everything on a deleted disk is lost, including uncommitted work and
 home-only files. Fetch brings back commits, not uncommitted or home-only
 files, and later fetches can move `box/*` refs.
 
-`pinfold clean [--dry-run] [--idle AGE]` reclaims disk space: it runs the
-automatic maintenance now and removes the unused build cache. `--dry-run`
-shows the measured storage per category without cleaning. `--idle AGE`
-also removes the state and disks of projects not run
-for that long, except a project with a live box; AGE is a whole number and a
-unit, `s`, `m`, `h` or `d`, such as `30d`. That is never automatic, because a
-project disk holds unfetched work.
+`pinfold clean [--dry-run] [--idle AGE [--all-projects]]` reclaims disk
+space: it runs the automatic maintenance now and removes the unused build
+cache. `--dry-run` shows the measured storage per category, and what the
+same flags would remove, without cleaning. `--idle AGE` also removes the
+state and disks of the current folder's project if it has not run for that
+long and has no live box; `--all-projects` widens that to every such
+project, named by its folder. AGE is a whole number and a unit, `s`, `m`,
+`h` or `d`, such as `30d`. That is never automatic, because a project disk
+holds unfetched work and a home disk sessions and logins.
 
 ## Configuration
 
