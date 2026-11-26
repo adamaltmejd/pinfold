@@ -304,15 +304,19 @@ impl Box {
             &mut cancel_start,
             early_claim.as_mut(),
             move || {
-                crate::core::image::service::resolve_image(&selected)?.ok_or_else(|| {
-                    refused(
-                        &image_plan,
-                        RefusalReason::ImageMissing,
-                        format!(
-                            "image {selected:?} is not present locally; build or pull it first"
-                        ),
-                    )
-                })
+                crate::core::image::service::resolve_image(&selected)
+                    .map_err(|error| {
+                        refused(&image_plan, RefusalReason::Runtime, error.to_string())
+                    })?
+                    .ok_or_else(|| {
+                        refused(
+                            &image_plan,
+                            RefusalReason::ImageMissing,
+                            format!(
+                                "image {selected:?} is not present locally; build or pull it first"
+                            ),
+                        )
+                    })
             },
         )
         .await?;

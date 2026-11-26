@@ -347,7 +347,9 @@ pub(crate) fn outdated_images(
         let info = if chain.is_empty() {
             Some(built.clone())
         } else {
-            service::resolve_image(&link.image_ref())?
+            // A freshness hint never refuses a launch: an unreadable
+            // ancestor counts as outdated.
+            service::resolve_image(&link.image_ref()).unwrap_or(None)
         };
         chain.push((info, bytes.as_slice()));
     }

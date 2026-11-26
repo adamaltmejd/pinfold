@@ -301,7 +301,8 @@ fn refresh_base(containerfile: &[u8]) -> io::Result<()> {
             // pinfold build records [`clean::BASE_LABEL`], empty when its
             // own base did not resolve, so its presence marks the image; a
             // caller image's family labels are all empty.
-            if let Some(image) = resolve_image(base)?
+            // An unreadable local index falls through to the pull.
+            if let Ok(Some(image)) = resolve_image(base)
                 && image.labels.contains_key(clean::BASE_LABEL)
             {
                 return Ok(());
