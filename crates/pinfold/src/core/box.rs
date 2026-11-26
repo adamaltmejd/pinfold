@@ -172,7 +172,8 @@ impl Box {
         Self::up_disks(plan, &Values::read(plan), signals, false, None, None, None).await
     }
 
-    /// Export must never create a missing disk or inspect one another box holds.
+    /// Export and the Git crossing must never create a missing disk; export
+    /// also never inspects one another box holds.
     pub(crate) async fn up_existing(plan: &Plan, signals: &mut Signals) -> Result<Box, UpError> {
         Self::up_disks(plan, &Values::read(plan), signals, true, None, None, None).await
     }

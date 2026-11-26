@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::runtime::Builder;
 
 use crate::config::{Config, ProjectMount};
-use crate::core::r#box::{Box, Shutdown, Signals, UpError};
+use crate::core::r#box::{Box, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::crossing::CrossingError;
 use crate::core::image::{ImageInfo, service};
@@ -102,6 +102,12 @@ where
             let guest = state::PROJECT.to_string();
             let box_runtime = crate::core::runtime::runtime();
             let init = artifacts::init_path()?;
+            let no_disk = || {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "this project has no project disk yet; start it with `pinfold -- CMD`",
+                )
+            };
             let (name, mut box_) = if let Some(name) = lease.name().map(str::to_string) {
                 lease.release_launch();
                 (name, None)
@@ -112,10 +118,7 @@ where
                     .any(|listed| listed.name == disk)
                     || disk::unfilled(&disk)?
                 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "this project has no project disk yet; start it with `pinfold -- CMD`",
-                    ));
+                    return Err(no_disk());
                 }
                 let image = resolve_image(&config, &id);
                 for warning in image_warnings(&config, &image)? {
@@ -125,7 +128,9 @@ where
                     disks: vec![empty_writable_disk(disk, Path::new(state::PROJECT), None)],
                     ..box_plan(&config, &id, &image)?
                 };
-                let box_ = match Box::up(&plan, &mut signals).await {
+                // A disk removed since the check above fails the claim
+                // instead of being created empty.
+                let box_ = match Box::up_existing(&plan, &mut signals).await {
                     Ok(box_) => box_,
                     Err(UpError::Control) => {
                         return Ok(Err(CrossingError::Failed(
@@ -138,6 +143,11 @@ where
                                 .last()
                                 .unwrap_or(nix::sys::signal::Signal::SIGTERM),
                         ));
+                    }
+                    Err(UpError::Refused(refusal))
+                        if refusal.reason == RefusalReason::DiskMissing =>
+                    {
+                        return Err(no_disk());
                     }
                     Err(UpError::Refused(refusal)) => {
                         return Ok(Err(CrossingError::Refused(refusal.reason, refusal.detail)));

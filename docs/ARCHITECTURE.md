@@ -2363,7 +2363,9 @@ and `mount`, containing `kind`, canonical `host` and `guest` (Project mount).
 `project.folders` lists each folder as `{host, guest, kind}`,
 `host` as configured with `~/` expanded, `kind` `readonly` or `share`.
 `project.disks.home` names the persistent home disk. `project.disks.project`
-names the disk for a disk project and is null for a share. `config` is the
+names the disk for a disk project and is null for a share. `home_disk_size`
+and `project_disk_size` give the size a new disk is created at, the default
+when unset; `project_disk_size` is null for a share. `config` is the
 project’s configuration file. `profile_chain` lists the selected profile,
 then each base, as `{name, path}`: the profile's directory, or null for a
 built-in. `image_built` reports local presence, not

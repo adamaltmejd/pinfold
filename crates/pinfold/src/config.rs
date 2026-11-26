@@ -19,8 +19,8 @@ use crate::pi::state::project_id;
 pub(crate) const DEFAULT_PROFILE: &str = "default";
 const DEFAULT_CPUS: f64 = 4.0;
 const DEFAULT_MEMORY: &str = "8G";
-/// The box spec's default disk `size`, shown in the template.
-const DEFAULT_DISK_SIZE: &str = "64G";
+/// The box spec's default disk `size`, shown in the template and `config --json`.
+pub(crate) const DEFAULT_DISK_SIZE: &str = "64G";
 const DEFAULT_ALLOW: [&str; 9] = [
     "api.anthropic.com",
     "platform.claude.com",
@@ -436,22 +436,25 @@ impl Config {
                 "image-source-missing: select an image or supply a Containerfile",
             ));
         }
-        for (key, size) in [
-            ("home_disk_size", &merged.home_disk_size),
-            ("project_disk_size", &merged.project_disk_size),
-        ] {
-            if let Some(size) = size
-                && disk_gibibytes(size).is_none()
-            {
-                return Err(invalid(
-                    "configuration",
-                    &format!(
+        let disk_size = |key: &str, value: Option<toml::Value>| match value {
+            None => Ok(None),
+            Some(toml::Value::String(size)) if disk_gibibytes(&size).is_some() => Ok(Some(size)),
+            Some(value) => Err(invalid(
+                "configuration",
+                &match &value {
+                    toml::Value::String(size) => format!(
                         "spec: {key} {:?} must be a whole number of G, at least 1G",
                         terminal_text(size)
                     ),
-                ));
-            }
-        }
+                    other => format!(
+                        "spec: {key} must be a string such as \"64G\"; found {}",
+                        other.type_str()
+                    ),
+                },
+            )),
+        };
+        let home_disk_size = disk_size("home_disk_size", merged.home_disk_size)?;
+        let project_disk_size = disk_size("project_disk_size", merged.project_disk_size)?;
         Ok(Config {
             mount,
             folders: Vec::new(),
@@ -467,8 +470,8 @@ impl Config {
             routes: merged.routes.unwrap_or_default(),
             cpus: merged.cpus.unwrap_or(DEFAULT_CPUS),
             memory: merged.memory.unwrap_or_else(|| DEFAULT_MEMORY.to_string()),
-            home_disk_size: merged.home_disk_size,
-            project_disk_size: merged.project_disk_size,
+            home_disk_size,
+            project_disk_size,
             env: merged
                 .env
                 .unwrap_or_default()
@@ -592,8 +595,9 @@ struct Layer {
     routes: Option<BTreeMap<String, Route>>,
     cpus: Option<f64>,
     memory: Option<String>,
-    home_disk_size: Option<String>,
-    project_disk_size: Option<String>,
+    /// Checked once merged, so a value of any type is refused as `spec`.
+    home_disk_size: Option<toml::Value>,
+    project_disk_size: Option<toml::Value>,
     env: Option<BTreeMap<String, Env>>,
 }
 
