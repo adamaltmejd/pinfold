@@ -152,5 +152,5 @@ pub fn exec(
         context.cancel,
         "exec handshake",
     )?;
-    super::super::exec_transport::exec(connection, context, argv)
+    super::super::exec_transport::exec(&connection, &connection, || Ok(false), context, argv)
 }
