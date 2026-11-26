@@ -52,13 +52,11 @@ pub fn set_env(
 pub fn stat(sockets: &Sockets) -> io::Result<[Option<u64>; 5]> {
     let deadline = Instant::now() + EXEC_DEADLINE;
     let mut stream = connect(sockets, EXEC_PORT, deadline, None, "box stat")?;
-    let mut transport = Bounded {
-        stream: &mut stream,
-        deadline,
-        operation: "box stat",
-    };
-    write_frame(&mut transport, STAT, &[])?;
-    let payload = answer(&mut transport, STAT)?;
+    // After the handshake, each read gets its own timeout.
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(EXEC_DEADLINE))?;
+    write_frame(&mut stream, STAT, &[])?;
+    let payload = answer(&mut stream, STAT)?;
     let mut values = [None; 5];
     let (fields @ [_, _, _, _, _], []) = payload.as_chunks::<9>() else {
         return Err(io::Error::other("the box's STAT has the wrong length"));
@@ -78,7 +76,6 @@ pub fn unmount(sockets: &Sockets) -> io::Result<()> {
     let mut transport = Bounded {
         stream: &mut stream,
         deadline,
-        operation: "box unmount",
     };
     write_frame(&mut transport, UNMOUNT, &[])?;
     answer(&mut transport, crate::init::firecracker::CLEAN).map(drop)
@@ -87,18 +84,17 @@ pub fn unmount(sockets: &Sockets) -> io::Result<()> {
 struct Bounded<'a> {
     stream: &'a mut UnixStream,
     deadline: Instant,
-    operation: &'static str,
 }
 
 impl Read for Bounded<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        crate::core::pipe::read(self.stream, bytes, self.deadline, None, self.operation)
+        crate::core::pipe::read(self.stream, bytes, self.deadline, None, "box unmount")
     }
 }
 
 impl Write for Bounded<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        crate::core::pipe::write_all(self.stream, bytes, self.deadline, None, self.operation)?;
+        crate::core::pipe::write_all(self.stream, bytes, self.deadline, None, "box unmount")?;
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {

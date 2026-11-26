@@ -708,10 +708,22 @@ fn connect_at(
         SockFlag::SOCK_CLOEXEC | SockFlag::SOCK_NONBLOCK,
         None,
     )?;
-    match connect(connection.as_raw_fd(), &UnixAddr::new(path.as_str())?) {
-        Ok(()) => {}
-        Err(nix::errno::Errno::EINPROGRESS) => wait_connected(connection.as_fd(), deadline)?,
-        Err(error) => return Err(error.into()),
+    let address = UnixAddr::new(path.as_str())?;
+    loop {
+        match connect(connection.as_raw_fd(), &address) {
+            Ok(()) => break,
+            Err(nix::errno::Errno::EINPROGRESS | nix::errno::Errno::EINTR) => {
+                wait_connected(connection.as_fd(), deadline)?;
+                break;
+            }
+            // A full accept queue. Poll cannot signal a free slot, so retry
+            // as a blocking connect would have waited.
+            Err(nix::errno::Errno::EAGAIN) => std::thread::sleep(
+                crate::core::pipe::remaining(deadline, None, "connect socket")?
+                    .min(Duration::from_millis(10)),
+            ),
+            Err(error) => return Err(error.into()),
+        }
     }
     syscall(unsafe { libc::fcntl(connection.as_raw_fd(), libc::F_SETFL, 0) })?;
     Ok(std::os::unix::net::UnixStream::from(connection))
