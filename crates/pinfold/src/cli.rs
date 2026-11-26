@@ -678,11 +678,14 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
     match args {
         [verb] if verb == "list" => {
             let attached = disk::attachments(None)?;
-            let origins = if json {
-                BTreeMap::new()
-            } else {
-                crate::pi::state::disk_origins()?
-            };
+            let mut origins = BTreeMap::new();
+            if !json {
+                for project in crate::pi::state::state_dirs()? {
+                    for name in crate::pi::state::disk_names(&project.id) {
+                        origins.insert(name, project.root.clone());
+                    }
+                }
+            }
             let mut disks = runtime.list_disks()?;
             let mut rows = vec![
                 [

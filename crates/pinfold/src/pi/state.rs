@@ -1,6 +1,5 @@
 //! Per-project state: the state file and the names of the project's disks.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -35,16 +34,6 @@ pub fn guest_root(mount: crate::config::ProjectMount, root: &Path) -> &Path {
         crate::config::ProjectMount::Disk => Path::new(PROJECT),
     }
 }
-pub fn disk_origins() -> io::Result<BTreeMap<String, PathBuf>> {
-    let mut origins = BTreeMap::new();
-    for project in state_dirs()? {
-        for name in disk_names(&project.id) {
-            origins.insert(name, project.root.clone());
-        }
-    }
-    Ok(origins)
-}
-
 /// Record this run in the project's `state.json`. `root` is canonical.
 pub fn record_run(root: &Path) -> io::Result<()> {
     let dir = dirs::state_dir()?.join("projects").join(project_id(root));
