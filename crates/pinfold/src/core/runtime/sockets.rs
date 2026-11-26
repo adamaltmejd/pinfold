@@ -12,7 +12,13 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
+use nix::errno::Errno;
+use nix::fcntl::{AtFlags, OFlag, openat};
 use nix::libc;
+use nix::sys::signal::{Signal, kill};
+use nix::sys::stat::{Mode, fstatat, mkdirat};
+use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+use nix::unistd::{Pid, UnlinkatFlags, unlinkat};
 
 /// A generation directory's sockets, and those in its `v` directory.
 const SOCKETS: [&str; 2] = ["c.sock", "p.sock"];
@@ -60,29 +66,22 @@ fn syscall(result: libc::c_int) -> io::Result<libc::c_int> {
     }
 }
 
-fn open_at(parent: &File, value: &OsStr, flags: i32, mode: u32) -> io::Result<File> {
-    let value = name(value)?;
-    // SAFETY: a live directory descriptor and a terminated component name.
-    let fd = syscall(unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            value.as_ptr(),
-            flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            mode,
-        )
-    })?;
-    // SAFETY: openat returned a new descriptor owned here.
-    Ok(unsafe { File::from_raw_fd(fd) })
+fn open_at(parent: &File, value: &OsStr, flags: OFlag, mode: Mode) -> io::Result<File> {
+    let flags = flags | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW;
+    Ok(openat(parent, name(value)?.as_c_str(), flags, mode)?.into())
 }
 
 fn directory_at(parent: &File, value: &OsStr) -> io::Result<File> {
-    open_at(parent, value, libc::O_RDONLY | libc::O_DIRECTORY, 0)
+    open_at(
+        parent,
+        value,
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY,
+        Mode::empty(),
+    )
 }
 
 fn mkdir_at(parent: &File, value: &OsStr) -> io::Result<()> {
-    let value = name(value)?;
-    // SAFETY: a live directory descriptor and a terminated component name.
-    syscall(unsafe { libc::mkdirat(parent.as_raw_fd(), value.as_ptr(), 0o700) }).map(drop)
+    Ok(mkdirat(parent, name(value)?.as_c_str(), Mode::S_IRWXU)?)
 }
 
 fn check(file: &File, directory: bool) -> io::Result<()> {
@@ -122,11 +121,7 @@ pub(crate) fn host() -> io::Result<(PathBuf, File)> {
     open_host(true)?.ok_or_else(|| failure("host socket directory disappeared"))
 }
 
-pub(crate) fn existing_host() -> io::Result<Option<(PathBuf, File)>> {
-    open_host(false)
-}
-
-fn open_host(create: bool) -> io::Result<Option<(PathBuf, File)>> {
+pub(crate) fn open_host(create: bool) -> io::Result<Option<(PathBuf, File)>> {
     let path = crate::core::ownership::host_dir()?;
     let parent = path.parent().expect("host directory has a parent");
     let mut base = File::open("/")?;
@@ -177,8 +172,8 @@ impl Sockets {
         let mut marker = open_at(
             &directory,
             OsStr::new("generation"),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-            0o600,
+            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL,
+            Mode::from_bits_truncate(0o600),
         )
         .map_err(failure)?;
         marker.write_all(generation.as_bytes()).map_err(failure)?;
@@ -209,7 +204,7 @@ impl Sockets {
     pub fn open(generation: &str) -> io::Result<Self> {
         let leaf = generation_name(generation)?;
         let (base, host) =
-            existing_host()?.ok_or_else(|| failure("missing host socket directory"))?;
+            open_host(false)?.ok_or_else(|| failure("missing host socket directory"))?;
         let directory = directory_at(&host, OsStr::new(&leaf)).map_err(failure)?;
         check(&directory, true)?;
         let vsock = directory_at(&directory, OsStr::new("v")).map_err(failure)?;
@@ -402,11 +397,11 @@ impl HostSocket {
 
     /// Unlink a socket at `leaf`, under the same exclusion as [`Self::bind`].
     pub(crate) fn remove_left(leaf: &str) -> io::Result<()> {
-        let Some((_, host)) = existing_host()? else {
+        let Some((_, host)) = open_host(false)? else {
             return Ok(());
         };
         check_socket(&host, OsStr::new(leaf), true, false)?;
-        unlink_at(&host, OsStr::new(leaf), 0)
+        unlink_at(&host, OsStr::new(leaf), UnlinkatFlags::NoRemoveDir)
     }
 
     /// Unlink the socket only while it is still this bind's.
@@ -414,7 +409,9 @@ impl HostSocket {
         let (_, host) = host()?;
         let leaf = OsStr::new(&self.leaf);
         match socket_identity(&host, leaf) {
-            Ok(identity) if identity == self.identity => unlink_at(&host, leaf, 0),
+            Ok(identity) if identity == self.identity => {
+                unlink_at(&host, leaf, UnlinkatFlags::NoRemoveDir)
+            }
             _ => Ok(()),
         }
     }
@@ -423,17 +420,7 @@ impl HostSocket {
 /// `leaf`'s own metadata, never a link's target. A failed call keeps its
 /// OS error.
 fn stat_at(parent: &File, leaf: &CStr) -> io::Result<libc::stat> {
-    let mut metadata: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: a live directory, terminated leaf and initialized output.
-    syscall(unsafe {
-        libc::fstatat(
-            parent.as_raw_fd(),
-            leaf.as_ptr(),
-            &mut metadata,
-            libc::AT_SYMLINK_NOFOLLOW,
-        )
-    })?;
-    Ok(metadata)
+    Ok(fstatat(parent, leaf, AtFlags::AT_SYMLINK_NOFOLLOW)?)
 }
 
 fn socket_identity(parent: &File, leaf: &OsStr) -> io::Result<(u64, u64)> {
@@ -463,8 +450,8 @@ fn read_generation(directory: &File) -> io::Result<Option<Vec<u8>>> {
     let mut marker = match open_at(
         directory,
         OsStr::new("generation"),
-        libc::O_RDONLY | libc::O_NONBLOCK,
-        0,
+        OFlag::O_RDONLY | OFlag::O_NONBLOCK,
+        Mode::empty(),
     ) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(failure(error)),
@@ -535,15 +522,19 @@ fn remove_directory(host: &File, leaf: &OsStr, generation: &str) -> io::Result<(
     };
     if let Some(vsock) = recovery_vsock(&directory)? {
         for socket in VSOCKETS {
-            unlink_at(&vsock, OsStr::new(socket), 0)?;
+            unlink_at(&vsock, OsStr::new(socket), UnlinkatFlags::NoRemoveDir)?;
         }
-        unlink_at(&directory, OsStr::new("v"), libc::AT_REMOVEDIR)?;
+        unlink_at(&directory, OsStr::new("v"), UnlinkatFlags::RemoveDir)?;
     }
     for socket in SOCKETS {
-        unlink_at(&directory, OsStr::new(socket), 0)?;
+        unlink_at(&directory, OsStr::new(socket), UnlinkatFlags::NoRemoveDir)?;
     }
-    unlink_at(&directory, OsStr::new("generation"), 0)?;
-    unlink_at(host, leaf, libc::AT_REMOVEDIR)
+    unlink_at(
+        &directory,
+        OsStr::new("generation"),
+        UnlinkatFlags::NoRemoveDir,
+    )?;
+    unlink_at(host, leaf, UnlinkatFlags::RemoveDir)
 }
 
 fn rename_at(host: &File, old: &OsStr, new: &OsStr) -> io::Result<()> {
@@ -552,14 +543,10 @@ fn rename_at(host: &File, old: &OsStr, new: &OsStr) -> io::Result<()> {
     crate::core::rename_noreplace(host, &old, &new).map_err(failure)
 }
 
-fn unlink_at(parent: &File, leaf: &OsStr, flags: i32) -> io::Result<()> {
-    let leaf = name(leaf)?;
-    // SAFETY: a live directory descriptor and a terminated component name.
-    let result = syscall(unsafe { libc::unlinkat(parent.as_raw_fd(), leaf.as_ptr(), flags) });
-    match result {
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(failure(error)),
+fn unlink_at(parent: &File, leaf: &OsStr, flags: UnlinkatFlags) -> io::Result<()> {
+    match unlinkat(parent, name(leaf)?.as_c_str(), flags) {
+        Ok(()) | Err(Errno::ENOENT) => Ok(()),
+        Err(error) => Err(failure(io::Error::from(error))),
     }
 }
 
@@ -649,7 +636,7 @@ fn connect_at(
     deadline: Instant,
     cancel: Option<&AtomicBool>,
 ) -> io::Result<std::os::unix::net::UnixStream> {
-    let socket = open_at(directory, leaf, libc::O_PATH, 0).map_err(|error| {
+    let socket = open_at(directory, leaf, OFlag::O_PATH, Mode::empty()).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
             error
         } else {
@@ -821,35 +808,19 @@ fn socket_at_until(
         }
         Ok(())
     })();
+    let pid = Pid::from_raw(pid);
     if received.is_err() {
         // This direct child is still unreaped, so its pid remains ours.
-        unsafe {
-            libc::kill(pid, libc::SIGKILL);
-        }
+        let _ = kill(pid, Signal::SIGKILL);
     }
-    let mut status = 0;
     let mut wait_deadline = Some(helper_deadline);
     let mut wait_error = None;
     loop {
-        let waited = unsafe {
-            libc::waitpid(
-                pid,
-                &mut status,
-                if wait_deadline.is_some() {
-                    libc::WNOHANG
-                } else {
-                    0
-                },
-            )
-        };
-        if waited == pid {
-            break;
-        }
-        if waited < 0 {
-            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(io::Error::last_os_error());
+        match waitpid(pid, wait_deadline.map(|_| WaitPidFlag::WNOHANG)) {
+            Ok(WaitStatus::StillAlive) => {}
+            Ok(_) => break,
+            Err(Errno::EINTR) => continue,
+            Err(error) => return Err(error.into()),
         }
         if let Some(deadline) = wait_deadline
             && let Err(error) = crate::core::pipe::wait_ready(
@@ -860,9 +831,7 @@ fn socket_at_until(
                 "socket helper",
             )
         {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-            }
+            let _ = kill(pid, Signal::SIGKILL);
             wait_error = Some(error);
             wait_deadline = None;
         }
@@ -916,7 +885,7 @@ fn wait_connected(
 pub(crate) fn remove_socket(path: &Path) -> io::Result<()> {
     let (directory, leaf) = parent_leaf(path)?;
     check_socket(&directory, leaf, true, false)?;
-    unlink_at(&directory, leaf, 0)
+    unlink_at(&directory, leaf, UnlinkatFlags::NoRemoveDir)
 }
 
 fn entries(directory: &File) -> io::Result<Vec<std::ffi::OsString>> {

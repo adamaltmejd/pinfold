@@ -198,8 +198,8 @@ Linux is x64 only. Preflight requires a user other than root, `/dev/kvm`
 readable and writable by the user (the `kvm` group), unprivileged user
 namespaces, Landlock ABI 5 or later (Linux 6.10+), `mkfs.ext4`
 (e2fsprogs), and a statically linked pinfold executable: it is also the
-guest init, so one with a `PT_INTERP` program header is refused with the
-token `static` before any disk is prepared. Without user
+guest init, so a build without static CRT linking (`crt-static`) is
+refused with the token `static` before any disk is prepared. Without user
 namespaces or Landlock ABI 5, `up` is refused as `runtime`, naming the missing requirement's token
 (below); there is no unjailed fallback.
 

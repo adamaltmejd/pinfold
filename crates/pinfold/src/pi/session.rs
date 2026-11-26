@@ -211,7 +211,7 @@ fn valid_generation(g: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 fn read_locator(root: &Path) -> io::Result<Option<Locator>> {
-    let Some((host, _)) = sockets::existing_host()? else {
+    let Some((host, _)) = sockets::open_host(false)? else {
         return Ok(None);
     };
     let mut file = match File::options()

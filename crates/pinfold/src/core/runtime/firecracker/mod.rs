@@ -197,10 +197,7 @@ impl Runtime for Firecracker {
     }
 
     fn inspect(&self, name: &str) -> io::Result<Option<BoxInfo>> {
-        match ownership::record(name)? {
-            Some(record) => Self::known_info(record),
-            None => Ok(None),
-        }
+        ownership::record(name)?.map_or(Ok(None), Self::known_info)
     }
 
     fn list_disks(&self) -> io::Result<Vec<DiskInfo>> {
