@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::core::r#box::{Refusal, RefusalReason};
-use crate::core::{login, network, proxy};
+use crate::core::{ca, login, network, proxy};
 
 /// A parsed box spec.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -34,6 +34,10 @@ pub struct Plan {
     pub egress: Option<Egress>,
     pub cpus: Option<f64>,
     pub memory: Option<String>,
+    /// The box CA, PEM, for a box with a routed host: set at start, never
+    /// read from a spec.
+    #[serde(skip)]
+    pub trust: Option<String>,
 }
 
 /// The box's egress allowlist and routes.
@@ -43,10 +47,127 @@ pub struct Egress {
     /// Exact host names, or `.suffix` for a name and its subdomains.
     #[serde(default)]
     pub allow: Vec<String>,
-    /// Route names served over plain HTTP, each mapped to a host service or
-    /// an injecting route.
+    /// Routes by label, each mapped to a host service, an injecting route
+    /// or a login route.
     #[serde(default)]
     pub routes: BTreeMap<String, Route>,
+}
+
+/// The release redirect targets a github login route allows exactly, as
+/// `gh release download` follows them. They carry their own signature, so
+/// the proxy passes them through and adds no credential.
+pub const GITHUB_REDIRECTS: [&str; 2] = [
+    "release-assets.githubusercontent.com",
+    "codeload.github.com",
+];
+
+impl Egress {
+    /// Each routed host, lowercased, once.
+    pub fn routed_hosts(&self) -> BTreeSet<String> {
+        self.routes
+            .iter()
+            .flat_map(|(label, route)| route.serving(label).unwrap_or_default())
+            .filter(|serving| serving.routed)
+            .map(|serving| serving.name)
+            .collect()
+    }
+
+    /// The allowlist the proxy applies: the spec's, then the redirect hosts
+    /// a github login route allows.
+    pub fn allowed(&self) -> Vec<String> {
+        let mut allow = self.allow.clone();
+        if self
+            .routes
+            .values()
+            .any(|route| matches!(route, Route::Login(login) if login.is_github()))
+        {
+            for host in GITHUB_REDIRECTS {
+                if !allow.iter().any(|entry| entry.eq_ignore_ascii_case(host)) {
+                    allow.push(host.to_string());
+                }
+            }
+        }
+        allow
+    }
+}
+
+/// One name the proxy serves for a route: a routed host, which the box
+/// reaches by its real name over TLS the proxy terminates, or a plain
+/// route's own label, served over plain HTTP.
+pub struct Serving {
+    /// Lowercased for a routed host.
+    pub name: String,
+    pub routed: bool,
+    /// The origin the proxy dials, or a host service's `host:port`.
+    pub to: String,
+    /// Put before each request's path.
+    pub base_path: &'static str,
+}
+
+/// What a route sends at a host it serves, to compare two routes that
+/// share one.
+#[derive(PartialEq)]
+enum Credential<'a> {
+    Inject(&'a BTreeMap<String, Header>),
+    Login {
+        header: &'static str,
+        prefix: &'static str,
+        from: Option<&'a str>,
+    },
+    HostCodex,
+    None,
+}
+
+impl Route {
+    /// The names this route is served at.
+    pub fn serving(&self, label: &str) -> Result<Vec<Serving>, String> {
+        let plain = |to: &str| {
+            vec![Serving {
+                name: label.to_string(),
+                routed: false,
+                to: to.to_string(),
+                base_path: "",
+            }]
+        };
+        match self {
+            Route::Address(address) => Ok(plain(address)),
+            Route::Inject(inject) => {
+                let target = inject.check()?;
+                if !target.https {
+                    return Ok(plain(&inject.to));
+                }
+                // The box reaches the host on 443, by a name the leaf carries.
+                if target.port != 443 || network::literal(&target.host).is_some() {
+                    return Err(invalid(format!(
+                        "route {label:?}: an https `to` must name a host on port 443"
+                    )));
+                }
+                Ok(vec![Serving {
+                    name: target.host.to_ascii_lowercase(),
+                    routed: true,
+                    to: inject.to.clone(),
+                    base_path: "",
+                }])
+            }
+            Route::Login(login) => login.served(),
+        }
+    }
+
+    fn credential(&self) -> Result<Credential<'_>, String> {
+        Ok(match self {
+            Route::Address(_) => Credential::None,
+            Route::Inject(inject) => Credential::Inject(&inject.headers),
+            Route::Login(login) if login.uses_host_codex() => Credential::HostCodex,
+            Route::Login(login) => {
+                let (header, prefix) = login.header()?;
+                Credential::Login {
+                    header,
+                    prefix,
+                    from: login.from.as_deref(),
+                }
+            }
+        })
+    }
 }
 
 /// Where a route name leads.
@@ -266,7 +387,7 @@ pub struct PiProvider {
     pub name: &'static str,
     /// pi's provider id; `anthropic` and `anthropic-subscription` share one.
     pub pi: &'static str,
-    origin: &'static str,
+    pub origin: &'static str,
     pub base_path: &'static str,
     pub credential: PiCredential,
 }
@@ -371,28 +492,59 @@ impl Login {
         self.login == "pi"
     }
 
-    /// Whether this is a github login, served at [`GITHUB_NAMES`] rather
-    /// than its own name.
     pub fn is_github(&self) -> bool {
         self.login == "github"
     }
 
-    /// The proxy names this route serves, each with the origin it dials
+    /// The hosts this login is served at, each with the origin it dials
     /// and the path put before each request's. Holds no credential.
-    pub fn served<'a>(
-        &'a self,
-        route: &'a str,
-    ) -> Result<Vec<(&'a str, &'a str, &'static str)>, String> {
+    pub fn served(&self) -> Result<Vec<Serving>, String> {
         let origin = self.origin()?;
-        if !self.is_github() {
-            return Ok(vec![(route, origin, "")]);
-        }
-        let [git_name, api_name] = GITHUB_NAMES;
-        let api = match self.to {
-            Some(_) => (api_name, origin, "/api/v3"),
-            None => (api_name, "https://api.github.com", ""),
+        let host = |name: &str, to: &str, base_path| Serving {
+            name: name.to_string(),
+            routed: true,
+            to: to.to_string(),
+            base_path,
         };
-        Ok(vec![(git_name, origin, ""), api])
+        Ok(match self.login.as_str() {
+            "claude" => vec![host("api.anthropic.com", origin, "")],
+            "codex" => vec![host("chatgpt.com", origin, "")],
+            "pi" => {
+                let name = self.pi_provider()?.origin;
+                let name = name.strip_prefix("https://").expect("a pi origin is https");
+                vec![host(name, origin, "")]
+            }
+            _ => match self.to {
+                // A test-fixture convention: one origin serves all three.
+                Some(_) => vec![
+                    host("github.com", origin, ""),
+                    host("api.github.com", origin, "/api/v3"),
+                    host("uploads.github.com", origin, "/api/uploads"),
+                ],
+                None => vec![
+                    host("github.com", origin, ""),
+                    host("api.github.com", "https://api.github.com", ""),
+                    host("uploads.github.com", "https://uploads.github.com", ""),
+                ],
+            },
+        })
+    }
+
+    /// The credential header and its prefix. github's prefix is the
+    /// scheme's, set per host.
+    fn header(&self) -> Result<(&'static str, &'static str), String> {
+        if self.is_pi() {
+            match self.pi_provider()?.credential {
+                PiCredential::Key { header, prefix, .. } => Ok((header, prefix)),
+                PiCredential::HostCodex { .. } => {
+                    Err("its token comes from the host's Codex login".to_string())
+                }
+            }
+        } else if self.is_github() {
+            Ok(("Authorization", ""))
+        } else {
+            Ok(("Authorization", "Bearer "))
+        }
     }
 
     /// Whether the proxy takes this login's headers from the host's Codex
@@ -459,22 +611,11 @@ impl Login {
         })
     }
 
-    /// claude's, github's or pi's served names, each with its dialed target
+    /// claude's, github's or pi's routed hosts, each with its dialed target
     /// and credential header, from `values`. The target and the value rules
     /// are [`Inject::resolve`]'s.
     pub fn resolve(&self, route: &str, values: &Values) -> Result<Vec<Served>, String> {
-        let (header, prefix) = if self.is_pi() {
-            match self.pi_provider()?.credential {
-                PiCredential::Key { header, prefix, .. } => (header, prefix),
-                PiCredential::HostCodex { .. } => {
-                    return Err("its token comes from the host's Codex login".to_string());
-                }
-            }
-        } else if self.is_github() {
-            ("Authorization", "")
-        } else {
-            ("Authorization", "Bearer ")
-        };
+        let (header, prefix) = self.header()?;
         // Every caller prefixes the agent and route, so these name neither.
         let source = match self.source() {
             Some(source) => source.map_err(invalid)?,
@@ -502,20 +643,20 @@ impl Login {
         // `values` holds the token, so its one header was resolved.
         let token = &headers[0].1;
         let mut served = Vec::new();
-        for (name, origin, base_path) in self.served(route)? {
+        for serving in self.served()? {
             let headers = if !self.is_github() {
                 headers.clone()
-            } else if name == GITHUB_NAMES[0] {
+            } else if serving.name == "github.com" {
                 let basic = base64(format!("x-access-token:{token}").as_bytes());
                 vec![(header.to_string(), format!("Basic {basic}"))]
             } else {
                 vec![(header.to_string(), format!("Bearer {token}"))]
             };
             served.push(Served {
-                name: name.to_string(),
-                // `inject.resolve` checked `to`; GitHub's API origin parses.
-                target: parse_target(origin).expect("a checked login origin"),
-                base_path,
+                // `inject.resolve` checked `to`; GitHub's own origins parse.
+                target: parse_target(&serving.to).expect("a checked login origin"),
+                name: serving.name,
+                base_path: serving.base_path,
                 headers,
             });
         }
@@ -523,13 +664,9 @@ impl Login {
     }
 }
 
-/// A github login's proxy names, git's then the API's. Fixed: `gh` speaks
-/// plain HTTP only to `github.localhost`, an undocumented `gh` behaviour.
-pub const GITHUB_NAMES: [&str; 2] = ["github.localhost", "api.github.localhost"];
-
-/// One proxy name a login route serves: where it dials, the path put
-/// before each request's, and the credential headers. No `Debug`: the
-/// headers hold a credential.
+/// One host a login route serves: where it dials, the path put before
+/// each request's, and the credential headers. No `Debug`: the headers
+/// hold a credential.
 pub struct Served {
     pub name: String,
     pub target: Target,
@@ -1015,17 +1152,32 @@ impl Plan {
             }
             let mut logins = BTreeSet::new();
             let mut pi_providers = BTreeSet::new();
-            let mut route_names = BTreeSet::new();
+            let mut labels = BTreeSet::new();
+            // Each routed host, with the first route serving it.
+            let mut routed: BTreeMap<String, (&str, &Route, Serving)> = BTreeMap::new();
             for (name, route) in &egress.routes {
-                let served = match route {
-                    Route::Login(login) => login.served(name)?,
-                    _ => vec![(name.as_str(), "", "")],
-                };
-                for (name, _, _) in served {
-                    if !route_names.insert(name.to_ascii_lowercase()) {
-                        return Err(invalid(format!(
-                            "route {name:?} duplicates a name ignoring ASCII case"
-                        )));
+                if !labels.insert(name.to_ascii_lowercase()) {
+                    return Err(invalid(format!(
+                        "route {name:?} duplicates a name ignoring ASCII case"
+                    )));
+                }
+                for serving in route.serving(name)?.into_iter().filter(|s| s.routed) {
+                    match routed.get(&serving.name) {
+                        // Two routes may share a host only to send the same thing.
+                        Some((other, first, shared))
+                            if shared.to != serving.to
+                                || shared.base_path != serving.base_path
+                                || first.credential()? != route.credential()? =>
+                        {
+                            return Err(invalid(format!(
+                                "routes {other:?} and {name:?} both serve {} with different upstreams or credentials",
+                                serving.name
+                            )));
+                        }
+                        Some(_) => {}
+                        None => {
+                            routed.insert(serving.name.clone(), (name, route, serving));
+                        }
                     }
                 }
                 match route {
@@ -1073,6 +1225,22 @@ impl Plan {
                         }
                     }
                 }
+            }
+            // A label that is also a routed host would leave the box two
+            // meanings for one name.
+            if let Some(label) = labels.iter().find(|label| routed.contains_key(*label)) {
+                return Err(invalid(format!(
+                    "route {label:?} is named for a host a route serves"
+                )));
+            }
+            if !routed.is_empty()
+                && let Some(variable) = ca::TRUST_ENV
+                    .iter()
+                    .find(|variable| self.env.contains_key(**variable))
+            {
+                return Err(invalid(format!(
+                    "env {variable} is set for a box with a routed host"
+                )));
             }
         }
         Ok(())
@@ -1326,7 +1494,7 @@ pub(crate) fn valid_name(name: &str) -> bool {
 }
 
 /// Standard base64 with padding.
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {

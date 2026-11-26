@@ -1,9 +1,9 @@
-//! The CONNECT SNI check. rustls reads the ClientHello; the bytes it read
-//! are kept, to be forwarded unchanged.
+//! The CONNECT SNI check. rustls reads the ClientHello; for a tunnel the
+//! bytes it read are kept, to be forwarded unchanged.
 
 use std::io::{self, Read};
 
-use rustls::server::Acceptor;
+use rustls::server::{Accepted, Acceptor};
 
 /// The most that is buffered before the ClientHello is complete. Real ones
 /// are under 2 KiB; the cap only stops a client growing the buffer without
@@ -21,9 +21,24 @@ pub fn read_client_hello(reader: &mut impl Read, host: &str) -> Result<Vec<u8>, 
         reader,
         bytes: Vec::new(),
     };
+    hello(&mut tee, host)?;
+    Ok(tee.bytes)
+}
+
+/// Read one whole ClientHello whose SNI names `host`, for the proxy to end
+/// the TLS itself.
+pub fn accept(reader: &mut impl Read, host: &str) -> Result<Accepted, &'static str> {
+    let mut tee = Tee {
+        reader,
+        bytes: Vec::new(),
+    };
+    hello(&mut tee, host)
+}
+
+fn hello<R: Read>(tee: &mut Tee<'_, R>, host: &str) -> Result<Accepted, &'static str> {
     let mut acceptor = Acceptor::default();
     let accepted = loop {
-        match acceptor.read_tls(&mut tee) {
+        match acceptor.read_tls(tee) {
             Ok(0) => return Err(MALFORMED),
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -38,7 +53,7 @@ pub fn read_client_hello(reader: &mut impl Read, host: &str) -> Result<Vec<u8>, 
     match accepted.client_hello().server_name() {
         None => Err("sni missing"),
         Some(sni) if !sni.eq_ignore_ascii_case(host) => Err("sni mismatch"),
-        Some(_) => Ok(tee.bytes),
+        Some(_) => Ok(accepted),
     }
 }
 

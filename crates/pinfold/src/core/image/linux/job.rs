@@ -359,6 +359,7 @@ async fn run_transaction(
         },
         &Default::default(),
         None,
+        None,
         egress_log.clone(),
     )?);
     let audit = proxy.as_mut().expect("started builder proxy");
@@ -949,6 +950,7 @@ async fn run_job(
             }
             request.extend(0u32.to_be_bytes());
             request.extend(0u32.to_be_bytes());
+            put(&mut request, b""); // No box CA: a build has no routed host.
             write_frame(&mut reader, BOOT, &request)?;
             let mut handoff = handoff;
             let mut lookup_open = phase.egress();

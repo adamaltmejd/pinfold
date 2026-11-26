@@ -17,11 +17,13 @@ use tokio::sync::oneshot;
 use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
 use nix::sys::socket::{MsgFlags, recv};
 use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
+use rustls::{
+    ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection, StreamOwned,
+};
 
 use crate::core::login;
 use crate::core::plan::{Egress, Route, Target, Values};
-use crate::core::{network, now, rfc3339, runs, tls};
+use crate::core::{ca, network, now, rfc3339, runs, tls};
 use crate::init::Deadline;
 
 /// The loopback URL clients reach through `pinfold init`'s relay.
@@ -139,14 +141,16 @@ impl Connection {
 
 /// Serve the bound box socket and create its log. All request workers,
 /// including a synchronous token refresh, are joined by `Server::stop`.
+/// `issued` is the leaf routed hosts are served with.
 pub fn start(
     listener: UnixListener,
     egress: &Egress,
     values: &Values,
     codex: Option<login::Token>,
+    issued: Option<ca::Issued>,
     log: PathBuf,
 ) -> io::Result<Server> {
-    let rules = Arc::new(Rules::new(egress, values, codex)?);
+    let rules = Arc::new(Rules::new(egress, values, codex, issued)?);
     runs::open_log(&log)?;
     listener.set_nonblocking(true)?;
     let (failure, failed) = oneshot::channel();
@@ -169,8 +173,13 @@ struct Rules {
     /// Lowercased allowlist entries: a name, or `.name` for the name and
     /// its subdomains.
     allow: Vec<String>,
-    /// Lowercased route names mapped to where they lead.
+    /// Lowercased names of plain routes, served over plain HTTP, mapped to
+    /// where they lead.
     routes: BTreeMap<String, Upstream>,
+    /// Lowercased routed hosts, served over TLS the proxy terminates.
+    routed: BTreeMap<String, Upstream>,
+    /// The box-side TLS server for routed hosts; `None` without one.
+    server: Option<Arc<ServerConfig>>,
 }
 
 /// A route's upstream. No `Debug`: an injected header holds a credential.
@@ -198,43 +207,62 @@ enum Upstream {
 
 impl Rules {
     /// The rules for one box. Injected header values come from `values`; a
-    /// codex login route takes `codex`.
-    fn new(egress: &Egress, values: &Values, codex: Option<login::Token>) -> io::Result<Rules> {
+    /// codex login route takes `codex`. Two routes that share a routed host
+    /// serve it alike (`validate`), so either's entry stands.
+    fn new(
+        egress: &Egress,
+        values: &Values,
+        codex: Option<login::Token>,
+        issued: Option<ca::Issued>,
+    ) -> io::Result<Rules> {
         let codex = codex.map(|token| Arc::new(login::Codex::new(token)));
         let mut routes = BTreeMap::new();
+        let mut routed = BTreeMap::new();
         for (name, route) in &egress.routes {
-            let upstream = match route {
+            match route {
                 Route::Address(address) => {
                     let (host, port) = network::authority_host(address, 0)
                         .expect("validate refuses a route target that is not host:port");
-                    Upstream::Address(Target {
+                    let target = Target {
                         https: false,
                         host: host.to_string(),
                         port,
                         authority: address.clone(),
-                    })
+                    };
+                    routes.insert(name.to_ascii_lowercase(), Upstream::Address(target));
                 }
                 Route::Inject(inject) => {
                     let (target, headers) =
                         inject.resolve(name, values).map_err(io::Error::other)?;
-                    Upstream::Inject {
+                    let (https, host) = (target.https, target.host.to_ascii_lowercase());
+                    let upstream = Upstream::Inject {
                         target,
                         base_path: "",
                         headers,
                         login: false,
+                    };
+                    if https {
+                        routed.insert(host, upstream);
+                    } else {
+                        routes.insert(name.to_ascii_lowercase(), upstream);
                     }
                 }
-                Route::Login(login) if login.uses_host_codex() => Upstream::Codex {
-                    target: login.target().map_err(io::Error::other)?,
-                    login: codex.clone().expect("up resolves a Codex login's token"),
-                },
+                Route::Login(login) if login.uses_host_codex() => {
+                    for serving in login.served().map_err(io::Error::other)? {
+                        let upstream = Upstream::Codex {
+                            target: login.target().map_err(io::Error::other)?,
+                            login: codex.clone().expect("up resolves a Codex login's token"),
+                        };
+                        routed.insert(serving.name, upstream);
+                    }
+                }
                 Route::Login(login) => {
                     let served = login.resolve(name, values).map_err(|error| {
                         io::Error::other(format!("{} login route {name:?}: {error}", login.login))
                     })?;
                     for served in served {
-                        routes.insert(
-                            served.name.to_ascii_lowercase(),
+                        routed.insert(
+                            served.name,
                             Upstream::Inject {
                                 target: served.target,
                                 base_path: served.base_path,
@@ -243,18 +271,29 @@ impl Rules {
                             },
                         );
                     }
-                    continue;
                 }
-            };
-            routes.insert(name.to_ascii_lowercase(), upstream);
+            }
         }
+        let server = match issued {
+            Some(issued) => {
+                let mut config = ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(vec![issued.leaf], issued.key)
+                    .map_err(|error| io::Error::other(format!("box TLS server: {error}")))?;
+                config.alpn_protocols = vec![b"http/1.1".to_vec()];
+                Some(Arc::new(config))
+            }
+            None => None,
+        };
         Ok(Rules {
             allow: egress
-                .allow
+                .allowed()
                 .iter()
                 .map(|entry| entry.to_ascii_lowercase())
                 .collect(),
             routes,
+            routed,
+            server,
         })
     }
 
@@ -343,7 +382,14 @@ fn serve(
                 }
             }
             if workers.len() >= MAX_CONNECTIONS {
-                refuse(&mut client, &log, "", None, 503, "connection cap");
+                refuse(
+                    &mut Client::Plain(&mut client),
+                    &log,
+                    "",
+                    None,
+                    503,
+                    "connection cap",
+                );
                 continue;
             }
             let rules = Arc::clone(&rules);
@@ -365,14 +411,14 @@ fn serve(
     accepted.and(joined)
 }
 
-fn handle(mut client: UnixStream, rules: &Rules, log: &AuditLog, connection: &Connection) {
+fn handle(mut socket: UnixStream, rules: &Rules, log: &AuditLog, connection: &Connection) {
     if connection.cancelled()
         || log.failed()
-        || client.set_read_timeout(Some(HEADER_TIMEOUT)).is_err()
+        || socket.set_read_timeout(Some(HEADER_TIMEOUT)).is_err()
     {
         return;
     }
-    let head = match read_head(&mut client) {
+    let head = match read_head(&mut socket) {
         Ok(head) => head,
         Err(error) if timed_out(&error) => {
             let _ = record(log, "", "refused", "header timeout", None);
@@ -380,47 +426,80 @@ fn handle(mut client: UnixStream, rules: &Rules, log: &AuditLog, connection: &Co
         }
         Err(_) => return,
     };
-    if !head_well_formed(&head) {
-        return refuse(&mut client, log, "", None, 400, "ambiguous framing");
+    let client = &mut Client::Plain(&mut socket);
+    let Some((method, version, target, headers)) = parse_head(client, log, "", &head) else {
+        return;
+    };
+    if method == "CONNECT" {
+        return connect(&mut socket, rules, log, &target, connection);
     }
-    // One parse for both methods; httparse rejects a folded header, a
-    // fourth token on the request line and more than MAX_HEADERS headers.
+    match parse_plain(&method, version, &target, &headers) {
+        Ok(request) => plain(client, rules, log, &request, connection),
+        Err(reason) => refuse(client, log, "", None, 400, reason),
+    }
+}
+
+/// A head's method, minor version, target and headers, or `None` once it
+/// is refused. One parse for every head; httparse rejects a folded header,
+/// a fourth token on the request line and more than MAX_HEADERS headers.
+#[allow(clippy::type_complexity)]
+fn parse_head(
+    client: &mut Client,
+    log: &AuditLog,
+    host: &str,
+    head: &[u8],
+) -> Option<(String, u8, String, Vec<(String, Vec<u8>)>)> {
+    if !head_well_formed(head) {
+        refuse(client, log, host, None, 400, "ambiguous framing");
+        return None;
+    }
     let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut request = httparse::Request::new(&mut headers);
     let (Ok(httparse::Status::Complete(_)), Some(method), Some(version), Some(target)) = (
-        request.parse(&head),
+        request.parse(head),
         request.method,
         request.version,
         request.path,
     ) else {
-        return refuse(&mut client, log, "", None, 400, "malformed request");
+        refuse(client, log, host, None, 400, "malformed request");
+        return None;
     };
-    if method == "CONNECT" {
-        return connect(&mut client, rules, log, target, connection);
-    }
-    match parse_plain(method, version, target, request.headers) {
-        Ok(request) => plain(&mut client, rules, log, &request, connection),
-        Err(reason) => refuse(&mut client, log, "", None, 400, reason),
-    }
+    let headers = request
+        .headers
+        .iter()
+        .map(|header| (header.name.to_string(), header.value.to_vec()))
+        .collect();
+    Some((method.to_string(), version, target.to_string(), headers))
 }
 
-/// Handle one CONNECT: an allowlisted host on port 443 only, with the
-/// ClientHello's SNI checked before the server is dialed.
+/// Handle one CONNECT on port 443 only: to a routed host, terminated
+/// whether or not the allowlist also names it; else to an allowlisted
+/// host, with the ClientHello's SNI checked before the server is dialed.
 fn connect(
-    client: &mut UnixStream,
+    socket: &mut UnixStream,
     rules: &Rules,
     log: &AuditLog,
     target: &str,
     connection: &Connection,
 ) {
+    let client = &mut Client::Plain(&mut *socket);
     let Some((host, port)) = target.rsplit_once(':').filter(|(host, _)| !host.is_empty()) else {
         return refuse(client, log, "", None, 400, "malformed request");
     };
     if network::literal(host).is_some() {
         return refuse(client, log, host, Some("CONNECT"), 403, "ip literal");
     }
-    if rules.routes.contains_key(&host.to_ascii_lowercase()) {
+    let lower = host.to_ascii_lowercase();
+    if rules.routes.contains_key(&lower) {
         return refuse(client, log, host, Some("CONNECT"), 403, "route");
+    }
+    // The routed set comes first: an allowlist entry naming a routed host
+    // must not open a tunnel the proxy cannot read.
+    if let Some(upstream) = rules.routed.get(&lower) {
+        if port.parse::<u16>() != Ok(443) {
+            return refuse(client, log, host, Some("CONNECT"), 403, "port not allowed");
+        }
+        return intercept(socket, rules, log, host, upstream, connection);
     }
     if !rules.allows(host) {
         return refuse(client, log, host, Some("CONNECT"), 403, "not allowlisted");
@@ -435,6 +514,9 @@ fn connect(
     if respond(client, 200).is_err() {
         return;
     }
+    let Client::Plain(client) = client else {
+        unreachable!("a tunnel's client is the socket")
+    };
     // The client sends its ClientHello only after the 200, so it is read
     // here and forwarded unchanged once the SNI checks out.
     let hello = match tls::read_client_hello(client, host) {
@@ -458,16 +540,84 @@ fn connect(
     }
 }
 
+/// End the box's TLS to a routed host with the box's leaf, then serve one
+/// origin-form request under the route rules. A handshake the box aborts,
+/// as one that does not trust its CA does, is logged.
+fn intercept(
+    socket: &mut UnixStream,
+    rules: &Rules,
+    log: &AuditLog,
+    host: &str,
+    upstream: &Upstream,
+    connection: &Connection,
+) {
+    let config = rules
+        .server
+        .clone()
+        .expect("a box with a routed host has a TLS server");
+    if respond(&mut Client::Plain(&mut *socket), 200).is_err() {
+        return;
+    }
+    let accepted = match tls::accept(socket, host) {
+        Ok(accepted) => accepted,
+        Err(reason) => {
+            let _ = record(log, host, "refused", reason, None);
+            return;
+        }
+    };
+    let mut server = match accepted.into_connection(config) {
+        Ok(server) => server,
+        Err((_, mut alert)) => {
+            let _ = alert.write_all(socket);
+            let _ = record(log, host, "closed", "tls handshake", None);
+            return;
+        }
+    };
+    while server.is_handshaking() {
+        if server.complete_io(socket).is_err() {
+            let _ = record(log, host, "closed", "tls handshake", None);
+            return;
+        }
+    }
+    let client = &mut Client::Tls(Box::new(StreamOwned::new(server, socket)));
+    let head = match read_head(client) {
+        Ok(head) => head,
+        Err(error) if timed_out(&error) => {
+            let _ = record(log, host, "refused", "header timeout", None);
+            return;
+        }
+        Err(_) => return,
+    };
+    let Some((method, version, target, headers)) = parse_head(client, log, host, &head) else {
+        return;
+    };
+    let request = match parse_origin(&method, version, &target, host, &headers) {
+        Ok(request) => request,
+        Err(reason) => return refuse(client, log, host, Some(&method), 400, reason),
+    };
+    if request.expect == Some(false) {
+        return refuse(
+            client,
+            log,
+            host,
+            Some(&method),
+            417,
+            "expectation unsupported",
+        );
+    }
+    route(client, log, &request, upstream, connection);
+}
+
 /// Handle one plain HTTP request: an allowlisted host or a route, port 80
 /// only, framed by Content-Length, one request per connection.
 fn plain(
-    client: &mut UnixStream,
+    client: &mut Client,
     rules: &Rules,
     log: &AuditLog,
     request: &Plain,
     connection: &Connection,
 ) {
-    let deny = |client: &mut UnixStream, code: u16, reason: &'static str| {
+    let deny = |client: &mut Client, code: u16, reason: &'static str| {
         refuse(
             client,
             log,
@@ -487,6 +637,10 @@ fn plain(
         return deny(client, 403, "ip literal");
     }
     let host = request.host.to_ascii_lowercase();
+    // A routed host takes TLS only, so a credential is never sent in clear.
+    if rules.routed.contains_key(&host) {
+        return deny(client, 403, "route");
+    }
     if let Some(upstream) = rules.routes.get(&host) {
         route(client, log, request, upstream, connection);
         return;
@@ -525,7 +679,7 @@ fn plain(
 /// dialed over TLS. A codex login whose token has lapsed is refused before
 /// anything is dialed.
 fn route(
-    client: &mut UnixStream,
+    client: &mut Client,
     log: &AuditLog,
     request: &Plain,
     upstream: &Upstream,
@@ -543,7 +697,7 @@ fn route(
         });
         record(log, &request.host, "allowed", "route", Some(fields))
     };
-    let deny = |client: &mut UnixStream, code: u16, reason: &'static str| {
+    let deny = |client: &mut Client, code: u16, reason: &'static str| {
         refuse(
             client,
             log,
@@ -631,7 +785,7 @@ fn route(
 /// Resolve once and check every address before anything is dialed. A
 /// forbidden address is refused 403 with its reason, an unresolved name 502.
 fn resolve_checked(
-    client: &mut UnixStream,
+    client: &mut Client,
     log: &AuditLog,
     log_host: &str,
     method: Option<&str>,
@@ -747,7 +901,7 @@ fn parse_plain(
     method: &str,
     version: u8,
     raw_target: &str,
-    headers: &[httparse::Header],
+    headers: &[(String, Vec<u8>)],
 ) -> Result<Plain, &'static str> {
     let (url, path) = network::absolute_url(raw_target).ok_or("malformed request")?;
     if url.https {
@@ -761,30 +915,73 @@ fn parse_plain(
         path if path.starts_with('?') => format!("/{path}"),
         path => path.to_string(),
     };
+    parse_request(
+        method,
+        version,
+        target,
+        url.authority,
+        url.host,
+        url.port,
+        headers,
+    )
+}
+
+/// Parse and check a request inside TLS to the routed `host`: origin form
+/// only. The box's own `Host` is dropped like any other.
+fn parse_origin(
+    method: &str,
+    version: u8,
+    target: &str,
+    host: &str,
+    headers: &[(String, Vec<u8>)],
+) -> Result<Plain, &'static str> {
+    if !target.starts_with('/') {
+        return Err("malformed request");
+    }
+    let host = host.to_ascii_lowercase();
+    parse_request(
+        method,
+        version,
+        target.to_string(),
+        host.clone(),
+        host,
+        443,
+        headers,
+    )
+}
+
+fn parse_request(
+    method: &str,
+    version: u8,
+    target: String,
+    authority: String,
+    host: String,
+    port: u16,
+    headers: &[(String, Vec<u8>)],
+) -> Result<Plain, &'static str> {
     let mut content_length = None;
     let mut forwarded = Vec::new();
     let mut connection = Vec::new();
     // Whether the `Expect` list has a member, and whether each is
     // `100-continue`.
     let mut expect: Option<(bool, bool)> = None;
-    for header in headers {
-        if header.name.eq_ignore_ascii_case("connection") {
-            connection.push(header.value.to_vec());
+    for (name, value) in headers {
+        if name.eq_ignore_ascii_case("connection") {
+            connection.push(value.clone());
         }
-        if header.name.eq_ignore_ascii_case("transfer-encoding") {
+        if name.eq_ignore_ascii_case("transfer-encoding") {
             return Err("ambiguous framing");
         }
-        let length = header.name.eq_ignore_ascii_case("content-length");
+        let length = name.eq_ignore_ascii_case("content-length");
         if length && content_length.is_some() {
             return Err("ambiguous framing");
         }
         // Never forwarded: the proxy answers it. RFC 9110 has an HTTP/1.0
         // server ignore it. All its fields form one comma list, judged
         // once every field is in.
-        if header.name.eq_ignore_ascii_case("expect") {
+        if name.eq_ignore_ascii_case("expect") {
             if version == 1 {
-                let members = header
-                    .value
+                let members = value
                     .split(|byte| *byte == b',')
                     .map(|mut member| {
                         // SP and HTAB only: other bytes, U+00A0 included,
@@ -807,25 +1004,25 @@ fn parse_plain(
             }
             continue;
         }
-        if header.name.eq_ignore_ascii_case("host") || hop_by_hop(header.name) {
+        if name.eq_ignore_ascii_case("host") || hop_by_hop(name) {
             continue;
         }
-        let value = std::str::from_utf8(header.value).map_err(|_| "malformed request")?;
+        let value = std::str::from_utf8(value).map_err(|_| "malformed request")?;
         if length {
             // RFC 9110's 1*DIGIT: `parse` alone would also take a leading `+`.
             let digits = value.bytes().all(|byte| byte.is_ascii_digit());
             let parsed = value.parse::<u64>().ok().filter(|_| digits);
             content_length = Some(parsed.ok_or("ambiguous framing")?);
         }
-        forwarded.push((header.name.to_string(), value.to_string()));
+        forwarded.push((name.clone(), value.to_string()));
     }
     Ok(Plain {
         method: method.to_string(),
         version,
         target,
-        authority: url.authority,
-        host: url.host,
-        port: url.port,
+        authority,
+        host,
+        port,
         headers: forwarded,
         connection,
         content_length: content_length.unwrap_or(0),
@@ -949,7 +1146,7 @@ fn query_decode(value: &str) -> Option<Vec<u8>> {
 /// response, with or without its own close_notify.
 #[allow(clippy::too_many_arguments)]
 fn forward(
-    client: &mut UnixStream,
+    client: &mut Client,
     server: Option<impl Read + Write>,
     request: &Plain,
     host: &str,
@@ -962,7 +1159,7 @@ fn forward(
         report(None)?;
         return respond(client, 502);
     };
-    let _ = client.set_read_timeout(Some(IDLE_TIMEOUT));
+    let _ = client.socket().set_read_timeout(Some(IDLE_TIMEOUT));
     let mut head = Vec::with_capacity(256);
     write!(
         head,
@@ -989,7 +1186,8 @@ fn forward(
     let mut exchange = || -> io::Result<(Vec<u8>, Option<u16>)> {
         server.write_all(&head)?;
         if request.expect == Some(true) {
-            Deadline(client.as_fd(), IDLE_TIMEOUT).write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+            client.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+            client.flush()?;
         }
         let mut body = Read::take(&mut *client, request.content_length);
         io::copy(&mut body, &mut server)?;
@@ -1004,10 +1202,9 @@ fn forward(
         }
     };
     report(status)?;
-    let mut writer = Deadline(client.as_fd(), IDLE_TIMEOUT);
-    writer.write_all(&line)?;
-    io::copy(&mut server, &mut writer)?;
-    let _ = client.shutdown(Shutdown::Write);
+    client.write_all(&line)?;
+    io::copy(&mut server, client)?;
+    client.finish();
     Ok(())
 }
 
@@ -1042,7 +1239,7 @@ pub fn hop_by_hop(name: &str) -> bool {
 /// Read one request head, ending at the blank line. A bare-LF blank line
 /// also ends the read, so the caller can refuse it instead of blocking. EOF
 /// and a head over the cap are `UnexpectedEof`; a timeout keeps its kind.
-fn read_head(client: &mut UnixStream) -> io::Result<Vec<u8>> {
+fn read_head(client: &mut impl Read) -> io::Result<Vec<u8>> {
     let end = |head: &[u8]| head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n");
     let head = read_until(client, end)?;
     if !end(&head) {
@@ -1286,14 +1483,14 @@ fn tunnel(client: &UnixStream, server: TcpStream, log: &AuditLog, host: &str) {
     }
 }
 
-fn respond(client: &mut UnixStream, code: u16) -> io::Result<()> {
+fn respond(client: &mut Client, code: u16) -> io::Result<()> {
     let framing = if code == 200 {
         ""
     } else {
         "Content-Length: 0\r\nConnection: close\r\n"
     };
-    Deadline(client.as_fd(), IDLE_TIMEOUT)
-        .write_all(format!("HTTP/1.1 {code} {}\r\n{framing}\r\n", phrase(code)).as_bytes())
+    client.write_all(format!("HTTP/1.1 {code} {}\r\n{framing}\r\n", phrase(code)).as_bytes())?;
+    client.flush()
 }
 
 fn phrase(code: u16) -> &'static str {
@@ -1315,7 +1512,7 @@ fn phrase(code: u16) -> &'static str {
 /// body: a HEAD response ends at its head (RFC 9110, 9.3.2), and an
 /// unparsed request may have been a HEAD.
 fn refuse(
-    client: &mut UnixStream,
+    client: &mut Client,
     log: &AuditLog,
     host: &str,
     method: Option<&str>,
@@ -1364,7 +1561,61 @@ fn refuse(
          {framing}Connection: close\r\n\r\n{body}",
         phrase(code),
     );
-    let _ = Deadline(client.as_fd(), IDLE_TIMEOUT).write_all(response.as_bytes());
+    if client.write_all(response.as_bytes()).is_ok() {
+        client.finish();
+    }
+}
+
+/// The box's side of one exchange: its socket, or TLS the proxy ends on it.
+enum Client<'a> {
+    Plain(&'a mut UnixStream),
+    Tls(Box<StreamOwned<ServerConnection, &'a mut UnixStream>>),
+}
+
+impl Client<'_> {
+    fn socket(&self) -> &UnixStream {
+        match self {
+            Client::Plain(socket) => socket,
+            Client::Tls(stream) => &*stream.sock,
+        }
+    }
+
+    /// End the box's side for writing: TLS's close_notify, then the
+    /// socket's write half.
+    fn finish(&mut self) {
+        if let Client::Tls(stream) = self {
+            stream.conn.send_close_notify();
+            let _ = stream.flush();
+        }
+        let _ = self.socket().shutdown(Shutdown::Write);
+    }
+}
+
+impl Read for Client<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Client::Plain(socket) => socket.read(buffer),
+            Client::Tls(stream) => stream.read(buffer),
+        }
+    }
+}
+
+/// The socket's writes take the idle deadline; TLS's are bounded by the
+/// socket's write timeout.
+impl Write for Client<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        match self {
+            Client::Plain(socket) => Deadline(socket.as_fd(), IDLE_TIMEOUT).write(buffer),
+            Client::Tls(stream) => stream.write(buffer),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Client::Plain(_) => Ok(()),
+            Client::Tls(stream) => stream.flush(),
+        }
+    }
 }
 
 /// Append one decision as a JSON line. A route decision also names the

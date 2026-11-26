@@ -2,6 +2,7 @@
 
 pub mod artifacts;
 pub mod r#box;
+pub(crate) mod ca;
 pub mod clean;
 pub mod crossing;
 pub mod disk;
@@ -132,7 +133,7 @@ pub(crate) fn rfc3339(seconds: i64) -> String {
 
 /// Days since 1970-01-01 to a proleptic Gregorian date, after Howard
 /// Hinnant's `civil_from_days` (public domain).
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);

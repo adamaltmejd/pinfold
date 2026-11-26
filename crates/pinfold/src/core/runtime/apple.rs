@@ -85,6 +85,7 @@ pub fn up(
     values: &Values,
     init: &Path,
     proxy_socket: Option<&Path>,
+    bundle: Option<&Path>,
 ) -> io::Result<Client> {
     let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
     let mut command = Command::new("container");
@@ -174,6 +175,12 @@ pub fn up(
         }
         command.arg("--mount").arg(value);
     }
+    // Only `--volume` takes a file; `--mount` takes directories alone.
+    if let Some(bundle) = bundle {
+        let mut value = bundle.as_os_str().to_owned();
+        value.push(format!(":{}:ro", crate::init::BUNDLE));
+        command.arg("--volume").arg(value);
+    }
     command
         .arg("--mount")
         .arg(init_mount(init))
@@ -193,6 +200,62 @@ pub fn up(
             Client(child, stderr, None, None, None, env)
         })
         .map_err(|error| spawn_error("container", error))
+}
+
+/// The image's CA bundle with the box CA `ca` appended, written in
+/// `state_dir` for a file mount over the image's own. A networkless helper
+/// box on the image reads the image's, as init.
+#[cfg_attr(target_os = "linux", expect(dead_code))]
+pub fn trust_bundle(
+    plan: &Plan,
+    init: &Path,
+    state_dir: &Path,
+    ca: &str,
+) -> io::Result<std::path::PathBuf> {
+    let image = plan.image.as_deref().expect("up resolved the image");
+    let user = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
+    let output = std::process::Command::new("container")
+        .args(["run", "--rm", "--progress", "none", "--network", "none"])
+        .args(["--read-only", "--cap-drop", "ALL", "--workdir", "/"])
+        .args(["--user", &user])
+        .arg("--label")
+        .arg(format!(
+            "{}={}",
+            ownership::GENERATION_LABEL,
+            plan.labels[ownership::GENERATION_LABEL]
+        ))
+        .arg("--label")
+        .arg(format!(
+            "{}={}",
+            clean::OWNER_LABEL,
+            plan.labels[clean::OWNER_LABEL]
+        ))
+        .arg("--mount")
+        .arg(init_mount(init))
+        .arg("--entrypoint")
+        .arg(init)
+        .arg(image)
+        .args(["init", "bundle"])
+        .stdin(Stdio::null())
+        .output_guarded()
+        .map_err(|error| spawn_error("container", error))?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "read the image's CA bundle: {}",
+            terminal_text(String::from_utf8_lossy(&output.stderr).trim())
+        )));
+    }
+    let mut bundle = output.stdout;
+    if bundle.len() > crate::init::MAX_BUNDLE {
+        return Err(io::Error::other("the image's CA bundle exceeds 4 MiB"));
+    }
+    if !bundle.is_empty() && !bundle.ends_with(b"\n") {
+        bundle.push(b'\n');
+    }
+    bundle.extend_from_slice(ca.as_bytes());
+    let path = state_dir.join("ca-certificates.crt");
+    std::fs::write(&path, bundle)?;
+    Ok(path)
 }
 
 fn bind(host: &Path, guest: &Path, readonly: bool) -> OsString {

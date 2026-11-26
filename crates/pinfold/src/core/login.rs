@@ -332,60 +332,48 @@ fn base64url(text: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// The box's `/etc/codex/config.toml`: a custom provider at the login route.
-/// It holds no secret; the proxy adds the headers.
-pub fn codex_config(route: &str) -> String {
-    // A JSON string is a TOML basic string, escapes included.
-    let base_url = serde_json::Value::from(format!("http://{route}/backend-api/codex"));
-    format!(
-        "model_provider = \"pinfold\"\n\
-         \n\
-         [model_providers.pinfold]\n\
-         name = \"pinfold\"\n\
-         base_url = {base_url}\n\
-         wire_api = \"responses\"\n\
-         requires_openai_auth = false\n"
-    )
-}
+/// The box's `/etc/codex/config.toml`: a custom provider at ChatGPT's own
+/// host, which needs no login of its own. It holds no secret; the proxy
+/// adds the headers.
+pub const CODEX_CONFIG: &str = "model_provider = \"pinfold\"\n\
+     \n\
+     [model_providers.pinfold]\n\
+     name = \"pinfold\"\n\
+     base_url = \"https://chatgpt.com/backend-api/codex\"\n\
+     wire_api = \"responses\"\n\
+     requires_openai_auth = false\n";
 
-/// Claude's system settings carry only the route and placeholders.
+/// Claude's system settings carry only placeholders.
 pub const CLAUDE_CONFIG_DIR: &str = "/etc/claude-code";
 
-pub fn claude_config(route: &str) -> String {
+pub fn claude_config() -> String {
     serde_json::json!({"env": {
-        "ANTHROPIC_BASE_URL": format!("http://{route}"),
         "CLAUDE_CODE_OAUTH_TOKEN": LOGIN_PLACEHOLDER,
         "ANTHROPIC_API_KEY": "",
     }})
     .to_string()
 }
 
-/// The box environment a github login route sets: `gh` at the route with
-/// placeholder tokens, and Git's GitHub URLs rewritten to the route.
-pub const GITHUB_ENV: [(&str, &str); 10] = [
-    ("GH_HOST", "github.localhost"),
+/// The box environment a github login route sets: a placeholder token for
+/// `gh`, SSH remotes rewritten to HTTPS, and a push buffer large enough
+/// that Git does not chunk a body, which the proxy refuses.
+pub const GITHUB_ENV: [(&str, &str); 6] = [
     ("GH_TOKEN", LOGIN_PLACEHOLDER),
-    ("GH_ENTERPRISE_TOKEN", LOGIN_PLACEHOLDER),
-    ("GIT_CONFIG_COUNT", "3"),
-    ("GIT_CONFIG_KEY_0", "url.http://github.localhost/.insteadOf"),
-    ("GIT_CONFIG_VALUE_0", "https://github.com/"),
-    ("GIT_CONFIG_KEY_1", "url.http://github.localhost/.insteadOf"),
-    ("GIT_CONFIG_VALUE_1", "git@github.com:"),
-    // The proxy refuses chunked framing; Git chunks a body over the buffer.
-    (
-        "GIT_CONFIG_KEY_2",
-        "http.http://github.localhost/.postBuffer",
-    ),
-    ("GIT_CONFIG_VALUE_2", "524288000"),
+    ("GIT_CONFIG_COUNT", "2"),
+    ("GIT_CONFIG_KEY_0", "url.https://github.com/.insteadOf"),
+    ("GIT_CONFIG_VALUE_0", "git@github.com:"),
+    ("GIT_CONFIG_KEY_1", "http.https://github.com/.postBuffer"),
+    ("GIT_CONFIG_VALUE_1", "524288000"),
 ];
 
 /// The single autoload entry under the writable home; sibling extensions remain.
 pub const PI_LOGIN_DIR: &str = ".pi/agent/extensions/pinfold-login";
 
-/// Point each provider at its route and supply its nonsecret placeholder.
-pub fn pi_extension(routes: &[(&str, &PiProvider)]) -> String {
+/// Give each routed provider its nonsecret placeholder. Its `baseUrl` is
+/// the provider's own, set so pi keeps its built-in models.
+pub fn pi_extension(providers: &[&PiProvider]) -> String {
     let mut calls = String::new();
-    for (route, provider) in routes {
+    for provider in providers {
         // A JSON value is a JavaScript literal.
         let name = serde_json::Value::from(provider.pi);
         let placeholder = match provider.credential {
@@ -394,7 +382,7 @@ pub fn pi_extension(routes: &[(&str, &PiProvider)]) -> String {
             }
         };
         let config = serde_json::json!({
-            "baseUrl": format!("http://{route}{}", provider.base_path),
+            "baseUrl": format!("{}{}", provider.origin, provider.base_path),
             "apiKey": placeholder,
         });
         calls.push_str(&format!("  pi.registerProvider({name}, {config});\n"));

@@ -15,7 +15,7 @@ use crate::core::plan::{Disk, Env, Login, Mount, MountKind, Plan, Route, Values,
 use crate::core::profile::{Profile, Seed, Share};
 use crate::core::runs::{self, Terminal};
 use crate::core::runtime::{self, BoxInfo, Child, Prepared, runtime};
-use crate::core::{disk, login, ownership, proxy};
+use crate::core::{ca, disk, login, ownership, proxy};
 use crate::dirs;
 
 /// A started box, owned by this process.
@@ -852,7 +852,8 @@ struct Starting {
     proxy: Option<proxy::Server>,
     audit_done: Option<bool>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    preparing: Option<tokio::task::JoinHandle<Result<(Plan, Prepared), Stop>>>,
+    #[allow(clippy::type_complexity)]
+    preparing: Option<tokio::task::JoinHandle<Result<(Plan, Prepared, Option<ca::Issued>), Stop>>>,
     finishing: Option<tokio::task::JoinHandle<io::Result<BoxInfo>>>,
     /// The disks claimed for the box, which a failed start releases.
     claimed: disk::Claimed,
@@ -884,10 +885,12 @@ async fn start(
     let cancel = progress.cancel.clone();
     let image_id = image_id.to_string();
     let generated = progress.destinations.clone();
+    let init_path = init.to_path_buf();
     let worker = progress
         .preparing
         .insert(tokio::task::spawn_blocking(move || {
             prepare_logins(&mut resolved, &preparation_dir, &generated)?;
+            let issued = issue_trust(&mut resolved)?;
             let prepared = runtime::prepare(
                 &resolved,
                 &preparation_dir,
@@ -895,12 +898,13 @@ async fn start(
                 &image_id,
                 &cancel,
                 &generated,
+                &init_path,
             )?;
-            Ok((resolved, prepared))
+            Ok((resolved, prepared, issued))
         }));
     let prepared = worker.await;
     progress.preparing.take();
-    let (resolved, prepared) = prepared
+    let (resolved, prepared, issued) = prepared
         .map_err(|error| io::Error::other(format!("preparation worker failed: {error}")))??;
     *plan = resolved;
 
@@ -917,6 +921,7 @@ async fn start(
                 egress,
                 values,
                 codex,
+                issued,
                 log.clone(),
             )?);
             egress_log = Some(log);
@@ -966,32 +971,24 @@ fn launch_record(plan: &Plan, observed: &BoxInfo, image_ref: &str) -> serde_json
     let runtime = runtime();
     let egress = plan.egress.as_ref().map(|egress| {
         let mut routes = serde_json::Map::new();
-        for (name, route) in &egress.routes {
-            let served = match route {
-                Route::Address(address) => vec![("host-service", name.as_str(), address.clone())],
-                Route::Inject(inject) => vec![("injecting", name.as_str(), inject.to.clone())],
-                Route::Login(login) => login
-                    .served(name)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(name, origin, base_path)| {
-                        let origin = if base_path.is_empty() {
-                            origin
-                        } else {
-                            origin.trim_end_matches('/')
-                        };
-                        ("login", name, format!("{origin}{base_path}"))
-                    })
-                    .collect(),
+        // Two routes serving one host send the same thing there (validate),
+        // so that host has one entry.
+        for (label, route) in &egress.routes {
+            let kind = match route {
+                Route::Address(_) => "host-service",
+                Route::Inject(_) => "injecting",
+                Route::Login(_) => "login",
             };
-            for (kind, name, to) in served {
-                routes.insert(
-                    name.to_owned(),
-                    serde_json::json!({ "kind": kind, "to": to }),
-                );
+            for serving in route.serving(label).unwrap_or_default() {
+                let to = if serving.base_path.is_empty() {
+                    serving.to
+                } else {
+                    format!("{}{}", serving.to.trim_end_matches('/'), serving.base_path)
+                };
+                routes.insert(serving.name, serde_json::json!({ "kind": kind, "to": to }));
             }
         }
-        serde_json::json!({ "allow": &egress.allow, "routes": routes })
+        serde_json::json!({ "allow": egress.allowed(), "routes": routes })
     });
     let mounts: Vec<serde_json::Value> = plan
         .mounts
@@ -1094,6 +1091,30 @@ fn login_destinations(plan: &Plan) -> Result<Vec<PathBuf>, String> {
 
 fn validate_generated(plan: &Plan, extra: &[&Path]) -> Result<(), String> {
     plan.validate_guests(extra)?;
+    // The bundle is written over the image's own file, not attached, so
+    // only a mount or disk at or above it can hide it.
+    if plan
+        .egress
+        .as_ref()
+        .is_some_and(|egress| !egress.routed_hosts().is_empty())
+    {
+        let bundle = Path::new(ca::BUNDLE);
+        let guests = plan
+            .mounts
+            .iter()
+            .map(|mount| &mount.guest)
+            .chain(plan.disks.iter().map(|disk| &disk.guest));
+        for guest in guests {
+            let guest = crate::core::plan::guest_path(guest);
+            if bundle.starts_with(&guest) {
+                return Err(format!(
+                    "guest path {} would hide the box's CA bundle {}",
+                    guest.display(),
+                    ca::BUNDLE
+                ));
+            }
+        }
+    }
     for destination in extra {
         let destination = crate::core::plan::guest_path(destination);
         for mount in &plan.mounts {
@@ -1166,14 +1187,20 @@ fn prepare_logins(plan: &mut Plan, state_dir: &Path, destinations: &[PathBuf]) -
         .logins()
         .map(|(route, login)| (route.to_owned(), login.clone()))
         .collect();
-    let allow = plan
+    // Every host the box can reach by name: allowed, then routed.
+    let (reachable, routed) = plan
         .egress
         .as_ref()
-        .map(|egress| egress.allow.join(","))
+        .map(|egress| {
+            let routed = egress.routed_hosts();
+            let mut reachable = egress.allowed();
+            reachable.extend(routed.iter().cloned());
+            (reachable.join(","), !routed.is_empty())
+        })
         .unwrap_or_default();
     plan.env
         .entry("PINFOLD_ALLOW".to_owned())
-        .or_insert(Env::Exact(allow));
+        .or_insert(Env::Exact(reachable));
     // `validate` refused a caller entry for any of these names.
     if logins.iter().any(|(_, login)| login.is_github()) {
         for (name, value) in login::GITHUB_ENV {
@@ -1181,35 +1208,24 @@ fn prepare_logins(plan: &mut Plan, state_dir: &Path, destinations: &[PathBuf]) -
                 .insert(name.to_owned(), Env::Exact(value.to_owned()));
         }
     }
+    if routed {
+        for name in ca::TRUST_ENV {
+            plan.env
+                .insert(name.to_owned(), Env::Exact(ca::BUNDLE.to_owned()));
+        }
+    }
     for destination in destinations {
         let (name, file, contents) = if destination == Path::new(login::CLAUDE_CONFIG_DIR) {
-            let (route, _) = logins
-                .iter()
-                .find(|(_, login)| login.login == "claude")
-                .expect("Claude route");
-            (
-                "claude",
-                "managed-settings.json",
-                login::claude_config(route),
-            )
+            ("claude", "managed-settings.json", login::claude_config())
         } else if destination == Path::new(login::CODEX_CONFIG_DIR) {
-            let (route, _) = logins
-                .iter()
-                .find(|(_, login)| login.is_codex())
-                .expect("Codex route");
-            ("codex", "config.toml", login::codex_config(route))
+            ("codex", "config.toml", login::CODEX_CONFIG.to_owned())
         } else {
-            let routes = logins
+            let providers = logins
                 .iter()
                 .filter(|(_, login)| login.is_pi())
-                .map(|(route, login)| {
-                    Ok((
-                        route.as_str(),
-                        login.pi_provider().map_err(io::Error::other)?,
-                    ))
-                })
+                .map(|(_, login)| login.pi_provider().map_err(io::Error::other))
                 .collect::<io::Result<Vec<_>>>()?;
-            ("login", "index.ts", login::pi_extension(&routes))
+            ("login", "index.ts", login::pi_extension(&providers))
         };
         let dir = state_dir.join(name);
         fs::create_dir(&dir)?;
@@ -1221,6 +1237,22 @@ fn prepare_logins(plan: &mut Plan, state_dir: &Path, destinations: &[PathBuf]) -
         });
     }
     Ok(())
+}
+
+/// For a box with a routed host, issue its CA and leaf, and give the plan
+/// the CA for the runtime to append to the image's bundle.
+fn issue_trust(plan: &mut Plan) -> io::Result<Option<ca::Issued>> {
+    let hosts: Vec<String> = match &plan.egress {
+        Some(egress) => egress.routed_hosts().into_iter().collect(),
+        None => return Ok(None),
+    };
+    if hosts.is_empty() {
+        return Ok(None);
+    }
+    let run = &plan.labels[ownership::GENERATION_LABEL];
+    let issued = ca::issue(&hosts, &run[..run.len().min(12)], crate::core::now())?;
+    plan.trust = Some(issued.ca_pem.clone());
+    Ok(Some(issued))
 }
 
 /// Load the spec's profile and fold its image and `share/` mount into the

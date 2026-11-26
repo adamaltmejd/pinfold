@@ -255,6 +255,10 @@ impl Vm {
             put(&mut request, directory.disk.as_os_str().as_bytes());
             put(&mut request, directory.relative.as_os_str().as_bytes());
         }
+        put(
+            &mut request,
+            plan.trust.as_deref().unwrap_or_default().as_bytes(),
+        );
 
         let root = state_dir.join("jail");
         fs::create_dir_all(&root)?;
