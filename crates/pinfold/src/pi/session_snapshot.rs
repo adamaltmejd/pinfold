@@ -32,10 +32,6 @@ impl Bytes {
         Ok(Self::path(&dirs::resolve_host_path(path)?))
     }
 
-    fn variable(name: &str) -> Option<Self> {
-        std::env::var_os(name).map(|value| Self::new(value.as_bytes()))
-    }
-
     fn value(values: &Values, source: &Source) -> Option<Self> {
         values.get(source).map(|value| Self::new(value.as_bytes()))
     }
@@ -74,23 +70,22 @@ impl Roots {
             cache: Bytes::canonical(&dirs::cache_dir()?)?,
             home: Bytes::canonical(&home)?,
             // The helper inherits this selection. No helper or auth file is opened.
-            codex_home: Bytes::variable("CODEX_HOME"),
+            codex_home: std::env::var_os("CODEX_HOME").map(|value| Bytes::new(value.as_bytes())),
         })
     }
 
     pub(crate) fn differences(&self, candidate: &Self) -> Vec<String> {
-        let mut fields = Vec::new();
-        for (different, field) in [
+        let mut fields: Vec<String> = [
             (self.config != candidate.config, "roots.config"),
             (self.state != candidate.state, "roots.state"),
             (self.cache != candidate.cache, "roots.cache"),
             (self.home != candidate.home, "roots.home"),
             (self.codex_home != candidate.codex_home, "roots.codex_home"),
-        ] {
-            if different {
-                fields.push(field.to_string());
-            }
-        }
+        ]
+        .into_iter()
+        .filter(|(different, _)| *different)
+        .map(|(_, field)| field.to_string())
+        .collect();
         fields.sort();
         fields
     }
@@ -133,17 +128,6 @@ struct Mount {
     kind: MountKind,
 }
 
-/// No `size`: a configured size applies only to a new disk, so a change
-/// never refuses a joining client.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Disk {
-    name: String,
-    guest: Bytes,
-    from: Option<Bytes>,
-    readonly: bool,
-}
-
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum EnvSource {
@@ -157,6 +141,8 @@ enum EnvSource {
     },
 }
 
+/// No disks: their names and guests follow the root and `project_mount`,
+/// and a size applies only to a new disk.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Snapshot {
@@ -167,7 +153,6 @@ pub(crate) struct Snapshot {
     image: Image,
     resources: Resources,
     mounts: Vec<Mount>,
-    disks: Vec<Disk>,
     allow: Vec<String>,
     routes: BTreeMap<String, plan::Route>,
     route_values: BTreeMap<String, Option<Bytes>>,
@@ -378,11 +363,6 @@ impl Snapshot {
                 mount.host = dirs::resolve_host_path(&mount.host)?;
             }
         }
-        for disk in &mut plan.disks {
-            if let Some(from) = disk.from.as_mut() {
-                *from = dirs::resolve_host_path(from)?;
-            }
-        }
         // The owner compares snapshots before anything checks its table: a
         // source edited since its client resolved is `config-changed`, and an
         // equal snapshot names only sources its client checked.
@@ -429,16 +409,6 @@ impl Snapshot {
                 kind: MountKind::Readonly,
             });
         }
-        let disks = plan
-            .disks
-            .iter()
-            .map(|disk| Disk {
-                name: disk.name.clone(),
-                guest: Bytes::path(&disk.guest),
-                from: disk.from.as_deref().map(Bytes::path),
-                readonly: disk.readonly,
-            })
-            .collect();
         // An `op` source's value is never compared, so it is in neither
         // table: a joining client reads none.
         let route_values = plan
@@ -486,7 +456,6 @@ impl Snapshot {
                 memory_mib,
             },
             mounts,
-            disks,
             allow: config.allow.clone(),
             routes: config.routes.clone(),
             route_values,
@@ -528,32 +497,32 @@ impl Snapshot {
 
     pub(crate) fn differences(&self, candidate: &Self) -> Vec<String> {
         let mut fields = self.roots.differences(&candidate.roots);
-        for (different, field) in [
-            (self.repository != candidate.repository, "repository"),
-            (
-                self.project_mount != candidate.project_mount,
-                "project.mount",
-            ),
-            (self.profile != candidate.profile, "profile"),
-            (self.image.source != candidate.image.source, "image.source"),
-            (
-                self.image.reference != candidate.image.reference,
-                "image.ref",
-            ),
-            (self.image.id != candidate.image.id, "image.id"),
-            (self.resources != candidate.resources, "resources"),
-            (self.mounts != candidate.mounts, "mounts"),
-            (self.disks != candidate.disks, "disks"),
-            (self.allow != candidate.allow, "allow"),
-            (self.routes != candidate.routes, "routes.declarations"),
-            (self.route_values != candidate.route_values, "routes.values"),
-            (self.env_names != candidate.env_names, "env.names"),
-            (self.env_values != candidate.env_values, "env.values"),
-        ] {
-            if different {
-                fields.push(field.to_string());
-            }
-        }
+        fields.extend(
+            [
+                (self.repository != candidate.repository, "repository"),
+                (
+                    self.project_mount != candidate.project_mount,
+                    "project.mount",
+                ),
+                (self.profile != candidate.profile, "profile"),
+                (self.image.source != candidate.image.source, "image.source"),
+                (
+                    self.image.reference != candidate.image.reference,
+                    "image.ref",
+                ),
+                (self.image.id != candidate.image.id, "image.id"),
+                (self.resources != candidate.resources, "resources"),
+                (self.mounts != candidate.mounts, "mounts"),
+                (self.allow != candidate.allow, "allow"),
+                (self.routes != candidate.routes, "routes.declarations"),
+                (self.route_values != candidate.route_values, "routes.values"),
+                (self.env_names != candidate.env_names, "env.names"),
+                (self.env_values != candidate.env_values, "env.values"),
+            ]
+            .into_iter()
+            .filter(|(different, _)| *different)
+            .map(|(_, field)| field.to_string()),
+        );
         fields.sort();
         fields
     }
