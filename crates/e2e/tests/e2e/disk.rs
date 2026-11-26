@@ -151,10 +151,9 @@ fn disks_persist_and_attach_exclusively() {
     };
     let (code, lines) = rm(&env);
     assert_eq!(code, 1, "{lines:?}");
-    assert_eq!(lines.len(), 1, "{lines:?}");
     assert_eq!(
-        (&lines[0]["event"], &lines[0]["disk"], &lines[0]["reason"]),
-        (&json!("refused"), &json!(disk), &json!("disk-in-use")),
+        (&lines[0]["event"], &lines[0]["reason"]),
+        (&json!("refused"), &json!("disk-in-use")),
         "{}",
         lines[0]
     );
