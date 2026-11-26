@@ -224,3 +224,21 @@ trimmed any of the file's blocks.
 As in the first round, after each round. In this round every box of
 the scratch roots had ended with `down` before the deletion; the one Firecracker process seen then belonged to another
 session's checkout on the same VM and was left alone.
+
+## Round 4, 2026-11-26: disk format pinned, after the merge with main
+
+The trim's 128 MiB ranges assume one ext4 block group of 4 KiB blocks.
+`create_disk` runs the host's `mkfs.ext4`, so a host `mke2fs.conf` could
+change the geometry: with `bigalloc` the groups grow and the ranges no
+longer match them. `create_disk` now passes `-b 4096 -O ^bigalloc`.
+
+On the dev VM, with `MKE2FS_CONFIG` naming a conf that enables
+`bigalloc` with 64 KiB clusters, a 1 GiB image formatted with
+`create_disk`'s former arguments had 524,288 blocks per group (2 GiB)
+and `bigalloc`. With the pin it had 4,096-byte blocks, 32,768 blocks per
+group (128 MiB) and no `bigalloc`. Disks created before the pin keep
+their format.
+
+After merging main (TLS interception, #476), row 11 passed on the dev VM
+at f729acd5 in 233 s, and CI's Linux suite passed on the same commit.
+The clone and scratch directory were deleted after the run.
