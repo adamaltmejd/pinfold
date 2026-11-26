@@ -19,7 +19,8 @@
 //!   gid u32, relay u8 for a box with a proxy, root device, attachment
 //!   count u32, then device, guest path, writable u8, fresh u8, deferred u8 each; fill count
 //!   u32, then each fill's guest path and a missing u8; directory count u32,
-//!   then each directory's disk guest root and relative path), then each fill's
+//!   then each directory's disk guest root and relative path; the box CA,
+//!   empty for none), then each fill's
 //!   copy stream: a new disk's `from`, or
 //!   with missing, the profile's seeds, each written only when absent. The
 //!   guest answers READY or FAILED (text).
@@ -54,13 +55,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use nix::fcntl::OFlag;
 use nix::libc;
 use nix::mount::{MntFlags, MsFlags};
 use nix::poll::{PollFd, PollFlags, PollTimeout};
 use nix::sys::signal::{SigHandler, Signal};
 use nix::sys::socket::{AddressFamily, Backlog, SockFlag, SockType, VsockAddr};
-use nix::sys::stat::Mode;
 use nix::unistd::{ForkResult, Gid, Uid};
 
 /// The host port PID 1 dials for its boot request.
@@ -328,7 +327,14 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
             };
             for (disk, relative) in &request.directories {
                 if disk.join(relative) == attachment.guest {
-                    prepare_directory(root, disk, relative, request.uid, request.gid)?;
+                    let directory = disk_root(root, disk)?;
+                    as_box_user(request.uid, request.gid, || {
+                        super::make_directories(directory, relative).map(drop)
+                    })
+                    .map_err(|error| {
+                        let path = disk.join(relative);
+                        io::Error::other(format!("prepare {}: {error}", path.display()))
+                    })?;
                 }
             }
             // pinfold's disks leave their inode tables uninitialized, and a
@@ -349,7 +355,15 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
             }
             for (guest, missing) in &request.fills {
                 if !missing && *guest == attachment.guest {
-                    populate_disk(root, guest, host, request.uid, request.gid)?;
+                    let directory = disk_root(root, guest)?;
+                    as_box_user(request.uid, request.gid, || {
+                        nix::unistd::fchdir(&directory)?;
+                        // Unbuffered reads leave the next fill or seed stream for its owner.
+                        super::receive_into(Path::new("."), host, false)
+                    })
+                    .map_err(|error| {
+                        io::Error::other(format!("populate {}: {error}", guest.display()))
+                    })?;
                 }
             }
         }
@@ -443,29 +457,23 @@ fn mount_at(
     data: Option<&str>,
 ) -> io::Result<PathBuf> {
     let guest = Path::new(guest.as_ref());
-    let target = root.join(guest.strip_prefix("/").unwrap_or(guest));
-    let walk = |error: nix::errno::Errno| match error {
-        nix::errno::Errno::ELOOP => {
+    let relative = guest.strip_prefix("/").unwrap_or(guest);
+    let target = root.join(relative);
+    // Every walk error is an errno; name it as nix does.
+    let walk = |error: io::Error| match error.raw_os_error().map(nix::errno::Errno::from_raw) {
+        Some(nix::errno::Errno::ELOOP) => {
             io::Error::other(format!("{} passes through a symlink", guest.display()))
         }
-        error => io::Error::other(format!("make {}: {error}", guest.display())),
+        Some(errno) => io::Error::other(format!("make {}: {errno}", guest.display())),
+        None => io::Error::other(format!("make {}: {error}", guest.display())),
     };
-    let directory = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-    let mut dir = nix::fcntl::open(root, directory, Mode::empty()).map_err(walk)?;
-    for component in guest.components().skip(1) {
-        let name = component.as_os_str();
-        match nix::sys::stat::mkdirat(&dir, name, Mode::from_bits_truncate(0o755)) {
-            Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
-            Err(error) => return Err(walk(error)),
-        }
-        dir = nix::fcntl::openat(&dir, name, directory, Mode::empty()).map_err(walk)?;
-    }
+    super::open_directory(root)
+        .and_then(|root| super::make_directories(root, relative))
+        .map_err(walk)?;
     mount(source, &target, fstype, flags, data)?;
     Ok(target)
 }
 
-/// The child has no box work or threads and cannot regain root. An open
-/// disk descriptor avoids the private staging tree's root-only ancestors.
 /// Replace the image's CA bundle in the overlay with itself and `ca`
 /// appended, walking the path without following a link.
 fn write_bundle(root: &Path, ca: &[u8]) -> io::Result<()> {
@@ -494,41 +502,13 @@ fn write_bundle(root: &Path, ca: &[u8]) -> io::Result<()> {
     File::from(file).write_all(&bundle)
 }
 
-fn prepare_directory(
-    root: &Path,
-    disk: &Path,
-    relative: &Path,
-    uid: u32,
-    gid: u32,
-) -> io::Result<()> {
-    let directory = super::open_directory(&root.join(disk.strip_prefix("/").unwrap()))?;
-    as_box_user(uid, gid, || {
-        super::make_directories(directory, relative).map(drop)
-    })
-    .map_err(|error| {
-        io::Error::other(format!(
-            "prepare {}: {error}",
-            disk.join(relative).display()
-        ))
-    })
+/// An open disk descriptor avoids the private staging tree's root-only
+/// ancestors.
+fn disk_root(root: &Path, disk: &Path) -> io::Result<OwnedFd> {
+    super::open_directory(&root.join(disk.strip_prefix("/").unwrap()))
 }
 
-fn populate_disk(
-    root: &Path,
-    disk: &Path,
-    host: &mut UnixStream,
-    uid: u32,
-    gid: u32,
-) -> io::Result<()> {
-    let directory = super::open_directory(&root.join(disk.strip_prefix("/").unwrap()))?;
-    as_box_user(uid, gid, || {
-        nix::unistd::fchdir(&directory)?;
-        // Unbuffered reads leave the next fill or seed stream for its owner.
-        super::receive_into(Path::new("."), host, false)
-    })
-    .map_err(|error| io::Error::other(format!("populate {}: {error}", disk.display())))
-}
-
+/// The child has no box work or threads and cannot regain root.
 fn as_box_user(uid: u32, gid: u32, operation: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
     let (mut errors, mut report) = io::pipe()?;
     // Safety: prepare runs before PID 1 starts threads or ordinary box work.
