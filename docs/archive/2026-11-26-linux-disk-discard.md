@@ -305,16 +305,21 @@ host with `dumpe2fs -h` and `e2fsck -fn`:
 | missing file | ready | 4096 | 32768 | no | the profile's | clean |
 | `meta_bg`, `default_features = ^resize_inode` | ready* | 4096 | 32768 | no | the profile's | clean |
 
-\* With that profile, `up` first failed before any disk existed: the
-init image's mkfs (`vm.rs` `mount_image`, which passes `-O ^has_journal`)
-hit the same `resize_inode`/`meta_bg` error. That call and the builder's
-are outside this change and read the host profile as before. For this
+\* Without a wrapper, `up` with that profile still failed. `create_disk`'s
+mkfs ran first; then the init image's mkfs (`vm.rs` `mount_image`, which
+passes `-O ^has_journal`, as on main) hit the same
+`resize_inode`/`meta_bg` error, and `up` removed the disk whose box never
+came ready. That call and the builder's are outside this change and read
+the host profile as before, so `up` with this profile fails on main too.
+For this
 row a wrapper `mkfs.ext4` first on PATH unset `MKE2FS_CONFIG` for every
 call except the one naming a `disks/*.mke2fs.conf`. It logged that
 `create_disk`'s run got pinfold's profile, not the caller's, and the
 bytes it saw matched `DISK_FORMAT`. Only `d.ext4` remained in the
 disks directory after each run.
 
-Row 11 passed on the VM with `MKE2FS_CONFIG` unset, in 217 s with a cold
-image cache. The clone, the scratch directories and the test's `TMPDIR`
+The VM ran a work commit whose source matched the round's commit. Row 11
+passed there with `MKE2FS_CONFIG` unset, in 217 s with a cold image
+cache. Only e2fsprogs 1.47.2 was run, and other `MKE2FS_*` variables still
+reach every mkfs. The clone, the scratch directories and the test's `TMPDIR`
 were deleted after the runs.
