@@ -245,15 +245,18 @@ pub fn trust_bundle(
         .stdin(Stdio::null());
     let output = crate::core::process::output_cancellable(&mut command, None, cancel)
         .map_err(|error| spawn_error("container", error));
-    // Apple runs a reference, not a local digest: the helper's own record
-    // says which image it read.
-    let ran = container(&plan.name).map(|helper| helper.map(|helper| box_info(helper).image_id));
-    let (stopped, removed, unremoved) = remove_helper(&plan.name);
-    if unremoved {
-        return Err(io::Error::other(format!(
-            "remove the CA bundle helper {}: {removed:?}",
-            plan.name
-        )));
+    let removal = remove_helper(
+        &plan.name,
+        &plan.labels[ownership::GENERATION_LABEL],
+        &plan.labels[clean::OWNER_LABEL],
+    );
+    if removal.unremoved {
+        return Err(io::Error::other(PreparationUnremoved(io::Error::other(
+            format!(
+                "remove the CA bundle helper {}: {:?}",
+                plan.name, removal.removed
+            ),
+        ))));
     }
     let output = output?;
     if !output.status.success() {
@@ -262,12 +265,17 @@ pub fn trust_bundle(
             terminal_text(String::from_utf8_lossy(&output.stderr).trim())
         )));
     }
-    if ran?.as_deref() != Some(image_id) {
+    // Apple runs a reference, not a local digest: the helper's own record
+    // says which image it read.
+    let Some(helper) = removal.helper? else {
+        return Err(io::Error::other("the CA bundle helper's record is gone"));
+    };
+    if box_info(helper).image_id != image_id {
         return Err(io::Error::other(
             "image-changed: the CA bundle helper read a different image",
         ));
     }
-    if let Err(error) = stopped.and(removed) {
+    if let Err(error) = removal.stopped.and(removal.removed) {
         return Err(io::Error::other(format!(
             "remove the CA bundle helper {}: {error}",
             plan.name
@@ -290,18 +298,53 @@ pub fn trust_bundle(
     Ok(path)
 }
 
-/// Stop and remove a helper run under the box's name: whether each step
-/// succeeded, and whether the name may still be taken. The box reuses the
-/// name, so the helper must be gone first. Apple reports a container
-/// `running` for a moment after `run` returns, and `rm` refuses it then;
-/// `run --rm` removes it just as late. `stop` returns once it has stopped,
-/// after which `rm` succeeds.
-fn remove_helper(name: &str) -> (io::Result<Vec<u8>>, io::Result<Vec<u8>>, bool) {
+/// A helper's removal: its record as inspected first, whether each step
+/// succeeded, and whether the name may still hold it.
+struct HelperRemoval {
+    helper: io::Result<Option<ListedContainer>>,
+    stopped: io::Result<Vec<u8>>,
+    removed: io::Result<Vec<u8>>,
+    unremoved: bool,
+}
+
+/// Stop and remove the helper this start ran under the box's name, within
+/// the removal deadline. Only a container carrying this start's `generation`
+/// and `owner` is touched: one that took the name since is another start's.
+/// The box reuses the name, so the helper must be gone first. Apple reports
+/// a container `running` for a moment after `run` returns, and `rm` refuses
+/// it then; `run --rm` removes it just as late. `stop` returns once it has
+/// stopped, after which `rm` succeeds.
+fn remove_helper(name: &str, generation: &str, owner: &str) -> HelperRemoval {
+    let ours = || {
+        container(name).map(|helper| {
+            helper.filter(|helper| {
+                let labels = &helper.configuration.labels;
+                labels.get(ownership::GENERATION_LABEL).map(String::as_str) == Some(generation)
+                    && labels.get(clean::OWNER_LABEL).map(String::as_str) == Some(owner)
+            })
+        })
+    };
     crate::core::process::with_deadline(REMOVAL_TIMEOUT, |_| {
+        let helper = ours();
+        if !matches!(helper, Ok(Some(_))) {
+            // Gone, or not provably ours: nothing is removed.
+            let unremoved = helper.is_err();
+            return HelperRemoval {
+                helper,
+                stopped: Ok(Vec::new()),
+                removed: Ok(Vec::new()),
+                unremoved,
+            };
+        }
         let stopped = output(&["container", "stop", name]);
         let removed = output(&["container", "rm", name]);
-        let unremoved = removed.is_err() && !matches!(container(name), Ok(None));
-        (stopped, removed, unremoved)
+        let unremoved = removed.is_err() && !matches!(ours(), Ok(None));
+        HelperRemoval {
+            helper,
+            stopped,
+            removed,
+            unremoved,
+        }
     })
 }
 
@@ -1132,7 +1175,12 @@ impl Runtime for Apple {
         if !spawned {
             return result.map(drop);
         }
-        let (stopped, removed, unremoved) = remove_helper(name);
+        let HelperRemoval {
+            stopped,
+            removed,
+            unremoved,
+            ..
+        } = remove_helper(name, generation, &plan.labels[clean::OWNER_LABEL]);
         let leftover = match (&stopped, &removed) {
             (Ok(_), Ok(_)) => String::new(),
             _ => format!("; removing helper {name}: {stopped:?}, {removed:?}"),

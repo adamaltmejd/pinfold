@@ -175,10 +175,11 @@ Login routes generate native configuration for the whole box. Claude and Codex
 use system configuration; Pi autoloads a read-only extension under its writable
 home. Agents reach their real hosts; the proxy terminates TLS there and
 adds the host credential, so a key the box sends to that host is
-replaced. The box image must be Debian-based with the `ca-certificates`
-package installed, or a box with a login route or an `https` injecting
-route does not start. Codex is
-set to use HTTP, not WebSockets, which the proxy does not carry. Agent configuration precedence still applies. Launch agents through PATH.
+replaced. A box with a login route or an `https` injecting route starts
+only if its image has a regular file at
+`/etc/ssl/certs/ca-certificates.crt`, which Debian's `ca-certificates`
+package provides. Codex is set to use HTTP, not WebSockets, which the
+proxy does not carry. Agent configuration precedence still applies. Launch agents through PATH.
 An explicit project `routes` table replaces the profile's routes. An API
 key can also arrive through the environment.
 

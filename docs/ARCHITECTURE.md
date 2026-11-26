@@ -1012,7 +1012,8 @@ network listener, no token: the socket identifies the box.
   naming it. On Linux PID 1 writes it into the root's overlay before the
   root turns read-only; on macOS a networkless helper box on the image
   reads the image's file and the box gets the result as a single-file
-  mount. The rest of `/etc/ssl/certs` is the image's. A caller mount or
+  mount. That helper carries the box's name, owner and generation labels,
+  and is removed only while it carries them, as the disk helper is. The rest of `/etc/ssl/certs` is the image's. A caller mount or
   disk at or above that path, or a caller env entry naming one of the
   three variables, is refused as `spec`. A box with no routed host gets
   none of this and no CA. Stacks that read that file or those variables

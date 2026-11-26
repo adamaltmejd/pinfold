@@ -605,16 +605,6 @@ fn intercept(
         // Unparsed, so empty, as plain HTTP's.
         Err(reason) => return refuse(client, log, host, None, 400, reason),
     };
-    if request.expect == Some(false) {
-        return refuse(
-            client,
-            log,
-            host,
-            Some(&method),
-            417,
-            "expectation unsupported",
-        );
-    }
     route(client, log, &request, upstream, connection);
 }
 
@@ -637,9 +627,6 @@ fn plain(
             reason,
         )
     };
-    if request.expect == Some(false) {
-        return deny(client, 417, "expectation unsupported");
-    }
     if request.port != 80 {
         return deny(client, 403, "port not allowed");
     }
@@ -654,6 +641,9 @@ fn plain(
     if let Some(upstream) = rules.routes.get(&host) {
         route(client, log, request, upstream, connection);
         return;
+    }
+    if request.expect == Some(false) {
+        return deny(client, 417, "expectation unsupported");
     }
     if !rules.allows(&host) {
         return deny(client, 403, "not allowlisted");
@@ -716,6 +706,9 @@ fn route(
             reason,
         )
     };
+    if request.expect == Some(false) {
+        return deny(client, 417, "expectation unsupported");
+    }
     let login_policy = matches!(
         upstream,
         Upstream::Inject { login: true, .. } | Upstream::Codex { .. }
@@ -1621,7 +1614,13 @@ impl Read for BoxSide<'_> {
 
 impl Write for BoxSide<'_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        Deadline(self.0.as_fd(), IDLE_TIMEOUT).write(buffer)
+        let result = Deadline(self.0.as_fd(), IDLE_TIMEOUT).write(buffer);
+        // rustls can defer a write error and write again; a shut socket
+        // fails that at once, as DeadlineStream's dropped handle does.
+        if result.is_err() {
+            let _ = self.0.shutdown(std::net::Shutdown::Both);
+        }
+        result
     }
 
     fn flush(&mut self) -> io::Result<()> {

@@ -609,9 +609,17 @@ impl Login {
     pub fn target(&self) -> Result<Target, String> {
         let origin = self.origin()?;
         // Never echo `to`, as for an injecting route.
-        parse_target(origin).ok_or_else(|| {
+        let target = parse_target(origin).ok_or_else(|| {
             invalid("a login route's `to` must be an http:// or https:// origin".to_string())
-        })
+        })?;
+        // An injecting route's check, the port aside.
+        if target.https && (network::literal(&target.host).is_some() || target.host.ends_with('.'))
+        {
+            return Err(invalid(
+                "a login route's https `to` must name a host, without a trailing dot".to_string(),
+            ));
+        }
+        Ok(target)
     }
 
     /// claude's, github's or pi's routed hosts, each with its dialed target
