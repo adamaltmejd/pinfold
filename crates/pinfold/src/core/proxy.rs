@@ -565,21 +565,22 @@ fn intercept(
             return;
         }
     };
+    let mut side = BoxSide(socket);
     let mut server = match accepted.into_connection(config) {
         Ok(server) => server,
         Err((_, mut alert)) => {
-            let _ = alert.write_all(socket);
+            let _ = alert.write_all(&mut side);
             let _ = record(log, host, "closed", "tls handshake", None);
             return;
         }
     };
     while server.is_handshaking() {
-        if server.complete_io(socket).is_err() {
+        if server.complete_io(&mut side).is_err() {
             let _ = record(log, host, "closed", "tls handshake", None);
             return;
         }
     }
-    let client = &mut Client::Tls(Box::new(StreamOwned::new(server, socket)));
+    let client = &mut Client::Tls(Box::new(StreamOwned::new(server, side)));
     let head = match read_head(client) {
         Ok(head) => head,
         Err(error) if timed_out(&error) => {
@@ -1569,14 +1570,34 @@ fn refuse(
 /// The box's side of one exchange: its socket, or TLS the proxy ends on it.
 enum Client<'a> {
     Plain(&'a mut UnixStream),
-    Tls(Box<StreamOwned<ServerConnection, &'a mut UnixStream>>),
+    Tls(Box<StreamOwned<ServerConnection, BoxSide<'a>>>),
+}
+
+/// The box's socket under TLS, its writes on the idle deadline as a plain
+/// client's are, including rustls's writes while reading or flushing.
+struct BoxSide<'a>(&'a mut UnixStream);
+
+impl Read for BoxSide<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buffer)
+    }
+}
+
+impl Write for BoxSide<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        Deadline(self.0.as_fd(), IDLE_TIMEOUT).write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 impl Client<'_> {
     fn socket(&self) -> &UnixStream {
         match self {
             Client::Plain(socket) => socket,
-            Client::Tls(stream) => &*stream.sock,
+            Client::Tls(stream) => stream.sock.0,
         }
     }
 
@@ -1600,8 +1621,7 @@ impl Read for Client<'_> {
     }
 }
 
-/// The socket's writes take the idle deadline; TLS's are bounded by the
-/// socket's write timeout.
+/// Every write to the box takes the idle deadline.
 impl Write for Client<'_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         match self {
