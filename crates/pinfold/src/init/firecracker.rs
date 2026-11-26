@@ -1139,7 +1139,9 @@ fn vsock_listen(port: u32) -> io::Result<OwnedFd> {
         socket.as_raw_fd(),
         &VsockAddr::new(libc::VMADDR_CID_ANY, port),
     )?;
-    nix::sys::socket::listen(&socket, Backlog::new(16)?)?;
+    // -1 takes the kernel's somaxconn, 4096 in the guest: a burst of
+    // concurrent execs queues instead of being reset (#484).
+    nix::sys::socket::listen(&socket, Backlog::new(-1)?)?;
     Ok(socket)
 }
 
