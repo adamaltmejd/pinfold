@@ -1886,9 +1886,9 @@ fn config_report(
         "egress": { "allow": &config.allow, "routes": &config.routes },
         "cpus": config.cpus,
         "memory": &config.memory,
-        "home_disk_size": config.home_disk_size.as_deref().unwrap_or(crate::config::DEFAULT_DISK_SIZE),
+        "home_disk_size": config.home_disk_size.as_deref().unwrap_or(crate::core::plan::DEFAULT_DISK_SIZE),
         // A share has no project disk.
-        "project_disk_size": (config.mount == crate::config::ProjectMount::Disk).then(|| config.project_disk_size.as_deref().unwrap_or(crate::config::DEFAULT_DISK_SIZE)),
+        "project_disk_size": (config.mount == crate::config::ProjectMount::Disk).then(|| config.project_disk_size.as_deref().unwrap_or(crate::core::plan::DEFAULT_DISK_SIZE)),
         // The project box ignores a configured HOME.
         "env": config.env.iter().filter(|(name, _)| *name != "HOME").collect::<std::collections::BTreeMap<_, _>>(),
         "project": {
