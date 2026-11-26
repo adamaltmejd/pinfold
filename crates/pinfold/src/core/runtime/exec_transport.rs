@@ -4,7 +4,7 @@ use crate::core::process::StdioRelay;
 use crate::core::runtime::terminal::{Raw, Winch, window};
 use crate::formatting::terminal_text;
 use crate::init::exec_wire::{
-    EXEC, EXIT, FAILED, FrameWriter, RESIZE, STDERR, STDIN, STDIN_END, STDOUT,
+    EXEC, EXIT, FAILED, RESIZE, STDERR, STDIN, STDIN_END, STDOUT, write_frame,
 };
 use nix::libc;
 use std::ffi::OsString;
@@ -74,25 +74,31 @@ pub fn exec(
     let stdin = StdioRelay::new(input, true)?;
     let stdout = StdioRelay::new(output, false)?;
     let stderr = StdioRelay::new(errors, false)?;
-    let mut exec = FrameWriter::default();
-    exec.start(EXEC, &payload)?;
-    // Cancellation during setup must not start the command. A descendant can
-    // hold a native client's stdin open after the client exits.
-    loop {
+    let mut frame = Vec::new();
+    write_frame(&mut frame, EXEC, &payload)?;
+    // Cancellation must end the frame before any write that could complete
+    // it. A descendant can hold a native client's stdin open after it exits.
+    let mut sent = 0;
+    while sent < frame.len() {
         cancelled(cancel)?;
         if native_exited()? {
             return Err(io::Error::other("the box ended the exec before it exited"));
         }
-        if exec.flush(&mut to_box)? {
-            break;
-        }
-        let mut ready = [nix::poll::PollFd::new(
-            to_box.as_fd(),
-            nix::poll::PollFlags::POLLOUT,
-        )];
-        match nix::poll::poll(&mut ready, 100u16) {
-            Ok(_) | Err(nix::errno::Errno::EINTR) => {}
-            Err(error) => return Err(error.into()),
+        match to_box.write(&frame[sent..]) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(written) => sent += written,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let mut ready = [nix::poll::PollFd::new(
+                    to_box.as_fd(),
+                    nix::poll::PollFlags::POLLOUT,
+                )];
+                match nix::poll::poll(&mut ready, 100u16) {
+                    Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
         }
     }
 
@@ -116,7 +122,7 @@ fn relay(
     [mut stdin, mut stdout, mut stderr]: [StdioRelay; 3],
     winch: Option<&Winch>,
 ) -> io::Result<i32> {
-    use crate::init::exec_wire::{CHUNK, CREDIT, FrameReader, OUTPUT_END, WINDOW};
+    use crate::init::exec_wire::{CHUNK, CREDIT, FrameReader, FrameWriter, OUTPUT_END, WINDOW};
     use std::collections::VecDeque;
     let mut reader = FrameReader::default();
     let mut writer = FrameWriter::default();
