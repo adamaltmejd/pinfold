@@ -1,6 +1,6 @@
 //! Guarantees 11 and 45: a disk outlives its box, attaches to one writer
-//! at a time and is not read while unclean; export writes only a new
-//! destination.
+//! at a time, is not read while unclean and on Linux returns freed blocks
+//! at stop; export writes only a new destination.
 
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -35,8 +35,12 @@ fn refusal(started: Result<BoxUp, Value>) -> String {
 fn disks_persist_and_attach_exclusively() {
     // Sabotage (run): delete the `disk-unclean` refusal in core/disk.rs's
     // `claim`. The read-only attachment after the prune then comes ready.
+    // Sabotage (run): drop the `discard` drive field in vm.rs's `config`.
+    // The guest's trim at stop then fails, and the image keeps the deleted
+    // file's blocks.
     // The writable recovery run and the read-only run after it are the
-    // positive controls.
+    // positive controls; the image's growth by the written file is the
+    // reclaim's.
     default_image();
     let env = TestEnv::new("disk-attach");
     let disk = format!("e2e-{}-attach", std::process::id());
@@ -100,6 +104,37 @@ fn disks_persist_and_attach_exclusively() {
     let recovery = env.up(&spec(&first, &disk, false));
     assert_eq!(read(&first), marker);
 
+    // On Linux the recovery run writes and deletes a file. The image at the
+    // spec's path keeps the freed blocks allocated until the stop.
+    let image = env
+        .state_home()
+        .join("pinfold/disks")
+        .join(format!("{disk}.ext4"));
+    let allocated = || fs::metadata(&image).unwrap().blocks() * 512;
+    // Blocks a file reuses were already allocated, so both checks allow a
+    // sixteenth of slack.
+    const FILL: u64 = 256 << 20;
+    const MOVED: u64 = FILL * 15 / 16;
+    let written = cfg!(target_os = "linux").then(|| {
+        let base = allocated();
+        let out = env.exec(
+            &first,
+            &[
+                "sh",
+                "-c",
+                "head -c \"$1\" /dev/urandom > /data/fill && sync",
+                "sh",
+                &FILL.to_string(),
+            ],
+        );
+        assert_eq!(out.code, 0, "{out:?}");
+        let written = allocated();
+        assert!(written >= base + MOVED, "{base} -> {written}");
+        let out = env.exec(&first, &["sh", "-c", "rm /data/fill && sync"]);
+        assert_eq!(out.code, 0, "{out:?}");
+        written
+    });
+
     // An attached disk is not removed.
     let rm = |env: &TestEnv| {
         let out = run(env.command().args(["disk", "rm", &disk, "--json"]), COMMAND);
@@ -115,9 +150,18 @@ fn disks_persist_and_attach_exclusively() {
         lines[0]
     );
     drop(recovery);
+    if let Some(written) = written {
+        let stopped = allocated();
+        assert!(stopped + MOVED <= written, "{written} -> {stopped}");
+    }
 
-    // After the writable run ends with `down`, a read-only one comes up.
-    drop(env.up(&spec(&reader, &disk, true)));
+    // After the writable run ends with `down`, a read-only one comes up;
+    // on Linux it reads the file the trim kept.
+    let reading = env.up(&spec(&reader, &disk, true));
+    if written.is_some() {
+        assert_eq!(read(&reader), marker);
+    }
+    drop(reading);
     let (code, lines) = rm(&env);
     assert_eq!(code, 0, "{lines:?}");
     assert_eq!(

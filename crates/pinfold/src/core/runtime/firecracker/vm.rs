@@ -416,12 +416,18 @@ impl Boot {
 /// the jail's.
 pub(crate) fn config(plan: &Plan, drives: &[(PathBuf, bool)]) -> serde_json::Value {
     let drive = |id: String, path: &str, root: bool, read_only: bool| {
-        serde_json::json!({
+        let mut drive = serde_json::json!({
             "drive_id": id,
             "path_on_host": path,
             "is_root_device": root,
             "is_read_only": read_only,
-        })
+        });
+        // Firecracker offers discard only on writable drives; a guest trim
+        // then punches holes in the image.
+        if !read_only {
+            drive["discard"] = true.into();
+        }
+        drive
     };
     let mut all = vec![
         drive("init".into(), jail::INIT_DISK, true, true),

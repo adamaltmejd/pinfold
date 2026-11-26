@@ -35,8 +35,8 @@
 //!   work cgroup's memory current and peak, pids current and max, and OOM
 //!   kills, each a present u8 and a u64.
 //! - Control (host dials guest [`CONTROL_PORT`], PID 1): UNMOUNT kills the
-//!   work cgroup, syncs and unmounts every attachment, answered CLEAN or
-//!   FAILED (text).
+//!   work cgroup, syncs, trims each writable attachment and unmounts every
+//!   attachment, answered CLEAN or FAILED (text).
 
 use super::exec_wire::{ENV, EXEC, FAILED, STDERR, read_frame, write_frame};
 
@@ -676,16 +676,33 @@ fn serve_control(request: &Request, control: &OwnedFd, service: &OwnedFd) -> ! {
 }
 
 /// End box work, so nothing keeps a disk busy, then sync and unmount every
-/// attachment, the nested ones first.
+/// attachment, the nested ones first. Trimming each writable disk first
+/// returns its freed blocks to the host as holes in the image.
 fn unmount(request: &Request) -> io::Result<()> {
     stop_work(Some(Instant::now() + Duration::from_secs(10)))?;
     nix::unistd::sync();
+    for attachment in request.attachments.iter().filter(|a| a.writable) {
+        trim(&attachment.guest);
+    }
     for attachment in request.attachments.iter().rev() {
         nix::mount::umount2(&attachment.guest, MntFlags::UMOUNT_NOFOLLOW).map_err(|error| {
             io::Error::other(format!("unmount {}: {error}", attachment.guest.display()))
         })?;
     }
     Ok(())
+}
+
+/// FITRIM the filesystem mounted at `guest`. A failure leaves only space
+/// unreclaimed, so it does not fail the stop.
+fn trim(guest: &Path) {
+    // linux/fs.h: _IOWR('X', 121, struct fstrim_range).
+    const FITRIM: libc::c_ulong = 0xc018_5879;
+    let Ok(directory) = super::open_directory(guest) else {
+        return;
+    };
+    let mut range: [u64; 3] = [0, u64::MAX, 0];
+    // SAFETY: the kernel reads and writes only the 24-byte fstrim_range.
+    unsafe { libc::ioctl(directory.as_raw_fd(), FITRIM as _, range.as_mut_ptr()) };
 }
 
 /// Kill the work cgroup and wait until it is empty, failing after
