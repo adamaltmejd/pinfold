@@ -713,10 +713,10 @@ pub fn root(id: &str) -> io::Result<(PathBuf, Vec<(String, String)>)> {
         .images
         .get(id)
         .ok_or_else(|| invalid("image-missing: rebuild image"))?;
-    Ok((verify_root(id, image)?, image.env.clone()))
+    Ok((verify_root(id, image, None)?, image.env.clone()))
 }
 
-fn verify_root(id: &str, image: &Image) -> io::Result<PathBuf> {
+fn verify_root(id: &str, image: &Image, cancel: Option<&AtomicBool>) -> io::Result<PathBuf> {
     let path = root_path(id, image)?;
     let metadata = fs::symlink_metadata(&path)?;
     if !metadata.is_file()
@@ -734,7 +734,7 @@ fn verify_root(id: &str, image: &Image) -> io::Result<PathBuf> {
         &mut io::sink(),
         image.root_bytes,
         &image.root_sha,
-        None,
+        cancel,
     )?;
     Ok(path)
 }
@@ -750,7 +750,7 @@ pub fn complete_root(id: &str, recipe: &str) -> io::Result<Option<(PathBuf, Stri
     else {
         return Ok(None);
     };
-    match verify_root(id, image) {
+    match verify_root(id, image, None) {
         Ok(path) => Ok(Some((path, image.root_sha.clone(), image.root_bytes))),
         Err(error)
             if matches!(
@@ -855,7 +855,6 @@ fn verify_layout(
 
 /// Install immutable verified OCI bytes and a completed conversion before
 /// publishing every build ref in one atomic catalog generation.
-#[allow(clippy::too_many_arguments)]
 pub fn publish(
     verified: Verified,
     root_source: &Path,
@@ -909,20 +908,7 @@ pub fn publish(
         }
     }
     let root = root_path(&verified.id, &image)?;
-    let complete = (|| {
-        let mut existing = File::open(&root)?;
-        if existing.metadata()?.len() != root_bytes {
-            return Err(invalid("image-store: existing root size mismatch"));
-        }
-        copy_checked(
-            &mut existing,
-            &mut io::sink(),
-            root_bytes,
-            root_sha,
-            Some(cancel),
-        )
-    })();
-    if let Err(error) = complete {
+    if let Err(error) = verify_root(&verified.id, &image, Some(cancel)) {
         if !matches!(
             error.kind(),
             io::ErrorKind::NotFound | io::ErrorKind::InvalidData
@@ -1002,21 +988,12 @@ pub fn base_metadata(cancel: &AtomicBool) -> io::Result<Vec<BaseMetadata>> {
         let layout = image_dir(id)?.join("oci");
         let manifest = metadata_blob(&layout, id, cancel)?;
         let parsed: Manifest = serde_json::from_slice(&manifest).map_err(invalid_json)?;
-        if parsed.schema_version != 2
-            || parsed.media_type.as_deref() != Some(MANIFEST)
-            || parsed.subject.is_some()
-            || parsed.artifact_type.is_some()
-            || parsed.config.media_type != CONFIG
-            || !parsed.config.urls.is_empty()
-            || parsed.config.data.is_some()
-            || parsed.config.artifact_type.is_some()
-        {
+        // Admission validated this hash-verified manifest, but allowed an
+        // absent mediaType.
+        if parsed.media_type.as_deref() != Some(MANIFEST) {
             return Err(invalid("image-store: invalid base manifest"));
         }
         let config = metadata_blob(&layout, &parsed.config.digest, cancel)?;
-        if config.len() as u64 != parsed.config.size {
-            return Err(invalid("image-store: invalid base configuration size"));
-        }
         total = total
             .checked_add(manifest.len() as u64 + config.len() as u64)
             .filter(|total| *total <= METADATA_BYTES)

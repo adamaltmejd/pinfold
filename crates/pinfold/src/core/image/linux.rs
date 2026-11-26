@@ -8,9 +8,11 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use super::{BuildRequest, ImageInfo};
 use crate::core::{artifacts, ownership, sha256_hex};
 use crate::dirs;
+
+pub use catalog::{list as list_images, remove as remove_image, resolve as resolve_image};
+pub use job::build;
 
 pub(crate) use crate::image_limits::{OCI_BYTES, ROOT_BYTES};
 pub(crate) const LOCAL_BASE_BYTES: u64 = 1 << 30;
@@ -29,15 +31,6 @@ pub fn cache_dir() -> io::Result<std::path::PathBuf> {
         .join(artifacts::builder_identity()))
 }
 
-pub fn list_images() -> io::Result<Vec<ImageInfo>> {
-    catalog::list()
-}
-pub fn resolve_image(reference: &str) -> io::Result<Result<ImageInfo, String>> {
-    catalog::resolve(reference)
-}
-pub fn remove_image(reference: &str) -> io::Result<()> {
-    catalog::remove(reference)
-}
 pub fn purge_build_cache() -> io::Result<()> {
     // Immutable output uses the catalog lock and image leases. A live
     // builder prevents only removal of its separate writable cache.
@@ -57,9 +50,6 @@ pub fn purge_build_cache() -> io::Result<()> {
 }
 pub fn build_cache_bytes() -> io::Result<u64> {
     allocated_bytes(&cache_dir()?)
-}
-pub fn build(request: &BuildRequest) -> io::Result<Result<(), String>> {
-    job::build(request)
 }
 
 fn allocated_bytes(path: &Path) -> io::Result<u64> {
