@@ -870,6 +870,11 @@ fn human_size(bytes: u64) -> String {
 pub fn clean(args: &[String]) -> io::Result<i32> {
     let (dry_run, idle) = parse_clean(args)?;
     let runtime = runtime();
+    if !dry_run {
+        // A box whose owner is gone no longer protects its project, so
+        // `--idle` can select it in the measurement below.
+        clean::prune_boxes(runtime, &clean::boxes(runtime)?);
+    }
     let plan = CleanPlan::measure(runtime, idle)?;
     let total = human_size(plan.total());
     let action = if dry_run {
@@ -881,10 +886,14 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
     plan.print(dry_run);
     if !dry_run {
         let (disk_count, before) = (plan.disk_count, plan.sizes());
+        let idle_state = plan.idle_state.clone();
         let removal = plan.remove(runtime);
         // A failed measurement leaves the removal's outcome as it was.
         match CleanPlan::measure(runtime, idle) {
-            Ok(after) => {
+            Ok(mut after) => {
+                // The same projects as before: one started meanwhile kept
+                // its state.
+                after.project_state = idle_state.iter().map(|dir| clean::path_bytes(dir)).sum();
                 // Saturating: run records and a box's disk may grow meanwhile.
                 let freed: Vec<_> = before
                     .into_iter()
@@ -941,6 +950,10 @@ struct CleanPlan {
     run_bytes: u64,
     /// Projects `--idle` selected and their disks, by project id.
     project_disks: BTreeMap<String, Vec<String>>,
+    /// The selected projects' state dirs.
+    idle_state: Vec<PathBuf>,
+    /// The selected projects' disks no box attaches: those removal removes.
+    idle_disks: usize,
     /// Every disk's allocated bytes, a category of its own.
     disk_bytes: u64,
     disk_count: usize,
@@ -981,6 +994,7 @@ impl CleanPlan {
         let disks = runtime.list_disks()?;
         let mut project_disks = BTreeMap::new();
         let mut project_state = 0;
+        let mut idle_state = Vec::new();
         let mut moved = Vec::new();
         for project in crate::pi::state::state_dirs()? {
             if !project.root.exists() {
@@ -988,6 +1002,7 @@ impl CleanPlan {
             }
             if Self::idle(&project, &boxes.live_projects, idle) {
                 project_state += clean::path_bytes(&project.dir);
+                idle_state.push(project.dir.clone());
                 let names: Vec<String> = crate::pi::state::disk_names(&project.id)
                     .into_iter()
                     .filter(|name| disks.iter().any(|disk| &disk.name == name))
@@ -995,6 +1010,16 @@ impl CleanPlan {
                 project_disks.insert(project.id, names);
             }
         }
+        let idle_disks = if project_disks.is_empty() {
+            0
+        } else {
+            let attached = disk::attachments(None)?;
+            project_disks
+                .values()
+                .flatten()
+                .filter(|name| !attached.contains_key(*name))
+                .count()
+        };
 
         Ok(CleanPlan {
             boxes,
@@ -1009,6 +1034,8 @@ impl CleanPlan {
             run_bytes,
             runs,
             project_disks,
+            idle_state,
+            idle_disks,
             disk_bytes: disks.iter().map(|disk| disk.allocated).sum(),
             disk_count: disks.len(),
             moved,
@@ -1048,12 +1075,11 @@ impl CleanPlan {
         if self.disk_count == 0 {
             println!("  disks: {disks}");
         } else if self.idle.is_some() {
-            let idle: usize = self.project_disks.values().map(Vec::len).sum();
             println!(
                 "  disks: {disks} in {}; {} {} of idle projects (pinfold disk list)",
                 disks_text(self.disk_count),
                 if dry_run { "would remove" } else { "removes" },
-                disks_text(idle)
+                disks_text(self.idle_disks)
             );
             println!("    remove others with `pinfold disk rm NAME|--all`");
         } else {

@@ -1758,8 +1758,8 @@ Automatic, never prompting:
   The Git remote helper defers it until the running owner’s mount decision
   and the configuration's loading and protected-path check. A refusal
   before then, a share refusal included, runs no pass. Signal handlers are installed before this deferred maintenance.
-  An unreachable runtime ends the pass silently at its first runtime step;
-  the command's own runtime call names the cause once.
+  When its box list finds the runtime unreachable, the pass ends silently
+  and the command's own runtime call names the cause once.
 
 A run is inactive when its generation owns no lifetime lock. An inactive
 run's directory goes when its newest file is older than 14 days; then,
@@ -1770,8 +1770,8 @@ are never removed or truncated.
 `pinfold image rm NAME` retires a caller image name: it removes every tag
 of NAME, whatever its age, and no other name's.
 
-`pinfold clean` lists sizes, removes the following, then measures again
-and reports what it freed in total and in each category that shrank:
+`pinfold clean` prunes boxes whose owner is gone, lists sizes, then
+removes:
 - everything automatic, now
 - the unused build cache (Apple: prune BuildKit records, return their
   blocks to the host, then stop the idle builder, which releases build
@@ -1790,12 +1790,17 @@ and reports what it freed in total and in each category that shrank:
   except a project's with a live box. Never automatic: a project disk
   holds unfetched work, and a home disk sessions and logins.
 
+It then measures again and reports what it freed: how much the listed
+categories shrank, in total and per category. Image bytes are not among
+them.
+
 A project's configuration is the user's; nothing removes it. A project
 whose checkout is gone or moved keeps its state and disks;
 `clean` lists them, and they go only with `--idle AGE` or `disk rm`.
 Other disks go only by `disk rm`; a project home's caches are inside its
 disk and not cleaned. The listing counts the disks and names both ways
-to remove them; under `--idle` it counts those the run removes.
+to remove them; under `--idle` it counts those the run removes, which
+excludes a disk a box attaches.
 
 `--dry-run` only lists. Run records are a category of their own. `doctor` shows disk use per category and suggests
 `clean --dry-run` above 20 GiB. `doctor` runs no maintenance and changes no pinfold

@@ -115,8 +115,7 @@ pub(crate) fn spawn_error(program: &str, error: io::Error) -> io::Error {
 }
 
 /// Run `argv` with stdin closed and return its stdout. The inner `Err` is
-/// its stderr when the run fails; a failed spawn keeps its kind, and an
-/// unreachable runtime is an outer error ([`unreachable`]).
+/// its stderr when the run fails; a failed spawn keeps its kind.
 pub(crate) fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
     let (program, arguments) = argv.split_first().expect("argv is never empty");
     let output = std::process::Command::new(program)
@@ -125,36 +124,54 @@ pub(crate) fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
         .output_guarded()
         .map_err(|error| spawn_error(program, error))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        stopped_service(&stderr)?;
-        return Ok(Err(stderr));
+        return Ok(Err(String::from_utf8_lossy(&output.stderr)
+            .trim()
+            .to_string()));
     }
     Ok(Ok(output.stdout))
 }
 
-/// The unreachable error when a failed `container` run's `stderr` says the
-/// service is stopped: the CLI ends each such error with this hint. Apple
-/// only; no Linux tool prints it.
+/// The Apple container service cannot be reached. Only [`stopped_service`]
+/// makes it, so [`unreachable`] matches no other failure.
+#[derive(Debug)]
+struct Unreachable;
+
+impl std::fmt::Display for Unreachable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cannot reach the container service; run `container system start`")
+    }
+}
+
+impl std::error::Error for Unreachable {}
+
+/// The unreachable error when a failed `container` run's `stderr` carries
+/// the CLI's hint. The CLI adds it to any XPC connection error, its image
+/// service's too. Apple only; no Linux tool prints it.
 pub(crate) fn stopped_service(stderr: &str) -> io::Result<()> {
     if stderr.contains("`container system start`") {
-        return Err(io::Error::new(
-            io::ErrorKind::NotConnected,
-            "the container service is not running; run `container system start`",
-        ));
+        return Err(io::Error::other(Unreachable));
     }
     Ok(())
 }
 
-/// Whether `error` says the runtime cannot be reached at all, so every
-/// further runtime call fails the same way.
+/// Whether `error` is [`stopped_service`]'s.
 pub fn unreachable(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::NotConnected
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<Unreachable>())
 }
 
 /// Run `argv` with stdin closed and return its stdout. A failed run's error
-/// names the command and carries its stderr; a failed spawn keeps its kind.
+/// names the command and carries its stderr, or is [`stopped_service`]'s; a
+/// failed spawn keeps its kind.
 pub(crate) fn output(argv: &[&str]) -> io::Result<Vec<u8>> {
-    captured(argv)?.map_err(|stderr| io::Error::other(format!("{}: {stderr}", argv.join(" "))))
+    match captured(argv)? {
+        Ok(stdout) => Ok(stdout),
+        Err(stderr) => {
+            stopped_service(&stderr)?;
+            Err(io::Error::other(format!("{}: {stderr}", argv.join(" "))))
+        }
+    }
 }
 
 /// Parse `json`, the output of the command `what` names.

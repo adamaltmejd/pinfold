@@ -29,12 +29,9 @@ const PASS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const CALLER_IMAGE_GRACE: Duration = Duration::from_secs(60 * 60);
 
 /// Run the daily pass if a day has passed. A problem goes to stderr; the
-/// caller's command continues. An unreachable runtime ends the pass
-/// silently: the command's own runtime call reports it once.
+/// caller's command continues.
 pub fn maintain() {
-    if let Err(error) = maintain_due()
-        && !unreachable(&error)
-    {
+    if let Err(error) = maintain_due() {
         eprintln!("pinfold: maintenance: {error}");
     }
 }
@@ -55,10 +52,9 @@ fn maintain_due() -> io::Result<()> {
     // instead of running before every command.
     fs::create_dir_all(&state)?;
     fs::write(&stamp, [])?;
-    // Every step is attempted; a failure is reported and the rest continue,
-    // except that an unreachable runtime ends the pass, after the local
-    // steps. One box list serves the boxes step; retention lists the boxes
-    // again after pruning, so a box started meanwhile or a dead box a failed
+    // Every step is attempted; a failure is reported and the rest continue.
+    // One box list serves the boxes step; retention lists the boxes again
+    // after pruning, so a box started meanwhile or a dead box a failed
     // prune left behind still pins its image.
     report(
         "artifacts",
@@ -66,26 +62,19 @@ fn maintain_due() -> io::Result<()> {
     );
     report("runs", runs::retired().and_then(remove_paths));
     let runtime = runtime();
-    runtime_step(
-        "boxes",
-        boxes(runtime).map(|boxes| {
-            prune_boxes(runtime, &boxes);
-        }),
-    )?;
-    runtime_step("images", keep_two_images(None))?;
-    runtime_step("sockets", prune_leftover_states(runtime))
-}
-
-/// Report a runtime step's failure, or return it when the runtime is
-/// unreachable.
-fn runtime_step(what: &str, result: io::Result<()>) -> io::Result<()> {
-    match result {
-        Err(error) if unreachable(&error) => Err(error),
-        result => {
-            report(what, result);
-            Ok(())
-        }
+    match boxes(runtime) {
+        // The command's own runtime call reports it once.
+        Err(error) if unreachable(&error) => return Ok(()),
+        listed => report(
+            "boxes",
+            listed.map(|boxes| {
+                prune_boxes(runtime, &boxes);
+            }),
+        ),
     }
+    report("images", keep_two_images(None));
+    report("sockets", prune_leftover_states(runtime));
+    Ok(())
 }
 
 fn report(what: &str, result: io::Result<()>) {
