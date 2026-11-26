@@ -413,7 +413,10 @@ async fn connect(
     let socket = control_work(signals, Some(deadline), move || {
         let socket = sockets::Sockets::open(&generation)?
             .connect_control_until(deadline.into_std())
-            .map_err(|_| unavailable_at("connect"))?;
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::TimedOut => timed_out(),
+                _ => unavailable_at("connect"),
+            })?;
         wire::peer(&socket)?;
         socket.set_nonblocking(true)?;
         Ok(socket)
