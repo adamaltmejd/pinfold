@@ -870,11 +870,6 @@ fn human_size(bytes: u64) -> String {
 pub fn clean(args: &[String]) -> io::Result<i32> {
     let (dry_run, idle) = parse_clean(args)?;
     let runtime = runtime();
-    if !dry_run {
-        // A box whose owner is gone no longer protects its project, so
-        // `--idle` can select it in the measurement below.
-        clean::prune_boxes(runtime, &clean::boxes(runtime)?);
-    }
     let plan = CleanPlan::measure(runtime, idle)?;
     let total = human_size(plan.total());
     let action = if dry_run {
@@ -952,7 +947,8 @@ struct CleanPlan {
     project_disks: BTreeMap<String, Vec<String>>,
     /// The selected projects' state dirs.
     idle_state: Vec<PathBuf>,
-    /// The selected projects' disks no box attaches: those removal removes.
+    /// The selected projects' disks no live box attaches: those removal
+    /// removes, after it prunes the dead boxes.
     idle_disks: usize,
     /// Every disk's allocated bytes, a category of its own.
     disk_bytes: u64,
@@ -1014,10 +1010,17 @@ impl CleanPlan {
             0
         } else {
             let attached = disk::attachments(None)?;
+            let dead: BTreeSet<&str> = boxes.dead.iter().map(|dead| dead.id.as_str()).collect();
             project_disks
                 .values()
                 .flatten()
-                .filter(|name| !attached.contains_key(*name))
+                .filter(|name| {
+                    attached.get(*name).is_none_or(|holders| {
+                        holders
+                            .iter()
+                            .all(|(holder, _)| dead.contains(holder.as_str()))
+                    })
+                })
                 .count()
         };
 
@@ -1123,7 +1126,10 @@ impl CleanPlan {
         let mut removed = 0;
         if !locks.is_empty() {
             // All candidates stay locked through this one fresh snapshot.
-            let live = clean::boxes(runtime)?.live_projects;
+            // A dead box a failed prune left behind keeps its project too.
+            let fresh = clean::boxes(runtime)?;
+            let mut live = fresh.live_projects;
+            live.extend(fresh.dead.into_iter().filter_map(|dead| dead.project));
             for project in crate::pi::state::state_dirs()? {
                 if !locks.contains_key(project.id.as_str()) {
                     continue;
@@ -1155,7 +1161,8 @@ impl CleanPlan {
     }
 
     /// Whether `--idle` selects the project: not run for that long and no
-    /// live box. A moved checkout alone keeps its state and disks.
+    /// live box, one whose owner holds its lifetime lock. A moved checkout
+    /// alone keeps its state and disks.
     fn idle(
         project: &crate::pi::state::StateDir,
         live: &BTreeSet<String>,

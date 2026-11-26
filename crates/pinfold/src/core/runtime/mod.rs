@@ -131,7 +131,7 @@ pub(crate) fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
     Ok(Ok(output.stdout))
 }
 
-/// The Apple container service cannot be reached. Only [`stopped_service`]
+/// The Apple container service cannot be reached. Only the Apple adapter
 /// makes it, so [`unreachable`] matches no other failure.
 #[derive(Debug)]
 struct Unreachable;
@@ -144,17 +144,7 @@ impl std::fmt::Display for Unreachable {
 
 impl std::error::Error for Unreachable {}
 
-/// The unreachable error when a failed `container` run's `stderr` carries
-/// the CLI's hint. The CLI adds it to any XPC connection error, its image
-/// service's too. Apple only; no Linux tool prints it.
-pub(crate) fn stopped_service(stderr: &str) -> io::Result<()> {
-    if stderr.contains("`container system start`") {
-        return Err(io::Error::other(Unreachable));
-    }
-    Ok(())
-}
-
-/// Whether `error` is [`stopped_service`]'s.
+/// Whether `error` says the Apple container service cannot be reached.
 pub fn unreachable(error: &io::Error) -> bool {
     error
         .get_ref()
@@ -162,16 +152,9 @@ pub fn unreachable(error: &io::Error) -> bool {
 }
 
 /// Run `argv` with stdin closed and return its stdout. A failed run's error
-/// names the command and carries its stderr, or is [`stopped_service`]'s; a
-/// failed spawn keeps its kind.
+/// names the command and carries its stderr; a failed spawn keeps its kind.
 pub(crate) fn output(argv: &[&str]) -> io::Result<Vec<u8>> {
-    match captured(argv)? {
-        Ok(stdout) => Ok(stdout),
-        Err(stderr) => {
-            stopped_service(&stderr)?;
-            Err(io::Error::other(format!("{}: {stderr}", argv.join(" "))))
-        }
-    }
+    captured(argv)?.map_err(|stderr| io::Error::other(format!("{}: {stderr}", argv.join(" "))))
 }
 
 /// Parse `json`, the output of the command `what` names.

@@ -63,7 +63,7 @@ fn maintain_due() -> io::Result<()> {
     report("runs", runs::retired().and_then(remove_paths));
     let runtime = runtime();
     match boxes(runtime) {
-        // The command's own runtime call reports it once.
+        // The command's own runtime call, if it makes one, reports it.
         Err(error) if unreachable(&error) => return Ok(()),
         listed => report(
             "boxes",
@@ -94,6 +94,8 @@ pub struct DeadBox {
     /// The `dev.pinfold.owner` pid, when the label parsed.
     pub owner: Option<i32>,
     pub generation: Option<String>,
+    /// The `dev.pinfold.project` label.
+    pub project: Option<String>,
 }
 
 /// One runtime box list, split into the work for Maintenance: the pinfold
@@ -137,12 +139,9 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
                 continue;
             }
         };
-        if (alive || !box_.stopped)
-            && let Some(project) = box_.labels.get(PROJECT_LABEL)
-        {
-            live_projects.insert(project.clone());
-        }
+        let project = box_.labels.get(PROJECT_LABEL).cloned();
         if alive {
+            live_projects.extend(project);
             continue;
         }
         dead.push(DeadBox {
@@ -150,6 +149,7 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
             id: box_.id,
             owner,
             generation: box_.labels.get(ownership::GENERATION_LABEL).cloned(),
+            project,
         });
     }
     Ok(Boxes {

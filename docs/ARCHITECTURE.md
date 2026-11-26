@@ -1758,8 +1758,8 @@ Automatic, never prompting:
   The Git remote helper defers it until the running owner’s mount decision
   and the configuration's loading and protected-path check. A refusal
   before then, a share refusal included, runs no pass. Signal handlers are installed before this deferred maintenance.
-  When its box list finds the runtime unreachable, the pass ends silently
-  and the command's own runtime call names the cause once.
+  When its box list finds the runtime unreachable, the pass ends
+  silently; the command's own runtime call, if it makes one, reports it.
 
 A run is inactive when its generation owns no lifetime lock. An inactive
 run's directory goes when its newest file is older than 14 days; then,
@@ -1770,8 +1770,7 @@ are never removed or truncated.
 `pinfold image rm NAME` retires a caller image name: it removes every tag
 of NAME, whatever its age, and no other name's.
 
-`pinfold clean` prunes boxes whose owner is gone, lists sizes, then
-removes:
+`pinfold clean` lists sizes, then removes:
 - everything automatic, now
 - the unused build cache (Apple: prune BuildKit records, return their
   blocks to the host, then stop the idle builder, which releases build
@@ -1787,7 +1786,8 @@ removes:
   the stop. Linux: remove
   only an exclusively claimed idle owned builder cache)
 - with `--idle AGE`, state and disks of projects not run for that long,
-  except a project's with a live box. Never automatic: a project disk
+  except a project's with a live box: one whose owner holds its
+  generation's lifetime lock. Never automatic: a project disk
   holds unfetched work, and a home disk sessions and logins.
 
 It then measures again and reports what it freed: how much the listed
@@ -1800,7 +1800,7 @@ whose checkout is gone or moved keeps its state and disks;
 Other disks go only by `disk rm`; a project home's caches are inside its
 disk and not cleaned. The listing counts the disks and names both ways
 to remove them; under `--idle` it counts those the run removes, which
-excludes a disk a box attaches.
+excludes a disk a live box attaches.
 
 `--dry-run` only lists. Run records are a category of their own. `doctor` shows disk use per category and suggests
 `clean --dry-run` above 20 GiB. `doctor` runs no maintenance and changes no pinfold

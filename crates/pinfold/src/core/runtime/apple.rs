@@ -21,8 +21,8 @@ use tokio::process::{Child, ChildStderr, Command};
 use crate::core::disk::{self, Directory, Fill, Seeding};
 use crate::core::plan::{MountKind, Plan, Values};
 use crate::core::runtime::{
-    BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, output, parse_json,
-    spawn_error,
+    BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, Unreachable,
+    parse_json, spawn_error,
 };
 use crate::core::{clean, ownership};
 use crate::dirs;
@@ -35,6 +35,21 @@ mod image;
 pub use image::{
     build, build_cache_bytes, list_images, purge_build_cache, remove_image, resolve_image,
 };
+
+/// A failed `container` run's `error`, or the unreachable error when it
+/// carries the CLI's hint. The CLI adds the hint to any XPC connection
+/// error, its image service's too.
+fn stopped_service(error: io::Error) -> io::Error {
+    if error.to_string().contains("`container system start`") {
+        return io::Error::other(Unreachable);
+    }
+    error
+}
+
+/// Run a `container` command through the shared `output`.
+fn output(argv: &[&str]) -> io::Result<Vec<u8>> {
+    super::output(argv).map_err(stopped_service)
+}
 
 /// Where Apple `container` forwards `SSH_AUTH_SOCK` inside the box.
 pub const GUEST_PROXY_SOCKET: &str = "/var/host-services/ssh-auth.sock";
@@ -1376,12 +1391,10 @@ fn container(name: &str) -> io::Result<Option<ListedContainer>> {
         {
             return Ok(None);
         }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        super::stopped_service(&stderr)?;
-        return Err(io::Error::other(format!(
+        return Err(stopped_service(io::Error::other(format!(
             "container inspect: {}",
-            stderr.trim()
-        )));
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))));
     }
     let mut containers: Vec<ListedContainer> = parse_json("container inspect", &output.stdout)?;
     if containers.len() != 1 || containers[0].id != name {
