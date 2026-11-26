@@ -2338,7 +2338,7 @@ from the host until `pinfold stop`, since Apple's guest use does not show it.
 `doctor --json` prints the diagnostic report as structured data. Its
 `config` has the `config --json` report's shape, or is null when doctor
 has no project report. Its `boxes` lists those boxes as `{box,
-memory_limit}`, limit in bytes or null. Its `egress.routes` holds each route as
+memory_limit}`, limit in bytes or null. Its `config.egress.routes` holds each route as
 configured, a login route with its `login`.
 
 `pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without

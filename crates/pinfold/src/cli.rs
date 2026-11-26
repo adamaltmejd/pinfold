@@ -1263,19 +1263,11 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
             human_size(plan.total())
         ));
     }
-    // `list` asks Apple's runtime once and Firecracker's records only, so
-    // no box can stall doctor.
-    let boxes: Vec<(String, Option<u64>)> = if ready {
-        runtime
-            .list()
-            .map_err(|e| findings.push(format!("Boxes: {e}")))
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|box_| box_.running && clean::pinfold_box(box_))
-            .map(|box_| (box_.id, box_.memory_limit))
-            .collect()
-    } else {
-        Vec::new()
+    // The disk measurement's one box list: each listing may wait on Apple's
+    // runtime with no pinfold deadline.
+    let boxes = match &disk {
+        Some(plan) if ready => plan.boxes.running.clone(),
+        _ => Vec::new(),
     };
     if json {
         // `json!` panics on a path that is not UTF-8.
