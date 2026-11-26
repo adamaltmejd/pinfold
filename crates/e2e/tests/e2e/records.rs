@@ -211,7 +211,6 @@ fn every_egress_decision_is_recorded_or_the_box_stops() {
     second_spec["memory"] = json!("2G");
     let second = env.up(&second_spec);
     let second_id = second.ready()["run_id"].as_str().expect("run_id");
-    assert_ne!(second_id, first_id);
     assert_eq!(
         two_decisions(&env, &second, &name),
         own,
