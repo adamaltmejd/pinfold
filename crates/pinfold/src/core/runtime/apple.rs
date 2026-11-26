@@ -1,6 +1,6 @@
 //! The Apple `container` runtime adapter.
 
-use crate::core::process::{AsyncCommandGuard, CommandGuard};
+use crate::core::process::{AsyncCommandGuard, CommandGuard, GroupChild};
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::OsString;
@@ -762,17 +762,20 @@ impl Write for PreparationInput<'_> {
     }
 }
 
+/// Wait for a preparation helper, or end it at once after a failed send.
+/// Its group is killed before the leader is reaped, so no host descendant
+/// keeps a transfer pipe.
 fn wait_preparation(
-    child: &mut std::process::Child,
+    child: &mut GroupChild,
+    failed: bool,
     cancel: &AtomicBool,
 ) -> io::Result<ExitStatus> {
     loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(status);
+        if failed || child.exited()? {
+            return child.finish();
         }
         if cancel.load(Ordering::Acquire) {
-            let _ = child.kill();
-            child.wait()?;
+            child.finish()?;
             return Err(io::ErrorKind::Interrupted.into());
         }
         match nix::poll::poll(&mut [], 20u16) {
@@ -920,9 +923,7 @@ impl Runtime for Apple {
         context: &ExecContext<'_>,
         argv: &[String],
     ) -> io::Result<ExitStatus> {
-        use std::os::unix::net::UnixStream;
         use std::os::unix::process::ExitStatusExt;
-        let (connection, bridge) = UnixStream::pair()?;
         let mut command = std::process::Command::new("container");
         command
             .args(["exec", "-i", name])
@@ -931,125 +932,14 @@ impl Runtime for Apple {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut client = crate::core::process::GroupChild::spawn(&mut command)?;
+        let mut client = GroupChild::spawn(&mut command)?;
         drop(command);
         let diagnostics =
             StderrDrain::start_fd(client.take_stderr().expect("piped stderr").into())?;
-        let mut input = client.take_stdin();
-        let mut output = client.take_stdout();
-        crate::core::pipe::nonblocking(input.as_ref().expect("piped stdin"), "native exec")?;
-        crate::core::pipe::nonblocking(output.as_ref().expect("piped stdout"), "native exec")?;
-        bridge.set_nonblocking(true)?;
-        let stopped = AtomicBool::new(false);
-        let result = std::thread::scope(|scope| {
-            let worker_context = ExecContext {
-                cancel: Some(&stopped),
-                ..*context
-            };
-            let worker =
-                scope.spawn(move || super::exec_transport::exec(connection, &worker_context, argv));
-            let mut pending_input = VecDeque::new();
-            let mut pending_output = VecDeque::new();
-            let mut exited = None;
-            let relayed = (|| -> io::Result<()> {
-                loop {
-                    if worker.is_finished()
-                        || context
-                            .cancel
-                            .is_some_and(|cancel| cancel.load(Ordering::Acquire))
-                    {
-                        return Ok(());
-                    }
-                    if exited.is_none() && client.exited()? {
-                        exited = Some(Instant::now() + Duration::from_secs(1));
-                        input.take();
-                        pending_input.clear();
-                    }
-                    if exited.is_some_and(|deadline| Instant::now() >= deadline) {
-                        return Ok(());
-                    }
-                    if output.is_none() && pending_output.is_empty() {
-                        let _ = bridge.shutdown(std::net::Shutdown::Write);
-                    }
-                    let mut fds = [
-                        libc::pollfd {
-                            fd: if input.is_some() && pending_input.is_empty() {
-                                bridge.as_raw_fd()
-                            } else {
-                                -1
-                            },
-                            events: libc::POLLIN,
-                            revents: 0,
-                        },
-                        libc::pollfd {
-                            fd: if pending_input.is_empty() {
-                                -1
-                            } else {
-                                input.as_ref().map_or(-1, AsRawFd::as_raw_fd)
-                            },
-                            events: libc::POLLOUT,
-                            revents: 0,
-                        },
-                        libc::pollfd {
-                            fd: if pending_output.is_empty() {
-                                output.as_ref().map_or(-1, AsRawFd::as_raw_fd)
-                            } else {
-                                -1
-                            },
-                            events: libc::POLLIN,
-                            revents: 0,
-                        },
-                        libc::pollfd {
-                            fd: if pending_output.is_empty() {
-                                -1
-                            } else {
-                                bridge.as_raw_fd()
-                            },
-                            events: libc::POLLOUT,
-                            revents: 0,
-                        },
-                    ];
-                    // The finite poll also observes native exit without trusting its pipes' EOF.
-                    if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 20) } < 0 {
-                        let error = io::Error::last_os_error();
-                        if error.kind() == io::ErrorKind::Interrupted {
-                            continue;
-                        }
-                        return Err(error);
-                    }
-                    if fds[0].revents != 0 && !bridge_read(&mut &bridge, &mut pending_input)? {
-                        input.take();
-                    }
-                    if fds[1].revents != 0
-                        && let Some(writer) = input.as_mut()
-                        && !bridge_write(writer, &mut pending_input)?
-                    {
-                        input.take();
-                        pending_input.clear();
-                    }
-                    if fds[2].revents != 0
-                        && let Some(reader) = output.as_mut()
-                        && !bridge_read(reader, &mut pending_output)?
-                    {
-                        output.take();
-                    }
-                    if fds[3].revents != 0 && !bridge_write(&mut &bridge, &mut pending_output)? {
-                        return Ok(());
-                    }
-                }
-            })();
-            stopped.store(true, Ordering::Release);
-            let _ = bridge.shutdown(std::net::Shutdown::Both);
-            drop((input, output));
-            let _ = client.finish();
-            let result = worker
-                .join()
-                .map_err(|_| io::Error::other("native exec worker failed"))?;
-            match result {
-                Ok(code) => Ok(code),
-                Err(error) => relayed.and(Err(error)),
-            }
-        });
+        let input = client.take_stdin().expect("piped stdin");
+        let output = client.take_stdout().expect("piped stdout");
+        let result = super::exec_transport::exec(output, input, || client.exited(), context, argv);
+        let _ = client.finish();
         let diagnostics: Vec<_> = diagnostics.close().into_iter().collect();
         if result.is_err() && !diagnostics.is_empty() {
             crate::core::process::diagnostic(String::from_utf8_lossy(&diagnostics));
@@ -1162,52 +1052,40 @@ impl Runtime for Apple {
         }
         let mut spawned = false;
         let result = (|| -> io::Result<std::process::Output> {
-            let mut child = command
-                .arg("--entrypoint")
-                .arg(init)
-                .arg(image)
-                .args(setup)
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn_guarded()
-                .map_err(|error| spawn_error("container", error))?;
+            let mut child = GroupChild::spawn(
+                command
+                    .arg("--entrypoint")
+                    .arg(init)
+                    .arg(image)
+                    .args(setup)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped()),
+            )
+            .map_err(|error| spawn_error("container", error))?;
             spawned = true;
-            let result = (|| {
-                let drain = StderrDrain::start_fd(
-                    child.stderr.take().expect("setup stderr is piped").into(),
-                )?;
-                let sent = (|| {
-                    let input = child.stdin.take().expect("setup stdin is piped");
-                    crate::core::pipe::nonblocking(&input, "disk preparation")?;
-                    let mut input = PreparationInput { input, cancel };
-                    for fill in fills {
-                        disk::send(fill, &mut input)?;
-                    }
-                    Ok::<_, io::Error>(())
-                })();
-                let status = if sent.is_err() {
-                    let _ = child.kill();
-                    child.wait()
-                } else {
-                    wait_preparation(&mut child, cancel)
-                };
-                let stderr = drain.close().into_iter().collect();
-                let status = status?;
-                if status.success() {
-                    sent?;
+            let drain =
+                StderrDrain::start_fd(child.take_stderr().expect("setup stderr is piped").into())?;
+            let sent = (|| {
+                let input = child.take_stdin().expect("setup stdin is piped");
+                crate::core::pipe::nonblocking(&input, "disk preparation")?;
+                let mut input = PreparationInput { input, cancel };
+                for fill in fills {
+                    disk::send(fill, &mut input)?;
                 }
-                Ok(std::process::Output {
-                    status,
-                    stdout: Vec::new(),
-                    stderr,
-                })
+                Ok::<_, io::Error>(())
             })();
-            if result.is_err() {
-                let _ = child.kill();
-                let _ = child.wait();
+            let status = wait_preparation(&mut child, sent.is_err(), cancel);
+            let stderr = drain.close().into_iter().collect();
+            let status = status?;
+            if status.success() {
+                sent?;
             }
-            result
+            Ok(std::process::Output {
+                status,
+                stdout: Vec::new(),
+                stderr,
+            })
         })();
         if !spawned {
             return result.map(drop);
@@ -1248,46 +1126,6 @@ impl Runtime for Apple {
     fn version(&self) -> io::Result<String> {
         let stdout = output(&["container", "--version"])?;
         Ok(String::from_utf8_lossy(&stdout).trim().to_string())
-    }
-}
-
-fn bridge_read(input: &mut impl io::Read, pending: &mut VecDeque<u8>) -> io::Result<bool> {
-    let mut bytes = [0; 32 * 1024];
-    match input.read(&mut bytes) {
-        Ok(0) => Ok(false),
-        Ok(read) => {
-            pending.extend(&bytes[..read]);
-            Ok(true)
-        }
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-            ) =>
-        {
-            Ok(true)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-fn bridge_write(output: &mut impl Write, pending: &mut VecDeque<u8>) -> io::Result<bool> {
-    match output.write(pending.as_slices().0) {
-        Ok(0) => Ok(false),
-        Ok(written) => {
-            pending.drain(..written);
-            Ok(true)
-        }
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-            ) =>
-        {
-            Ok(true)
-        }
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(false),
-        Err(error) => Err(error),
     }
 }
 
@@ -1333,7 +1171,7 @@ fn make_proxy_connectable(name: &str, init: &Path) -> io::Result<()> {
 
 /// Copy missing profile seeds without buffering another copy of their bytes.
 fn copy_in(name: &str, init: &Path, seeding: &Seeding, cancel: &AtomicBool) -> io::Result<()> {
-    let mut child = crate::core::process::GroupChild::spawn(
+    let mut child = GroupChild::spawn(
         std::process::Command::new("container")
             .args(["exec", "-i", name])
             .arg(init)
@@ -1344,112 +1182,27 @@ fn copy_in(name: &str, init: &Path, seeding: &Seeding, cancel: &AtomicBool) -> i
             .stderr(Stdio::piped()),
     )
     .map_err(|error| spawn_error("container", error))?;
-    let mut input = child.take_stdin().expect("piped seed input");
-    let mut stderr = child.take_stderr();
-    crate::core::pipe::nonblocking(&input, "seed copy")?;
-    if let Some(stderr) = stderr.as_ref() {
-        crate::core::pipe::nonblocking(stderr, "seed diagnostics")?;
+    let drain = StderrDrain::start_fd(child.take_stderr().expect("piped seed stderr").into())?;
+    let sent = (|| {
+        let input = child.take_stdin().expect("piped seed input");
+        crate::core::pipe::nonblocking(&input, "seed copy")?;
+        disk::send_seeds(
+            &seeding.relative,
+            &seeding.seeds,
+            &mut PreparationInput { input, cancel },
+        )
+    })();
+    let status = wait_preparation(&mut child, sent.is_err(), cancel);
+    let tail: Vec<_> = drain.close().into_iter().collect();
+    let diagnostics = terminal_text(String::from_utf8_lossy(&tail).trim());
+    // A cancelled or failed send says why unless the receiver did.
+    if !status?.success() && (sent.is_ok() || !diagnostics.is_empty()) {
+        return Err(io::Error::other(format!(
+            "copy into {}: {diagnostics}",
+            seeding.guest.display()
+        )));
     }
-    let mut diagnostics = Vec::new();
-    let sent = disk::send_seeds(
-        &seeding.relative,
-        &seeding.seeds,
-        &mut SeedInput {
-            input: &mut input,
-            stderr: &mut stderr,
-            diagnostics: &mut diagnostics,
-            cancel,
-        },
-    );
-    drop(input);
-    if let Err(error) = sent {
-        return Err(io::Error::new(error.kind(), format!("seed copy: {error}")));
-    }
-    let mut exited = None;
-    let mut wait = crate::core::process::ExitWait::new();
-    let status = loop {
-        crate::core::pipe::check_cancel(cancel)?;
-        if exited.is_none() && child.exited()? {
-            exited = Some(Instant::now());
-        }
-        crate::core::process::drain(&mut stderr, &mut diagnostics, Some(16 * 1024))?;
-        if let Some(began) = exited
-            && (stderr.is_none() || began.elapsed() >= Duration::from_secs(1))
-        {
-            break child.finish()?;
-        }
-        let mut fds: Vec<_> = stderr
-            .iter()
-            .map(|pipe| nix::poll::PollFd::new(pipe.as_fd(), nix::poll::PollFlags::POLLIN))
-            .collect();
-        wait.poll(&mut fds)?;
-    };
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "copy into {}: {}",
-            seeding.guest.display(),
-            String::from_utf8_lossy(&diagnostics).trim()
-        )))
-    }
-}
-
-struct SeedInput<'a> {
-    input: &'a mut std::process::ChildStdin,
-    stderr: &'a mut Option<std::process::ChildStderr>,
-    diagnostics: &'a mut Vec<u8>,
-    cancel: &'a AtomicBool,
-}
-
-impl Write for SeedInput<'_> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        loop {
-            if self.cancel.load(Ordering::Acquire) {
-                // Buffered writers retry Interrupted rather than ending the copy.
-                return Err(io::Error::new(
-                    io::ErrorKind::ConnectionAborted,
-                    "startup cancelled",
-                ));
-            }
-            crate::core::process::drain(self.stderr, self.diagnostics, Some(16 * 1024))?;
-            match self.input.write(bytes) {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    seed_poll(self.input, self.stderr.as_ref())?
-                }
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                result => return result,
-            }
-        }
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-fn seed_poll(
-    input: &std::process::ChildStdin,
-    stderr: Option<&std::process::ChildStderr>,
-) -> io::Result<()> {
-    let mut fds = [
-        libc::pollfd {
-            fd: input.as_raw_fd(),
-            events: libc::POLLOUT,
-            revents: 0,
-        },
-        libc::pollfd {
-            fd: stderr.map_or(-1, AsRawFd::as_raw_fd),
-            events: libc::POLLIN,
-            revents: 0,
-        },
-    ];
-    if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, 100) } < 0 {
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
-    }
-    Ok(())
+    sent.map_err(|error| io::Error::new(error.kind(), format!("seed copy: {error}")))
 }
 
 /// One `container list --format json` entry, as much as pinfold needs.

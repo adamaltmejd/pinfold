@@ -17,6 +17,12 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Dropping only the live test passes: the owner's project lock still
     // keeps the project.
     // The idle project's state and disks going is the positive control.
+    // Sabotage (run): in cli.rs, make `CleanPlan::idle` ignore the
+    // `Scope::Project` filter. `clean --idle 0s` from the live project's
+    // folder then removes the idle project's state and disks.
+    // Sabotage (run): in cli.rs, make `current_scope` return
+    // `Scope::NoProject`. `clean --idle 0s` from the idle project's own
+    // folder then keeps its state and disks.
     // Sabotage (run): in main.rs, drop the `clean` exemption
     // from the automatic pass. A dry run from a state root whose daily
     // pass is due then removes the unpinned artifact version; `clean`
@@ -91,16 +97,35 @@ fn cleanup_removes_only_pinfolds_garbage() {
         "clean --dry-run removed {}",
         unpinned.display()
     );
-    let cleaned = run(env.command().args(["clean", "--idle", "0s"]), COMMAND);
-    drop(hold);
+    // From another project's folder, `--idle` keeps the idle project.
+    let scoped = run(
+        &mut live.project.command(&["clean", "--idle", "0s"]),
+        COMMAND,
+    );
+    assert_eq!(scoped.code, 0, "{scoped:?}");
+    for path in idle.state() {
+        assert!(path.exists(), "{} after scoped clean", path.display());
+    }
+    // From its own folder, it removes it.
+    let cleaned = run(
+        &mut idle.project.command(&["clean", "--idle", "0s"]),
+        COMMAND,
+    );
     assert_eq!(cleaned.code, 0, "{cleaned:?}");
     assert!(!unpinned.exists(), "clean kept {}", unpinned.display());
-
     for path in idle.state() {
         assert!(!path.exists(), "{} after clean", path.display());
     }
     assert_eq!(tree(&idle.root), idle_tree);
     assert_eq!(fs::read(&idle.config).unwrap(), idle_config);
+
+    let everything = run(
+        env.command()
+            .args(["clean", "--idle", "0s", "--all-projects"]),
+        COMMAND,
+    );
+    drop(hold);
+    assert_eq!(everything.code, 0, "{everything:?}");
     for path in live.state() {
         assert!(path.exists(), "{} after clean", path.display());
     }
