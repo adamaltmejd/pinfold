@@ -627,13 +627,27 @@ fn plain(
             reason,
         )
     };
+    let host = request.host.to_ascii_lowercase();
+    // Before any other check; a route's or routed host's refusal names the
+    // request as its other lines do.
+    if request.expect == Some(false) {
+        let routed = rules.routes.contains_key(&host) || rules.routed.contains_key(&host);
+        return refuse_with(
+            client,
+            log,
+            &request.host,
+            Some(&request.method),
+            routed.then(|| route_fields(request, None)),
+            417,
+            "expectation unsupported",
+        );
+    }
     if request.port != 80 {
         return deny(client, 403, "port not allowed");
     }
     if network::literal(&request.host).is_some() {
         return deny(client, 403, "ip literal");
     }
-    let host = request.host.to_ascii_lowercase();
     // A routed host takes TLS only, so a credential is never sent in clear.
     if rules.routed.contains_key(&host) {
         return deny(client, 403, "route");
@@ -641,9 +655,6 @@ fn plain(
     if let Some(upstream) = rules.routes.get(&host) {
         route(client, log, request, upstream, connection);
         return;
-    }
-    if request.expect == Some(false) {
-        return deny(client, 417, "expectation unsupported");
     }
     if !rules.allows(&host) {
         return deny(client, 403, "not allowlisted");

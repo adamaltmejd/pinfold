@@ -494,7 +494,7 @@ impl Box {
             audit_done: None,
             cancel: std::sync::Arc::default(),
             preparing: None,
-            helper_unremoved: false,
+            helper_unremoved: None,
             finishing: None,
         };
         let starting = async {
@@ -546,7 +546,10 @@ impl Box {
                 if let Some(preparing) = progress.preparing.take()
                     && let Ok(Err(Stop::Failed(error))) = preparing.await
                 {
-                    progress.helper_unremoved |= helper_unremoved(&error);
+                    progress.helper_unremoved = progress
+                        .helper_unremoved
+                        .take()
+                        .or(helper_unremoved(&error));
                 }
                 if let Some(finishing) = progress.finishing.take() {
                     let _ = finishing.await;
@@ -563,12 +566,9 @@ impl Box {
                         // A CA bundle helper still under the box's name keeps
                         // the claim, as a disk helper's does.
                         #[cfg(not(target_os = "linux"))]
-                        let removed = if progress.helper_unremoved {
-                            Err(io::Error::other(
-                                "the CA bundle helper holds the box's name",
-                            ))
-                        } else {
-                            Ok(false)
+                        let removed = match progress.helper_unremoved.take() {
+                            Some(error) => Err(io::Error::other(error)),
+                            None => Ok(false),
                         };
                         (removed, None)
                     }
@@ -856,15 +856,15 @@ impl From<io::Error> for Stop {
     }
 }
 
-/// Whether a failed preparation left Apple's CA bundle helper under the
-/// box's name.
-fn helper_unremoved(error: &io::Error) -> bool {
+/// The error, when a failed preparation left Apple's CA bundle helper
+/// under the box's name.
+fn helper_unremoved(error: &io::Error) -> Option<String> {
     #[cfg(target_os = "linux")]
     let _ = error;
     #[cfg(target_os = "linux")]
-    return false;
+    return None;
     #[cfg(not(target_os = "linux"))]
-    runtime::apple::preparation_unremoved(error)
+    runtime::apple::preparation_unremoved(error).then(|| error.to_string())
 }
 
 /// Startup resources retained when its future is cancelled.
@@ -877,7 +877,7 @@ struct Starting {
     #[allow(clippy::type_complexity)]
     preparing: Option<tokio::task::JoinHandle<Result<(Plan, Prepared, Option<ca::Issued>), Stop>>>,
     /// Apple's CA bundle helper could not be removed from the box's name.
-    helper_unremoved: bool,
+    helper_unremoved: Option<String>,
     finishing: Option<tokio::task::JoinHandle<io::Result<BoxInfo>>>,
     /// The disks claimed for the box, which a failed start releases.
     claimed: disk::Claimed,
@@ -929,7 +929,7 @@ async fn start(
     let prepared = worker.await;
     progress.preparing.take();
     if let Ok(Err(Stop::Failed(error))) = &prepared {
-        progress.helper_unremoved |= helper_unremoved(error);
+        progress.helper_unremoved = progress.helper_unremoved.take().or(helper_unremoved(error));
     }
     let (resolved, prepared, issued) = prepared
         .map_err(|error| io::Error::other(format!("preparation worker failed: {error}")))??;

@@ -251,12 +251,18 @@ pub fn trust_bundle(
         &plan.labels[clean::OWNER_LABEL],
     );
     if removal.unremoved {
-        return Err(io::Error::other(PreparationUnremoved(io::Error::other(
-            format!(
-                "remove the CA bundle helper {}: {:?}",
-                plan.name, removal.removed
-            ),
-        ))));
+        let error = removal
+            .removed
+            .expect_err("an unremoved helper has an error");
+        let error = if error.to_string().starts_with("cleanup-timeout") {
+            error
+        } else {
+            io::Error::other(format!(
+                "remove the CA bundle helper {}: {error}",
+                plan.name
+            ))
+        };
+        return Err(io::Error::other(PreparationUnremoved(error)));
     }
     let output = output?;
     if !output.status.success() {
@@ -303,6 +309,8 @@ pub fn trust_bundle(
 struct HelperRemoval {
     helper: io::Result<Option<ListedContainer>>,
     stopped: io::Result<Vec<u8>>,
+    /// An error whenever `unremoved`: `cleanup-timeout` once the deadline
+    /// passed.
     removed: io::Result<Vec<u8>>,
     unremoved: bool,
 }
@@ -324,27 +332,41 @@ fn remove_helper(name: &str, generation: &str, owner: &str) -> HelperRemoval {
             })
         })
     };
-    crate::core::process::with_deadline(REMOVAL_TIMEOUT, |_| {
+    crate::core::process::with_deadline(REMOVAL_TIMEOUT, |expired| {
         let helper = ours();
-        if !matches!(helper, Ok(Some(_))) {
-            // Gone, or not provably ours: nothing is removed.
-            let unremoved = helper.is_err();
-            return HelperRemoval {
+        let mut removal = match &helper {
+            // Gone, or another start's: nothing is removed.
+            Ok(None) => HelperRemoval {
                 helper,
                 stopped: Ok(Vec::new()),
                 removed: Ok(Vec::new()),
-                unremoved,
-            };
+                unremoved: false,
+            },
+            // Not provably ours: nothing is removed, and the name may hold it.
+            Err(error) => HelperRemoval {
+                removed: Err(io::Error::other(format!("inspect helper {name}: {error}"))),
+                helper,
+                stopped: Ok(Vec::new()),
+                unremoved: true,
+            },
+            Ok(Some(_)) => {
+                let stopped = output(&["container", "stop", name]);
+                let removed = output(&["container", "rm", name]);
+                let unremoved = removed.is_err() && !matches!(ours(), Ok(None));
+                HelperRemoval {
+                    helper,
+                    stopped,
+                    removed,
+                    unremoved,
+                }
+            }
+        };
+        if removal.unremoved && expired.load(std::sync::atomic::Ordering::Acquire) {
+            removal.removed = Err(io::Error::other(format!(
+                "cleanup-timeout: helper {name} removal"
+            )));
         }
-        let stopped = output(&["container", "stop", name]);
-        let removed = output(&["container", "rm", name]);
-        let unremoved = removed.is_err() && !matches!(ours(), Ok(None));
-        HelperRemoval {
-            helper,
-            stopped,
-            removed,
-            unremoved,
-        }
+        removal
     })
 }
 
