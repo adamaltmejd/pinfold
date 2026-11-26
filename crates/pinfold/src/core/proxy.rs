@@ -33,9 +33,10 @@ pub const PROXY_URL: &str = "http://127.0.0.1:3128";
 pub const NO_PROXY: &str = "localhost,127.0.0.1,::1";
 
 /// Whether clients honouring [`NO_PROXY`] skip the proxy for `name`, as
-/// curl does: an entry matches itself and, as a domain, its subdomains.
+/// curl does: an entry matches itself and, as a domain, its subdomains,
+/// ignoring one trailing dot.
 pub fn bypassed(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
+    let name = name.strip_suffix('.').unwrap_or(name).to_ascii_lowercase();
     NO_PROXY
         .split(',')
         .any(|entry| name == entry || name.ends_with(&format!(".{entry}")))
