@@ -10,6 +10,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::Child;
 use std::time::{Duration, Instant};
 
+use nix::errno::Errno;
 use nix::libc;
 
 use super::exec_wire::{
@@ -151,7 +152,17 @@ pub(super) fn relay(
             session.as_ref().and_then(Session::deadline),
             drain.filter(|_| connected),
         ];
-        let timeout = super::session::millis(deadlines.into_iter().flatten().min());
+        // Milliseconds until the first deadline; -1 for none.
+        let timeout = deadlines
+            .into_iter()
+            .flatten()
+            .min()
+            .map_or(-1, |deadline| {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis()
+                    .min(i32::MAX as u128) as i32
+            });
         // Safety: poll only updates this array of live descriptors.
         if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as _, timeout) } < 0 {
             let error = io::Error::last_os_error();
@@ -231,25 +242,18 @@ pub(super) fn relay(
                 }
             }
         }
-        if connected && fds[3].revents != 0 && !bytes.is_empty() {
-            let bytes_to_write = bytes.make_contiguous();
-            // Safety: input_fd is the pipe or sole PTY master held above.
-            let count = unsafe {
-                libc::write(
-                    input_fd,
-                    bytes_to_write.as_ptr().cast(),
-                    bytes_to_write.len(),
-                )
-            };
-            if count > 0 {
-                bytes.drain(..count as usize);
-                consumed += count as usize;
-            } else if count < 0 {
-                let error = io::Error::last_os_error();
-                if !matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                ) {
+        if connected
+            && fds[3].revents != 0
+            && !bytes.is_empty()
+            && let Some(target) = terminal.as_ref().or(input.as_ref())
+        {
+            match nix::unistd::write(target, bytes.make_contiguous()) {
+                Ok(count) => {
+                    bytes.drain(..count);
+                    consumed += count;
+                }
+                Err(Errno::EAGAIN | Errno::EINTR) => {}
+                Err(_) => {
                     consumed += bytes.len();
                     bytes.clear();
                     input.take();
@@ -277,8 +281,7 @@ pub(super) fn relay(
                 outputs[index].as_ref()
             };
             let Some(output) = output else { continue };
-            let output_fd = output.as_raw_fd();
-            if output_fd != output_fds[index] {
+            if output.as_raw_fd() != output_fds[index] {
                 continue;
             }
             let mut buffer = [0; CHUNK];
@@ -287,27 +290,20 @@ pub(super) fn relay(
             } else {
                 CHUNK
             };
-            // Safety: poll supplied readiness for this owned output descriptor.
-            let count = unsafe { libc::read(output_fd, buffer.as_mut_ptr().cast(), available) };
-            if count > 0 {
-                next_output = 1 - index;
-                if connected {
-                    credit[index] -= count as usize;
-                    writer.start(
-                        if index == 0 { STDOUT } else { STDERR },
-                        &buffer[..count as usize],
-                    )?;
+            match nix::unistd::read(output, &mut buffer[..available]) {
+                Ok(count) if count > 0 => {
+                    next_output = 1 - index;
+                    if connected {
+                        credit[index] -= count;
+                        writer.start(if index == 0 { STDOUT } else { STDERR }, &buffer[..count])?;
+                    }
                 }
-            } else if count == 0
-                || (count < 0
-                    && !matches!(
-                        io::Error::last_os_error().kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                    ))
-            {
-                if terminal.is_some() {
+                Err(Errno::EAGAIN | Errno::EINTR) => {}
+                // EOF or a failed read ends this output.
+                _ if terminal.is_some() => {
                     terminal.take();
-                } else {
+                }
+                _ => {
                     outputs[index].take();
                 }
             }
