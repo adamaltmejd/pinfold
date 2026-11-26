@@ -2326,6 +2326,8 @@ variable, without its value. Secrets belong in `from`.
 | `mounts` | — | — | The project mount, then folders (above); project file only |
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
+| `home_disk_size` | — | `64G` | The home disk's `size` (Disks), used only when pinfold creates it |
+| `project_disk_size` | — | `64G` | A disk project's project disk `size`, likewise; a share has no project disk and ignores it |
 | `env` | — | `{}` | The box's variables: `NAME = "literal"`, `NAME = { from = "VAR" }` read from the caller's environment at start, or `NAME = { from = "op://…" }` read from 1Password at start; the box spec's `env` (Process interface) |
 | — | `PINFOLD_ENV_<NAME>` | — | `<NAME>` in the box from the caller's value, over `env`'s `NAME` |
 | — | `PINFOLD_NO_UPDATE_CHECK` | — | `1` disables interactive update checks and notices (Updates) |
@@ -2334,6 +2336,14 @@ The list keys take comma-separated values in the environment:
 
 - `PINFOLD_ALLOW`: host names; a leading `.` makes a suffix entry.
 - `PINFOLD_ROUTES`: `name=host:port` pairs; an injecting or login route needs a file.
+
+A disk size is spelled as the box spec's `size`; any other value is
+refused as `spec`, naming the key, a share's `project_disk_size` included. A disk
+keeps the size it was created with. When a size key is set and its disk
+exists, filled, at another size, the starting client prints `pinfold:
+KEY is SIZE, but disk NAME exists at SIZE and keeps that size` on stderr
+and starts; a joining client is not refused for a changed size key.
+`disk rm` and a new start create it again, empty, at the set size.
 
 An unknown key in the project's file or a profile's `pinfold.toml` is
 refused, naming the file and the key. `mounts` in a profile's file and

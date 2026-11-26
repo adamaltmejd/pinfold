@@ -130,7 +130,9 @@ configuration path.
 
 Box work runs as your host uid; the built-in images name uids 501 and
 1000 `pinfold`. The project home, `/home/pinfold`, is a disk that persists.
-A disk project also retains its project disk. `pinfold disk list` shows
+A disk project also retains its project disk. Both are created at 64G
+unless `home_disk_size` or `project_disk_size` sets another size before
+the first start; a disk never grows. `pinfold disk list` shows
 sizes and originating folders. `disk rm --all` removes unattached disks in
 the current state root.
 

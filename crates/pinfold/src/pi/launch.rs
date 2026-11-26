@@ -122,7 +122,7 @@ where
                     eprintln!("{warning}");
                 }
                 let plan = Plan {
-                    disks: vec![empty_writable_disk(disk, Path::new(state::PROJECT))],
+                    disks: vec![empty_writable_disk(disk, Path::new(state::PROJECT), None)],
                     ..box_plan(&config, &id, &image)?
                 };
                 let box_ = match Box::up(&plan, &mut signals).await {
@@ -398,10 +398,18 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
     env.entry("PINFOLD_PROJECT".to_string())
         .or_insert(Env::Exact(utf8(guest, "project root")?.to_string()));
     let [home, project] = state::disk_names(id);
-    let mut disks = vec![empty_writable_disk(home, Path::new(state::HOME))];
+    let mut disks = vec![empty_writable_disk(
+        home,
+        Path::new(state::HOME),
+        config.home_disk_size.clone(),
+    )];
     let mut mounts = match config.mount {
         ProjectMount::Disk => {
-            disks.push(empty_writable_disk(project, guest));
+            disks.push(empty_writable_disk(
+                project,
+                guest,
+                config.project_disk_size.clone(),
+            ));
             Vec::new()
         }
         ProjectMount::Share => vec![Mount {
@@ -473,12 +481,49 @@ fn box_plan(config: &Config, id: &str, image: &str) -> io::Result<Plan> {
     })
 }
 
+/// A notice for each disk of `plan` whose configured size differs from the
+/// size it already has: a disk keeps the size it was created with. An
+/// unfilled disk is created again, at the configured size.
+pub(crate) fn disk_size_notices(plan: &Plan, id: &str) -> io::Result<Vec<String>> {
+    let sized: Vec<&Disk> = plan.disks.iter().filter(|d| d.size.is_some()).collect();
+    if sized.is_empty() {
+        return Ok(Vec::new());
+    }
+    let [home, _] = state::disk_names(id);
+    let listed = crate::core::runtime::runtime().list_disks()?;
+    let gib = |bytes: u64| match bytes % (1 << 30) {
+        0 => format!("{}G", bytes >> 30),
+        _ => format!("{bytes} bytes"),
+    };
+    let mut notices = Vec::new();
+    for want in sized {
+        let Some(have) = listed.iter().find(|disk| disk.name == want.name) else {
+            continue;
+        };
+        if have.size == want.bytes() || disk::unfilled(&want.name)? {
+            continue;
+        }
+        let key = if want.name == home {
+            "home_disk_size"
+        } else {
+            "project_disk_size"
+        };
+        notices.push(format!(
+            "pinfold: {key} is {}, but disk {} exists at {} and keeps that size",
+            gib(want.bytes()),
+            want.name,
+            gib(have.size)
+        ));
+    }
+    Ok(notices)
+}
+
 /// An empty writable disk; no host tree is copied into it.
-fn empty_writable_disk(name: String, guest: &Path) -> Disk {
+fn empty_writable_disk(name: String, guest: &Path, size: Option<String>) -> Disk {
     Disk {
         name,
         guest: guest.to_path_buf(),
-        size: None,
+        size,
         from: None,
         readonly: false,
     }
