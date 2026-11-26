@@ -75,7 +75,8 @@ pub(crate) fn recorded(root: &Path) -> io::Result<bool> {
 /// The project's home disk, attached at [`HOME`], and its project disk,
 /// attached at the project's own path. `id` is a [`project_id`].
 pub fn disk_names(id: &str) -> [String; 2] {
-    [format!("pi-{id}-home"), format!("pi-{id}-project")]
+    use crate::core::plan::PROJECT_DISK_PREFIX as PIN;
+    [format!("{PIN}{id}-home"), format!("{PIN}{id}-project")]
 }
 
 /// Canonicalize `path`, naming it in the error.

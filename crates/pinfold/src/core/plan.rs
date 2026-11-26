@@ -955,7 +955,8 @@ impl Plan {
     /// value unread so `box up` can watch the same stdin for EOF. Parsing to
     /// a value first keeps a readable `name` even when serde refuses, so a
     /// refusal names the box. A caller's labels may not use pinfold's
-    /// namespace; `pinfold -- CMD`'s own plan carries `dev.pinfold.project`.
+    /// namespace, nor its disk names the project disks' prefix; `pinfold --
+    /// CMD`'s own plan carries both.
     pub fn from_reader(reader: impl Read) -> Result<Plan, Refusal> {
         let refusal = |box_name, detail| Refusal {
             box_name,
@@ -973,7 +974,9 @@ impl Plan {
             .map(str::to_owned);
         let plan = serde_json::from_value::<Plan>(value)
             .map_err(|error| refusal(name.clone(), invalid(error)))?;
-        check_reserved_labels(&plan.labels).map_err(|detail| refusal(name, detail))?;
+        check_reserved_labels(&plan.labels)
+            .and_then(|()| check_reserved_disks(&plan.disks))
+            .map_err(|detail| refusal(name, detail))?;
         Ok(plan)
     }
 
@@ -1418,6 +1421,23 @@ pub(crate) fn guest_path(path: &Path) -> PathBuf {
         }
     }
     guest
+}
+
+/// The prefix of a project's disk names. Only a project creates such a
+/// disk, so a disk of a project's names is that project's.
+pub const PROJECT_DISK_PREFIX: &str = "pin-";
+
+fn check_reserved_disks(disks: &[Disk]) -> Result<(), String> {
+    match disks
+        .iter()
+        .find(|disk| disk.name.starts_with(PROJECT_DISK_PREFIX))
+    {
+        Some(disk) => Err(format!(
+            "disk {:?} is pinfold's: a caller disk name may not start with {PROJECT_DISK_PREFIX}",
+            disk.name
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Refuse a caller label in pinfold's `dev.pinfold.` namespace:
