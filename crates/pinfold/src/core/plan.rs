@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::core::r#box::{Refusal, RefusalReason};
-use crate::core::{ca, login, network, proxy};
+use crate::core::{ca, login, network, profile, proxy};
 
 /// A parsed box spec.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1088,11 +1088,8 @@ impl Plan {
             if !names.insert(&disk.name) {
                 return Err(invalid(format!("disk {:?} is named twice", disk.name)));
             }
-            if !valid_name(&disk.name) {
-                return Err(invalid(format!(
-                    "disk name {:?} must start alphanumeric and hold only [A-Za-z0-9._-]",
-                    disk.name
-                )));
+            if let Err(error) = profile::check_name("disk", &disk.name) {
+                return Err(invalid(error.to_string()));
             }
             if let Some(size) = &disk.size
                 && disk_gibibytes(size).is_none()
