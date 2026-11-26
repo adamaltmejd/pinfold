@@ -264,7 +264,7 @@ fn a_projects_sessions_share_one_box() {
         b.ask("kill -0 \"$(cat /tmp/e2e-a)\" \"$(cat /tmp/e2e-a-child)\"; echo $?"),
         ["0"]
     );
-    a.kill();
+    drop(a);
     assert_eq!(
         b.ask(
             "timeout 60 tail --pid=\"$(cat /tmp/e2e-a)\" -f /dev/null && \
