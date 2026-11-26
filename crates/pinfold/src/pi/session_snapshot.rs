@@ -133,12 +133,13 @@ struct Mount {
     kind: MountKind,
 }
 
+/// No `size`: a configured size applies only to a new disk, so a change
+/// never refuses a joining client.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Disk {
     name: String,
     guest: Bytes,
-    size: Option<String>,
     from: Option<Bytes>,
     readonly: bool,
 }
@@ -434,7 +435,6 @@ impl Snapshot {
             .map(|disk| Disk {
                 name: disk.name.clone(),
                 guest: Bytes::path(&disk.guest),
-                size: disk.size.clone(),
                 from: disk.from.as_deref().map(Bytes::path),
                 readonly: disk.readonly,
             })

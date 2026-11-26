@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::plan::{Env, Mount, MountKind, Route, guest_path};
+use crate::core::plan::{Env, Mount, MountKind, Route, disk_gibibytes, guest_path};
 use crate::core::profile::Profile;
 use crate::dirs;
 use crate::formatting::terminal_text;
@@ -19,6 +19,8 @@ use crate::pi::state::project_id;
 pub(crate) const DEFAULT_PROFILE: &str = "default";
 const DEFAULT_CPUS: f64 = 4.0;
 const DEFAULT_MEMORY: &str = "8G";
+/// The box spec's default disk `size`, shown in the template and `config --json`.
+pub(crate) const DEFAULT_DISK_SIZE: &str = "64G";
 const DEFAULT_ALLOW: [&str; 9] = [
     "api.anthropic.com",
     "platform.claude.com",
@@ -92,6 +94,9 @@ impl ProjectMount {
 # CPUs and memory for the box:
 # cpus = {DEFAULT_CPUS}
 # memory = \"{DEFAULT_MEMORY}\"
+# Disk sizes, used only when the disk is created; a disk never grows. The project disk is a kind = \"disk\" project's:
+# home_disk_size = \"{DEFAULT_DISK_SIZE}\"
+# project_disk_size = \"{DEFAULT_DISK_SIZE}\"
 # Variables in the box: a value, {{ from = \"VAR\" }} for the host's VAR, or {{ from = \"op://VAULT/ITEM/FIELD\" }} for 1Password:
 # env = {{ LANG = \"C.UTF-8\", GIT_AUTHOR_EMAIL = {{ from = \"MY_AGENT_EMAIL\" }} }}
 # A Containerfile beside this file builds the project's own image.
@@ -290,6 +295,10 @@ pub struct Config {
     pub routes: BTreeMap<String, Route>,
     pub cpus: f64,
     pub memory: String,
+    /// The home and project disks' `size`, used only when pinfold creates
+    /// the disk. Unset leaves the box spec's default.
+    pub home_disk_size: Option<String>,
+    pub project_disk_size: Option<String>,
     /// The box's variables: the configured `env` tables, then each host
     /// `PINFOLD_ENV_<NAME>` as `<NAME>`. A `from` value stays on the host;
     /// a box spec passes it by name only.
@@ -427,6 +436,25 @@ impl Config {
                 "image-source-missing: select an image or supply a Containerfile",
             ));
         }
+        let disk_size = |key: &str, value: Option<toml::Value>| match value {
+            None => Ok(None),
+            Some(toml::Value::String(size)) if disk_gibibytes(&size).is_some() => Ok(Some(size)),
+            Some(value) => Err(invalid(
+                "configuration",
+                &match &value {
+                    toml::Value::String(size) => format!(
+                        "spec: {key} {:?} must be a whole number of G, at least 1G",
+                        terminal_text(size)
+                    ),
+                    other => format!(
+                        "spec: {key} must be a string such as \"64G\"; found {}",
+                        other.type_str()
+                    ),
+                },
+            )),
+        };
+        let home_disk_size = disk_size("home_disk_size", merged.home_disk_size)?;
+        let project_disk_size = disk_size("project_disk_size", merged.project_disk_size)?;
         Ok(Config {
             mount,
             folders: Vec::new(),
@@ -442,6 +470,8 @@ impl Config {
             routes: merged.routes.unwrap_or_default(),
             cpus: merged.cpus.unwrap_or(DEFAULT_CPUS),
             memory: merged.memory.unwrap_or_else(|| DEFAULT_MEMORY.to_string()),
+            home_disk_size,
+            project_disk_size,
             env: merged
                 .env
                 .unwrap_or_default()
@@ -565,6 +595,9 @@ struct Layer {
     routes: Option<BTreeMap<String, Route>>,
     cpus: Option<f64>,
     memory: Option<String>,
+    /// Checked once merged, so a value of any type is refused as `spec`.
+    home_disk_size: Option<toml::Value>,
+    project_disk_size: Option<toml::Value>,
     env: Option<BTreeMap<String, Env>>,
 }
 
@@ -600,6 +633,8 @@ impl Layer {
         self.image = higher.image.or(self.image);
         self.cpus = higher.cpus.or(self.cpus);
         self.memory = higher.memory.or(self.memory);
+        self.home_disk_size = higher.home_disk_size.or(self.home_disk_size);
+        self.project_disk_size = higher.project_disk_size.or(self.project_disk_size);
         self.allow = higher.allow.or(self.allow);
         self.routes = higher.routes.or(self.routes);
         // Unlike the other keys, `env` is replaced name by name.

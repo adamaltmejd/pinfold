@@ -1994,7 +1994,8 @@ its project.
   its source, and how to retry. Other values and fingerprints are omitted.
   Comparison uses the owner's in-memory startup snapshot, not its launch record.
   Compare host roots, profile selection, image source/reference/resolved
-  identity, resources, mount and disk definitions, ordered allow entries,
+  identity, resources, mount and disk definitions (a disk's size
+  excepted), ordered allow entries,
   complete route declarations and sources, static referenced values, and
   environment names, literals and the values their `from` variables hold,
   so a client whose `from` variable holds another value refuses as
@@ -2326,6 +2327,8 @@ variable, without its value. Secrets belong in `from`.
 | `mounts` | — | — | The project mount, then folders (above); project file only |
 | `cpus` | `PINFOLD_CPUS` | 4 | |
 | `memory` | `PINFOLD_MEMORY` | `8G` | |
+| `home_disk_size` | — | `64G` | The home disk's `size` (Disks), used only when pinfold creates it |
+| `project_disk_size` | — | `64G` | A disk project's project disk `size`, likewise; a share has no project disk and ignores it |
 | `env` | — | `{}` | The box's variables: `NAME = "literal"`, `NAME = { from = "VAR" }` read from the caller's environment at start, or `NAME = { from = "op://…" }` read from 1Password at start; the box spec's `env` (Process interface) |
 | — | `PINFOLD_ENV_<NAME>` | — | `<NAME>` in the box from the caller's value, over `env`'s `NAME` |
 | — | `PINFOLD_NO_UPDATE_CHECK` | — | `1` disables interactive update checks and notices (Updates) |
@@ -2334,6 +2337,14 @@ The list keys take comma-separated values in the environment:
 
 - `PINFOLD_ALLOW`: host names; a leading `.` makes a suffix entry.
 - `PINFOLD_ROUTES`: `name=host:port` pairs; an injecting or login route needs a file.
+
+A disk size is spelled as the box spec's `size`; any other value is
+refused as `spec`, naming the key, a share's `project_disk_size` included. A disk
+keeps the size it was created with. When a size key is set and its disk
+exists, filled, at another size, the starting client prints `pinfold:
+KEY is SIZE, but disk NAME exists at SIZE and keeps that size` on stderr
+and starts; a joining client is not refused for a changed size key.
+`disk rm` and a new start create it again, empty, at the set size.
 
 An unknown key in the project's file or a profile's `pinfold.toml` is
 refused, naming the file and the key. `mounts` in a profile's file and
@@ -2352,7 +2363,9 @@ and `mount`, containing `kind`, canonical `host` and `guest` (Project mount).
 `project.folders` lists each folder as `{host, guest, kind}`,
 `host` as configured with `~/` expanded, `kind` `readonly` or `share`.
 `project.disks.home` names the persistent home disk. `project.disks.project`
-names the disk for a disk project and is null for a share. `config` is the
+names the disk for a disk project and is null for a share. `home_disk_size`
+and `project_disk_size` give the size a new disk is created at, the default
+when unset; `project_disk_size` is null for a share. `config` is the
 project’s configuration file. `profile_chain` lists the selected profile,
 then each base, as `{name, path}`: the profile's directory, or null for a
 built-in. `image_built` reports local presence, not

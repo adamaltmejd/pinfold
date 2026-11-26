@@ -887,7 +887,7 @@ impl Disk {
 const DEFAULT_DISK_GIB: u64 = 64;
 
 /// A disk size: a whole number of gibibytes, at least 1, then `G`.
-fn disk_gibibytes(size: &str) -> Option<u64> {
+pub(crate) fn disk_gibibytes(size: &str) -> Option<u64> {
     digits(size.strip_suffix('G')?).filter(|gib| (1..=u64::MAX >> 30).contains(gib))
 }
 

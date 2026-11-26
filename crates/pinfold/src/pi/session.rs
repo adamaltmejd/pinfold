@@ -914,10 +914,15 @@ async fn resolve_spec(
     let (resolved, warnings) = control_work(signals, None, move || {
         let resolved = Snapshot::resolve(&root, expected_mount, None, startup)?;
         let warnings = if startup {
-            launch::image_warnings(
+            let mut warnings = launch::image_warnings(
                 &resolved.config,
                 resolved.plan.image.as_deref().ok_or_else(unavailable)?,
-            )?
+            )?;
+            warnings.extend(launch::disk_size_notices(
+                &resolved.plan,
+                &state::project_id(&root),
+            )?);
+            warnings
         } else {
             Vec::new()
         };
