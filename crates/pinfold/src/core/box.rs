@@ -451,19 +451,17 @@ impl Box {
             prepared_disks.map_err(|_| io::Error::other("disk preparation worker failed"))?;
         claim.restore_startup_control(control);
         if let Some(stopped) = stopped {
-            #[cfg(not(target_os = "linux"))]
-            if let Err(Err(error)) = &claimed
-                && runtime::apple::preparation_unremoved(error)
-            {
-                let _ = claim.finish(false).await;
-                return Err(match claimed {
-                    Err(Err(error)) => error.into(),
-                    _ => unreachable!(),
-                });
-            }
-            if let Ok(claimed) = &claimed {
-                claim.retire()?;
-                claimed.undo(runtime, &plan.name);
+            match claimed {
+                #[cfg(not(target_os = "linux"))]
+                Err(Err(error)) if runtime::apple::preparation_unremoved(&error) => {
+                    let _ = claim.finish(false).await;
+                    return Err(error.into());
+                }
+                Ok(claimed) => {
+                    claim.retire()?;
+                    claimed.undo(runtime, &plan.name);
+                }
+                _ => {}
             }
             claim.finish(true).await?;
             return Err(stopped);

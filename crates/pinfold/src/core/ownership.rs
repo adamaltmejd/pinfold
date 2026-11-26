@@ -260,10 +260,8 @@ pub struct Claim {
     _lock: Flock<File>,
     startup_gate: Option<Flock<File>>,
     record: Option<Record>,
-    listener: Option<UnixListener>,
     sockets: Option<Sockets>,
-    request: Option<UnixStream>,
-    reading: Option<Reading>,
+    control: Option<StartupControl>,
     running: bool,
 }
 
@@ -284,10 +282,8 @@ impl Claim {
             _lock: lock,
             startup_gate: Some(startup_gate),
             record: None,
-            listener: None,
             sockets: None,
-            request: None,
-            reading: None,
+            control: None,
             running: false,
         }))
     }
@@ -341,7 +337,12 @@ impl Claim {
         sockets::check_length(&endpoint)?;
         let listener =
             sockets::bind_at(&host, endpoint.file_name().expect("shutdown socket name"))?;
-        self.listener = Some(UnixListener::from_std(listener)?);
+        self.control = Some(StartupControl {
+            listener: UnixListener::from_std(listener)?,
+            request: None,
+            reading: None,
+            generation: self.generation().to_string(),
+        });
         #[cfg(target_os = "linux")]
         crate::core::runtime::firecracker::prepare_vmm(state_dir)?;
         self.publish()?;
@@ -417,31 +418,19 @@ impl Claim {
     }
 
     pub(crate) fn take_startup_control(&mut self) -> StartupControl {
-        StartupControl {
-            listener: self.listener.take().expect("prepared ownership"),
-            request: self.request.take(),
-            reading: self.reading.take(),
-            generation: self.generation().to_string(),
-        }
+        self.control.take().expect("prepared ownership")
     }
 
     pub(crate) fn restore_startup_control(&mut self, control: StartupControl) {
-        self.listener = Some(control.listener);
-        self.request = control.request;
-        self.reading = control.reading;
+        self.control = Some(control);
     }
 
-    /// Cancel safe: a request read in part continues on the next call.
     pub async fn stop_requested(&mut self) -> io::Result<()> {
-        let generation = &self.record.as_ref().expect("prepared ownership").generation;
-        let request = receive_stop(
-            self.listener.as_ref().expect("prepared ownership"),
-            generation,
-            &mut self.reading,
-        )
-        .await?;
-        self.request = Some(request);
-        Ok(())
+        self.control
+            .as_mut()
+            .expect("prepared ownership")
+            .stop_requested()
+            .await
     }
 
     pub fn starting(&mut self) {
@@ -466,11 +455,11 @@ impl Claim {
         if completed {
             self.record = None;
         }
-        self.listener.take();
+        let request = self.control.take().and_then(|control| control.request);
         if !completed && let Some(record) = self.record.as_ref() {
             crate::core::runs::write_teardown_failure(&record.generation);
         }
-        if let Some(mut request) = self.request.take() {
+        if let Some(mut request) = request {
             let answer: &[u8] = if completed { b"done\n" } else { b"failed\n" };
             let _ = tokio::time::timeout(REQUEST_TIMEOUT, request.write_all(answer)).await;
         }
@@ -487,6 +476,7 @@ pub(crate) struct StartupControl {
 }
 
 impl StartupControl {
+    /// Cancel safe: a request read in part continues on the next call.
     pub(crate) async fn stop_requested(&mut self) -> io::Result<()> {
         self.request =
             Some(receive_stop(&self.listener, &self.generation, &mut self.reading).await?);
