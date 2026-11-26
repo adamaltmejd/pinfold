@@ -249,7 +249,7 @@ impl std::fmt::Display for MissingManagedImage {
 impl std::error::Error for MissingManagedImage {}
 
 pub(crate) fn image_warnings(config: &Config, image: &str) -> io::Result<Vec<String>> {
-    outdated_images(config, image, &service().resolve_image(image)?).map(|found| found.warnings())
+    outdated_images(config, image, &service::resolve_image(image)?).map(|found| found.warnings())
 }
 
 /// The outdated images in the selected chain, root first, each with its
@@ -345,7 +345,7 @@ pub(crate) fn outdated_images(
         let info = if chain.is_empty() {
             Some(built.clone())
         } else {
-            service().resolve_image(&link.image_ref())?.ok()
+            service::resolve_image(&link.image_ref())?.ok()
         };
         chain.push((info, bytes.as_slice()));
     }

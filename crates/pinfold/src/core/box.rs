@@ -299,8 +299,7 @@ impl Box {
         let selected = image.clone();
         #[cfg(not(target_os = "linux"))]
         let identity = startup_work(signals, &mut cancel_start, early_claim.as_mut(), move || {
-            crate::core::image::service()
-                .resolve_image(&selected)?
+            crate::core::image::service::resolve_image(&selected)?
                 .map_err(|message| {
                     refused(
                         &image_plan,

@@ -1,5 +1,8 @@
 //! Box runtimes: one per OS, behind a trait.
 
+// Linux compiles Apple but never calls its image functions; macOS clippy
+// still checks the module for dead code.
+#[cfg_attr(target_os = "linux", expect(dead_code))]
 pub mod apple;
 pub(crate) mod exec_transport;
 #[cfg(target_os = "linux")]

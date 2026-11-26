@@ -20,7 +20,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, Command};
 
 use crate::core::disk::{self, Directory, Fill, Seeding};
-use crate::core::image::{BuildRequest, ImageInfo, ImageService};
+use crate::core::image::{BuildRequest, ImageInfo};
 use crate::core::plan::{MountKind, Plan, Values};
 use crate::core::runtime::{
     BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, captured, output,
@@ -1567,79 +1567,73 @@ fn builder_busy() -> io::Result<bool> {
     Ok(false)
 }
 
-impl ImageService for Apple {
-    fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
-        let json = output(&["container", "image", "list", "--format", "json"])?;
-        let images: Vec<ListedImage> = parse_json("container image list", &json)?;
-        images.into_iter().map(image_info).collect()
-    }
+pub fn list_images() -> io::Result<Vec<ImageInfo>> {
+    let json = output(&["container", "image", "list", "--format", "json"])?;
+    let images: Vec<ListedImage> = parse_json("container image list", &json)?;
+    images.into_iter().map(image_info).collect()
+}
 
-    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>> {
-        // `image inspect` prints the same entries as `image list`.
-        match inspect_image(reference)? {
-            Ok(image) => image_info(image).map(Ok),
-            Err(stderr) => Ok(Err(stderr)),
-        }
+pub fn resolve_image(reference: &str) -> io::Result<Result<ImageInfo, String>> {
+    // `image inspect` prints the same entries as `image list`.
+    match inspect_image(reference)? {
+        Ok(image) => image_info(image).map(Ok),
+        Err(stderr) => Ok(Err(stderr)),
     }
+}
 
-    fn remove_image(&self, reference: &str) -> io::Result<()> {
-        // `image delete` also collects the layers no image references.
-        output(&["container", "image", "delete", reference]).map(|_| ())
-    }
+pub fn remove_image(reference: &str) -> io::Result<()> {
+    // `image delete` also collects the layers no image references.
+    output(&["container", "image", "delete", reference]).map(|_| ())
+}
 
-    fn purge_build_cache(&self) -> io::Result<()> {
-        let Some(builder) = container("buildkit")? else {
-            return Ok(());
-        };
-        if builder.status.state != "running" {
-            // `builder start` may replace an existing instance when its
-            // defaults changed; start this instance without replacing it.
-            output(&["container", "start", "buildkit"])?;
-        }
-        prune_builder(&[])?;
-        trim_builder()?;
-        stop_idle_builder()
+pub fn purge_build_cache() -> io::Result<()> {
+    let Some(builder) = container("buildkit")? else {
+        return Ok(());
+    };
+    if builder.status.state != "running" {
+        // `builder start` may replace an existing instance when its
+        // defaults changed; start this instance without replacing it.
+        output(&["container", "start", "buildkit"])?;
     }
+    prune_builder(&[])?;
+    trim_builder()?;
+    stop_idle_builder()
+}
 
-    fn build_cache_bytes(&self) -> io::Result<u64> {
-        let Some(builder) = container("buildkit")? else {
-            return Ok(0);
-        };
-        // The exports mount records the runtime's actual app root, including
-        // a custom root. Count allocated blocks: rootfs.ext4 is sparse and
-        // BuildKit's logical cache size misses retained filesystem space (#74).
-        let exports = builder
-            .configuration
-            .mounts
-            .iter()
-            .find(|mount| mount.destination == "/var/lib/container-builder-shim/exports")
-            .map(|mount| Path::new(&mount.source))
-            .ok_or_else(|| io::Error::other("builder exports mount is missing"))?;
-        let root = exports
-            .parent()
-            .ok_or_else(|| io::Error::other("builder exports mount has no parent"))?;
-        allocated_bytes(&root.join("containers/buildkit"))
-    }
+pub fn build_cache_bytes() -> io::Result<u64> {
+    let Some(builder) = container("buildkit")? else {
+        return Ok(0);
+    };
+    // The exports mount records the runtime's actual app root, including
+    // a custom root. Count allocated blocks: rootfs.ext4 is sparse and
+    // BuildKit's logical cache size misses retained filesystem space (#74).
+    let exports = builder
+        .configuration
+        .mounts
+        .iter()
+        .find(|mount| mount.destination == "/var/lib/container-builder-shim/exports")
+        .map(|mount| Path::new(&mount.source))
+        .ok_or_else(|| io::Error::other("builder exports mount is missing"))?;
+    let root = exports
+        .parent()
+        .ok_or_else(|| io::Error::other("builder exports mount has no parent"))?;
+    allocated_bytes(&root.join("containers/buildkit"))
+}
 
-    fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
-        // Through the post-build prune and trim, which also need the builder.
-        let _building = Flock::lock(ownership::open_lock(BUILDER_LOCK)?, FlockArg::LockShared)
-            .map_err(|(_, error)| io::Error::from(error))?;
-        refresh_base(&std::fs::read(request.containerfile)?)?;
-        let result = run_build(request)?;
-        // Neither step fails the build.
-        if prune_builder(&["--keep-storage", BUILDER_KEEP_MB]).is_err() {
-            eprintln!("pinfold: could not prune the builder cache");
-        }
-        if trim_builder().is_err() {
-            eprintln!("pinfold: could not reclaim unused builder blocks");
-        }
-        Ok(result)
+pub fn build(request: &BuildRequest) -> io::Result<Result<(), String>> {
+    // Through the post-build prune and trim, which also need the builder.
+    let _building = Flock::lock(ownership::open_lock(BUILDER_LOCK)?, FlockArg::LockShared)
+        .map_err(|(_, error)| io::Error::from(error))?;
+    refresh_base(&std::fs::read(request.containerfile)?)?;
+    let result = run_build(request)?;
+    // Neither step fails the build.
+    if prune_builder(&["--keep-storage", BUILDER_KEEP_MB]).is_err() {
+        eprintln!("pinfold: could not prune the builder cache");
     }
-
-    fn program(&self) -> &'static str {
-        "container"
+    if trim_builder().is_err() {
+        eprintln!("pinfold: could not reclaim unused builder blocks");
     }
+    Ok(result)
 }
 
 /// Refresh Apple's external base on the requested platform before building.
@@ -1678,7 +1672,7 @@ fn refresh_base(containerfile: &[u8]) -> io::Result<()> {
             // pinfold build records [`clean::BASE_LABEL`], empty when its
             // own base did not resolve, so its presence marks the image; a
             // caller image's family labels are all empty.
-            if let Ok(image) = Apple.resolve_image(base)?
+            if let Ok(image) = resolve_image(base)?
                 && image.labels.contains_key(clean::BASE_LABEL)
             {
                 return Ok(());
