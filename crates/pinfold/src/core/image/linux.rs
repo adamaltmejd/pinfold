@@ -8,14 +8,12 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-use super::{BuildRequest, ImageInfo, ImageService};
+use super::{BuildRequest, ImageInfo};
 use crate::core::{artifacts, ownership, sha256_hex};
 use crate::dirs;
 
 pub(crate) use crate::image_limits::{OCI_BYTES, ROOT_BYTES};
 pub(crate) const LOCAL_BASE_BYTES: u64 = 1 << 30;
-
-pub struct Linux;
 
 pub fn cache_name() -> io::Result<String> {
     let root = dirs::resolve_host_path(&dirs::cache_dir()?)?;
@@ -31,42 +29,37 @@ pub fn cache_dir() -> io::Result<std::path::PathBuf> {
         .join(artifacts::builder_identity()))
 }
 
-impl ImageService for Linux {
-    fn list_images(&self) -> io::Result<Vec<ImageInfo>> {
-        catalog::list()
+pub fn list_images() -> io::Result<Vec<ImageInfo>> {
+    catalog::list()
+}
+pub fn resolve_image(reference: &str) -> io::Result<Result<ImageInfo, String>> {
+    catalog::resolve(reference)
+}
+pub fn remove_image(reference: &str) -> io::Result<()> {
+    catalog::remove(reference)
+}
+pub fn purge_build_cache() -> io::Result<()> {
+    // Immutable output uses the catalog lock and image leases. A live
+    // builder prevents only removal of its separate writable cache.
+    catalog::collect_unreferenced()?;
+    let name = cache_name()?;
+    let Some(idle) = ownership::try_name_lock(&name)? else {
+        return Ok(());
+    };
+    let retired = ownership::retire_orphan(&name, &idle)?;
+    let cache = cache_dir()?;
+    job::writable_snapshot(&cache.join("job"))?;
+    crate::core::absent_ok(fs::remove_dir_all(cache))?;
+    if let Some(record) = retired {
+        ownership::remove_record(&name, &record.generation)?;
     }
-    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>> {
-        catalog::resolve(reference)
-    }
-    fn remove_image(&self, reference: &str) -> io::Result<()> {
-        catalog::remove(reference)
-    }
-    fn purge_build_cache(&self) -> io::Result<()> {
-        // Immutable output uses the catalog lock and image leases. A live
-        // builder prevents only removal of its separate writable cache.
-        catalog::collect_unreferenced()?;
-        let name = cache_name()?;
-        let Some(idle) = ownership::try_name_lock(&name)? else {
-            return Ok(());
-        };
-        let retired = ownership::retire_orphan(&name, &idle)?;
-        let cache = cache_dir()?;
-        job::writable_snapshot(&cache.join("job"))?;
-        crate::core::absent_ok(fs::remove_dir_all(cache))?;
-        if let Some(record) = retired {
-            ownership::remove_record(&name, &record.generation)?;
-        }
-        Ok(())
-    }
-    fn build_cache_bytes(&self) -> io::Result<u64> {
-        allocated_bytes(&cache_dir()?)
-    }
-    fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>> {
-        job::build(request)
-    }
-    fn program(&self) -> &'static str {
-        "BuildKit"
-    }
+    Ok(())
+}
+pub fn build_cache_bytes() -> io::Result<u64> {
+    allocated_bytes(&cache_dir()?)
+}
+pub fn build(request: &BuildRequest) -> io::Result<Result<(), String>> {
+    job::build(request)
 }
 
 fn allocated_bytes(path: &Path) -> io::Result<u64> {

@@ -1,18 +1,32 @@
-//! Image operations, selected independently of box execution.
+//! Image operations, selected independently of box execution. Each target
+//! provides the same native functions:
+//!
+//! - `list_images`: every image, with the labels recorded on it.
+//! - `resolve_image`: resolve a local image reference or content identity.
+//!   Never pulls. The inner `Err` describes an unavailable image.
+//! - `remove_image`: remove one image by reference, and any layers no image
+//!   references.
+//! - `purge_build_cache`: remove unused build cache without interrupting
+//!   builds: Apple's unused BuildKit records or Linux's exclusively claimed
+//!   idle builder cache. Apple then stops the builder when no build is
+//!   running.
+//! - `build_cache_bytes`: allocated build-cache storage, including its
+//!   backing filesystem.
+//! - `build`: build an image from [`BuildRequest`]. The inner `Err` is the
+//!   build's output, stdout and stderr in order, when the build ran and
+//!   failed.
 
 use std::collections::BTreeMap;
-use std::io;
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
+pub use super::linux::{
+    build, build_cache_bytes, list_images, purge_build_cache, remove_image, resolve_image,
+};
 #[cfg(not(target_os = "linux"))]
-use crate::core::runtime::apple;
-/// The image service for this OS.
-pub fn service() -> &'static dyn ImageService {
-    #[cfg(target_os = "linux")]
-    return &super::linux::Linux;
-    #[cfg(not(target_os = "linux"))]
-    return &apple::Apple;
-}
+pub use crate::core::runtime::apple::{
+    build, build_cache_bytes, list_images, purge_build_cache, remove_image, resolve_image,
+};
 
 /// One image the runtime knows about.
 #[derive(Debug, Clone)]
@@ -45,32 +59,4 @@ pub struct BuildRequest<'a> {
     pub allow: &'a [String],
     /// One managed-build argument; absent for caller builds.
     pub build_arg: Option<(&'a str, &'a str)>,
-}
-
-/// Native image build, resolution, inventory and cache operations.
-pub trait ImageService: Sync {
-    /// List every image, with the labels recorded on it.
-    fn list_images(&self) -> io::Result<Vec<ImageInfo>>;
-
-    /// Resolve a local image reference or content identity. Never pulls.
-    /// The inner `Err` describes an unavailable image.
-    fn resolve_image(&self, reference: &str) -> io::Result<Result<ImageInfo, String>>;
-
-    /// Remove one image by reference, and any layers no image references.
-    fn remove_image(&self, reference: &str) -> io::Result<()>;
-
-    /// Remove unused build cache without interrupting builds: Apple's unused
-    /// BuildKit records or Linux's exclusively claimed idle builder cache.
-    /// Apple then stops the builder when no build is running.
-    fn purge_build_cache(&self) -> io::Result<()>;
-
-    /// Allocated build-cache storage, including its backing filesystem.
-    fn build_cache_bytes(&self) -> io::Result<u64>;
-
-    /// Build an image from [`BuildRequest`]. The inner `Err` is the build's
-    /// output, stdout and stderr in order, when the build ran and failed.
-    fn build(&self, request: &BuildRequest) -> io::Result<Result<(), String>>;
-
-    /// The build implementation's name for diagnostics.
-    fn program(&self) -> &'static str;
 }

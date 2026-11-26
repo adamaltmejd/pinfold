@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix::fcntl::Flock;
 
-use crate::core::image::{ImageInfo, ImageService, service};
+use crate::core::image::{ImageInfo, service};
 use crate::core::runtime::sockets::Sockets;
 use crate::core::runtime::{BoxInfo, Runtime, runtime};
 use crate::core::{artifacts, ownership, runs};
@@ -63,7 +63,7 @@ fn maintain_due() -> io::Result<()> {
             prune_boxes(runtime, &boxes);
         }),
     );
-    report("images", keep_two_images(service(), None));
+    report("images", keep_two_images(None));
     report("sockets", prune_leftover_states(runtime));
     report(
         "artifacts",
@@ -357,11 +357,8 @@ pub fn path_bytes(path: &Path) -> u64 {
 /// source. Call it after dead boxes are pruned: its box listing is
 /// retention's one in-use rule. A failing source is reported and the rest
 /// continue.
-pub fn keep_two_images(
-    service: &dyn ImageService,
-    only: Option<(Option<&str>, &str)>,
-) -> io::Result<()> {
-    let images = service.list_images()?;
+pub fn keep_two_images(only: Option<(Option<&str>, &str)>) -> io::Result<()> {
+    let images = service::list_images()?;
     let in_use = in_use_images(runtime())?;
     let mut references = reference_counts(&images);
     let mut sources: BTreeSet<(Option<&'static str>, String)> = BTreeSet::new();
@@ -379,8 +376,7 @@ pub fn keep_two_images(
         if only.is_some_and(|only| only != (label, source.as_str())) {
             continue;
         }
-        if let Err(error) =
-            keep_two_images_from(service, &images, &in_use, &mut references, label, &source)
+        if let Err(error) = keep_two_images_from(&images, &in_use, &mut references, label, &source)
         {
             eprintln!("pinfold: maintenance: images: {source}: {error}");
         }
@@ -457,7 +453,6 @@ fn reference_counts(images: &[ImageInfo]) -> BTreeMap<String, usize> {
 /// the image; the image's last tag stays, and is reported like a failed
 /// removal.
 fn keep_two_images_from(
-    service: &dyn ImageService,
     images: &[ImageInfo],
     in_use: &BTreeSet<String>,
     references: &mut BTreeMap<String, usize>,
@@ -482,7 +477,7 @@ fn keep_two_images_from(
             failures.push(format!("{reference}: in use"));
             continue;
         }
-        if let Err(error) = service.remove_image(&reference) {
+        if let Err(error) = service::remove_image(&reference) {
             // Every removal carries its reference in the runtime's error;
             // join them into the one line the caller prints.
             failures.push(error.to_string());
@@ -508,8 +503,8 @@ pub struct Removed {
 /// Retire a caller image name: remove its tags, except an image's last tag
 /// while a listed box uses it. Return the ids untagged and whose last tag
 /// stayed. Another name's tags on a shared image stay.
-pub fn remove_images(service: &dyn ImageService, source: &str) -> io::Result<Removed> {
-    let listing = service.list_images()?;
+pub fn remove_images(source: &str) -> io::Result<Removed> {
+    let listing = service::list_images()?;
     let in_use = in_use_images(runtime())?;
     // Every reference the store lists, so an image's last tag counts
     // another name's and another source's, not only this source's. Two
@@ -523,7 +518,7 @@ pub fn remove_images(service: &dyn ImageService, source: &str) -> io::Result<Rem
             kept.insert(image.id.clone());
             continue;
         }
-        service.remove_image(&image.reference)?;
+        service::remove_image(&image.reference)?;
         *count -= 1;
         untagged.insert(image.id.clone());
     }

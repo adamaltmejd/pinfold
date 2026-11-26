@@ -157,7 +157,7 @@ fn project_intro(unconfigured: &mut bool) -> io::Result<Option<Option<PathBuf>>>
     println!("Files     {}", project_files(config.mount, root));
     let reference = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(root));
     // Only a definite absence earns a line; an unknown answer stays quiet.
-    if image_built(&image::service().resolve_image(&reference)).0 == Some(false) {
+    if image_built(&image::service::resolve_image(&reference)).0 == Some(false) {
         match (&config.image, configured) {
             (Some(image), _) => println!(
                 "Image     {} is not available locally. Make it available before running.",
@@ -975,7 +975,7 @@ impl CleanPlan {
 
         Ok(CleanPlan {
             boxes,
-            build_cache_bytes: image::service().build_cache_bytes()?,
+            build_cache_bytes: image::service::build_cache_bytes()?,
             automatic_bytes: automatic
                 .iter()
                 .chain(&box_paths)
@@ -1049,7 +1049,7 @@ impl CleanPlan {
     fn remove(self, runtime: &dyn Runtime) -> io::Result<usize> {
         clean::prune_boxes(runtime, &self.boxes);
         clean::prune_leftover_states(runtime)?;
-        if let Err(error) = image::service().purge_build_cache() {
+        if let Err(error) = image::service::purge_build_cache() {
             let _ = writeln!(io::stderr(), "pinfold clean: build cache: {error}; kept");
         }
         clean::remove_paths(self.automatic)?;
@@ -1089,7 +1089,7 @@ impl CleanPlan {
             }
         }
         drop(locks);
-        if let Err(error) = clean::keep_two_images(image::service(), None) {
+        if let Err(error) = clean::keep_two_images(None) {
             let _ = writeln!(io::stderr(), "pinfold clean: images: {error}; kept");
         }
         disk_failure.map_or(Ok(removed), Err)
@@ -1221,7 +1221,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
             let reference =
                 crate::pi::launch::resolve_image(config, &crate::pi::state::project_id(root));
             let resolved = (ready || cfg!(target_os = "linux"))
-                .then(|| image::service().resolve_image(&reference));
+                .then(|| image::service::resolve_image(&reference));
             let found = match &resolved {
                 Some(Ok(found)) => crate::pi::launch::outdated_images(config, &reference, found),
                 Some(Err(error)) => Err(io::Error::other(error.to_string())),
@@ -1513,7 +1513,7 @@ pub fn config(args: &[String]) -> io::Result<i32> {
         None => project_config(&std::env::current_dir()?)?,
     };
     let reference = crate::pi::launch::resolve_image(&config, &crate::pi::state::project_id(&root));
-    let resolved = image::service().resolve_image(&reference);
+    let resolved = image::service::resolve_image(&reference);
     let report = config_report(&root, &config, &reference, Some(&resolved))?;
     if json {
         println!("{report}");
@@ -1781,25 +1781,21 @@ pub fn build(args: &[String]) -> io::Result<i32> {
             "image-no-recipe: profile has no Containerfile; there is nothing to build",
         ));
     }
-    let images = image::service();
     let build = |label, source: &str, bytes: &[u8], base: Option<String>| {
-        image::build(
-            images,
-            Build {
-                label: Some(label),
-                source,
-                context: Context::Alone(bytes),
-                cache,
-                labels: base
-                    .map(|digest| (clean::BASE_LABEL.to_string(), digest))
-                    .into_iter()
-                    .collect(),
-                allow: allow.clone(),
-            },
-        )?
+        image::build(Build {
+            label: Some(label),
+            source,
+            context: Context::Alone(bytes),
+            cache,
+            labels: base
+                .map(|digest| (clean::BASE_LABEL.to_string(), digest))
+                .into_iter()
+                .collect(),
+            allow: allow.clone(),
+        })?
         .map_err(|output| {
             eprint!("{output}");
-            io::Error::other(format!("the {} build failed", images.program()))
+            io::Error::other("the image build failed")
         })
     };
     // Root first: each image records the identity of the one just built
@@ -1951,7 +1947,7 @@ fn image_rm(args: &[String], json: bool) -> io::Result<i32> {
     if let Err(error) = profile::check_name("image", name) {
         return Ok(refused(Some(name), error.to_string()));
     }
-    let removed = clean::remove_images(image::service(), name)?;
+    let removed = clean::remove_images(name)?;
     if !json {
         if removed.ids.is_empty() && removed.in_use.is_empty() {
             println!("No local image named {name}.");

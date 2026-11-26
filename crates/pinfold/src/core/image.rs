@@ -16,7 +16,7 @@ pub(crate) mod linux;
 pub(crate) mod service;
 
 use crate::dirs;
-pub use service::{BuildRequest, ImageInfo, ImageService, service};
+pub use service::{BuildRequest, ImageInfo};
 
 /// The Containerfile bytes a managed image was built from.
 pub const CONTAINERFILE_LABEL: &str = "dev.pinfold.containerfile-sha256";
@@ -67,7 +67,7 @@ pub struct Built {
 /// Build one source's image, tag it uniquely and move the stable ref to it,
 /// then run retention for the source's images. The inner `Err` is the
 /// build's output when the build ran and failed.
-pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built, String>> {
+pub fn build(build: Build) -> io::Result<Result<Built, String>> {
     // A new build's id, the `<build>` of its unique tag. It starts with the
     // build's nanoseconds since the epoch in hex, which retention orders
     // builds by. It is never a label, so a cached build of unchanged inputs
@@ -115,7 +115,7 @@ pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built
     let build_arg = matches!(&build.context, Context::Alone(_))
         .then_some(("PINFOLD_AGENT_RESOLVE", id.as_str()));
     let request = |context: &Path, containerfile: &Path| {
-        images.build(&BuildRequest {
+        service::build(&BuildRequest {
             context,
             containerfile,
             tags: &tags,
@@ -142,12 +142,11 @@ pub fn build(images: &dyn ImageService, build: Build) -> io::Result<Result<Built
     }
     // The second image is for rollback. A failure here is reported but never
     // fails the build that succeeded.
-    if let Err(error) = clean::keep_two_images(images, Some((build.label, build.source))) {
+    if let Err(error) = clean::keep_two_images(Some((build.label, build.source))) {
         eprintln!("pinfold: maintenance: {error}");
     }
     // A runtime that cannot answer does not fail a build that succeeded.
-    let id = images
-        .resolve_image(&reference)
+    let id = service::resolve_image(&reference)
         .ok()
         .and_then(Result::ok)
         .map(|image| image.id);
@@ -210,20 +209,17 @@ pub fn build_image(request: ImageRequest) -> Result<Built, ImageError> {
         }
     };
     eprintln!("pinfold: building image {}", request.name);
-    build(
-        service(),
-        Build {
-            label: None,
-            source: &request.name,
-            context: Context::Dir {
-                dir: &request.context,
-                containerfile: &request.containerfile,
-            },
-            cache: request.cache,
-            labels: request.labels,
-            allow: request.allow,
+    build(Build {
+        label: None,
+        source: &request.name,
+        context: Context::Dir {
+            dir: &request.context,
+            containerfile: &request.containerfile,
         },
-    )
+        cache: request.cache,
+        labels: request.labels,
+        allow: request.allow,
+    })
     .map_err(failed)?
     .map_err(ImageError::Failed)
 }

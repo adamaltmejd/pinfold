@@ -405,7 +405,7 @@ impl Snapshot {
         }
         let memory_mib = memory_mib(&config.memory)
             .ok_or_else(|| io::Error::other("spec-invalid: invalid memory"))?;
-        let identity = service().resolve_image(&image)?.ok().map(|image| image.id);
+        let identity = service::resolve_image(&image)?.ok().map(|image| image.id);
         let mut mounts = plan
             .mounts
             .iter()
