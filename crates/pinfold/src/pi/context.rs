@@ -166,12 +166,9 @@ impl Context {
         let git = self.root.join(".git");
         // A plain .git directory can redirect its common storage too. Never
         // let Git interpret it; open every target beneath the admitted root.
+        // A cycle repeats until the bound refuses it.
         let mut relative = PathBuf::from(".git");
-        let mut seen = std::collections::BTreeSet::new();
         for _ in 0..16 {
-            if !seen.insert(relative.clone()) {
-                return Err(worktree_error());
-            }
             open_directory(&self.root, &relative)?;
             let Some(common) = read_optional_pointer(&self.root, &relative.join("commondir"))?
             else {
