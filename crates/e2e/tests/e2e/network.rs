@@ -222,7 +222,8 @@ fn only_allowlisted_hosts_get_through() {
         },
     }));
     let connect = |args: &[&str]| {
-        let mut argv = vec!["-o", "/dev/null", "-w", "%{http_connect}"];
+        // The box's NO_PROXY exempts localhost; a client may still send it.
+        let mut argv = vec!["--noproxy", "", "-o", "/dev/null", "-w", "%{http_connect}"];
         argv.extend_from_slice(args);
         curl(&env, &name, &argv)
     };

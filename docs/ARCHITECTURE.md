@@ -272,7 +272,8 @@ sysctl rather than the failing call.
    uses a fixed cwd, no environment lookup and no share traversal, and
    validates the socket without following a symlink.
 7. `exec` work runs with `HTTPS_PROXY` and `http_proxy` set to
-   `http://127.0.0.1:3128`.
+   `http://127.0.0.1:3128`, and `NO_PROXY` and `no_proxy` set to
+   `localhost,127.0.0.1,::1`, so the box's own servers bypass the proxy.
 8. Sync and unmount the disks (Linux: init, after ending box work with
    the work cgroup's `cgroup.kill`, trims each writable disk first;
    Apple: the runtime's stop),
@@ -975,7 +976,9 @@ network listener, no token: the socket identifies the box.
   (IPv4-mapped, IPv4-compatible, NAT64 `64:ff9b::/96`, 6to4) is checked as
   that IPv4 address. Resolve once; dial the checked address.
 - **Routes:** names are unique ignoring ASCII case; a collision refuses
-  `up` as `spec` before creation. A name maps to one host service, e.g.
+  `up` as `spec` before creation. A name or routed host that the box's
+  `NO_PROXY` covers (`localhost` and its subdomains, `127.0.0.1`, `::1`) is
+  refused as `spec`. A name maps to one host service, e.g.
   `api.internal → 127.0.0.1:7777`. Plain HTTP only, Host header rewritten,
   `Upgrade` dropped (no WebSocket). CONNECT to a route is refused. The host
   service authenticates its callers. An injecting route with an `http`
@@ -1919,7 +1922,7 @@ its project.
   succeeds) and the Rex app's Remote Control preference (`defaults read
   com.superlogical.rex rex.client.remoteControl`) reads `0`, both before and
   after the owner starts `rex server run` in the box on a fixed guest socket.
-  The owner then binds `<host directory>/<project key>.rex`, a host-only 0600
+  The owner then binds `<host directory>/<project id>.rex`, a host-only 0600
   socket outside the generation directory, and carries each connection to the
   guest server through its own exec of `pinfold init rex-dial`. `start` waits up
   to 30 seconds for the answer and prints on stderr two lines: one asking to add

@@ -31,14 +31,17 @@ const HELPER_DEADLINE: Duration = Duration::from_secs(5);
 pub(crate) const REPLY_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The owner's answer to a start that asked for the relay.
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Status {
     /// No runnable `rex` in the box.
     Absent,
     RemoteControl,
     Failed,
-    Relayed,
+    /// The socket the owner bound, so a start prints that one.
+    Relayed {
+        socket: PathBuf,
+    },
 }
 
 /// A start asks for the relay only in a Rex pane, with terminals.
@@ -50,32 +53,26 @@ pub(crate) fn wanted() -> bool {
         && io::stderr().is_terminal()
 }
 
-fn leaf(key: &str) -> String {
-    format!("{key}.rex")
+/// The socket is named for the project id, so Rex names the host after it.
+fn leaf(id: &str) -> String {
+    format!("{id}.rex")
 }
 
 /// Remove this project's socket. Only a caller that has established that
 /// no owner is live, and none can start, may call this.
-pub(crate) fn remove_left(key: &str) {
+pub(crate) fn remove_left(id: &str) {
     if cfg!(target_os = "macos") {
-        let _ = HostSocket::remove_left(&leaf(key));
+        let _ = HostSocket::remove_left(&leaf(id));
     }
 }
 
 /// Print a start's outcome on stderr. An absent `rex` prints nothing.
-pub(crate) async fn report(
-    status: Option<Status>,
-    key: &str,
-    signals: &mut Signals,
-) -> io::Result<()> {
+pub(crate) async fn report(status: Option<Status>, signals: &mut Signals) -> io::Result<()> {
     let lines = match status {
         // The address alone on its line, so it selects and copies cleanly.
-        Some(Status::Relayed) => vec![
+        Some(Status::Relayed { socket }) => vec![
             "pinfold start: rex: add this address in the Rex app under Add Remote Host…".into(),
-            format!(
-                "unix://{}",
-                ownership::host_dir()?.join(leaf(key)).display()
-            ),
+            format!("unix://{}", socket.display()),
         ],
         Some(Status::RemoteControl) => vec![
             "pinfold start: rex-remote-control: Remote Control is on or unreadable in the Rex app; no Rex host was set up.".into(),
@@ -123,13 +120,13 @@ impl Drop for Relay {
 impl Rex {
     /// Called by a new owner while it holds the launch lock, so a socket a
     /// dead owner left is removed here.
-    pub(crate) fn new(name: &str, init: PathBuf, key: &str) -> Self {
-        remove_left(key);
+    pub(crate) fn new(name: &str, init: PathBuf, id: &str) -> Self {
+        remove_left(id);
         Self {
             state: Arc::new(Mutex::new(State {
                 name: name.to_owned(),
                 init,
-                leaf: leaf(key),
+                leaf: leaf(id),
                 relay: None,
             })),
             closing: Arc::new(watch::channel(false).0),
@@ -194,7 +191,7 @@ impl State {
             return Status::RemoteControl;
         }
         if self.relay.is_some() {
-            return Status::Relayed;
+            return self.relayed();
         }
         self.open().await
     }
@@ -241,7 +238,16 @@ impl State {
             stop,
             accept,
         });
-        Status::Relayed
+        self.relayed()
+    }
+
+    fn relayed(&self) -> Status {
+        match ownership::host_dir() {
+            Ok(dir) => Status::Relayed {
+                socket: dir.join(&self.leaf),
+            },
+            Err(_) => Status::Failed,
+        }
     }
 
     /// Wait for the started server, then bind the host socket.
