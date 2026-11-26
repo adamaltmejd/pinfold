@@ -351,11 +351,13 @@ fn check(root: &Path, remote: &str, address: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// The repository's object format, as `git rev-parse` names it.
 /// A `list` reply: `refs` with each annotated tag's `peeled` commit.
 fn listing(refs: &Refs, peeled: &Refs) -> io::Result<String> {
     // Git reads a listing's object ids as SHA-1 unless told.
-    let mut listing = format!(":object-format {}\n", object_format()?);
+    let mut listing = format!(
+        ":object-format {}\n",
+        rev_parse("--show-object-format", "the object format")?
+    );
     for (name, oid) in refs {
         listing.push_str(&format!("{oid} {name}\n"));
         // Git follows an annotated tag only by its commit.
@@ -365,10 +367,6 @@ fn listing(refs: &Refs, peeled: &Refs) -> io::Result<String> {
     }
     listing.push('\n');
     Ok(listing)
-}
-
-fn object_format() -> io::Result<String> {
-    rev_parse("--show-object-format", "the object format")
 }
 
 /// `git rev-parse ARG`'s one line; WHAT names it in a refusal.
