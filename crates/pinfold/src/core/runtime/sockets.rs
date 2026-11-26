@@ -197,7 +197,7 @@ impl Sockets {
             generation: generation.to_owned(),
         };
         if let Err(error) = renamed {
-            let _ = sockets.remove_directory();
+            let _ = remove_directory(&sockets.host, OsStr::new(&staging), generation);
             return Err(error);
         }
         sockets.path = base.join(leaf);
@@ -317,32 +317,18 @@ impl Sockets {
         let leaf = generation_name(generation)?;
         let (_, host) = host()?;
         let retiring = format!(".d-{generation}");
-        let mut result = remove_directory(&host, OsStr::new(&retiring), generation, true);
+        let mut result = remove_directory(&host, OsStr::new(&retiring), generation);
         let published = (|| {
             let Some(directory) = recoverable(&host, OsStr::new(&leaf), generation, false)? else {
                 return Ok(());
             };
             check_identity(&host, OsStr::new(&leaf), &directory)?;
             rename_at(&host, OsStr::new(&leaf), OsStr::new(&retiring))?;
-            remove_directory(&host, OsStr::new(&retiring), generation, true)
+            remove_directory(&host, OsStr::new(&retiring), generation)
         })();
         result = result.and(published);
-        let staged = remove_directory(
-            &host,
-            OsStr::new(&format!(".r-{generation}")),
-            generation,
-            true,
-        );
+        let staged = remove_directory(&host, OsStr::new(&format!(".r-{generation}")), generation);
         result.and(staged)
-    }
-
-    fn remove_directory(&self) -> io::Result<()> {
-        remove_directory(
-            &self.host,
-            self.path.file_name().unwrap(),
-            &self.generation,
-            true,
-        )
     }
 
     pub fn leftovers(protected: &BTreeSet<String>) -> io::Result<Vec<(String, PathBuf)>> {
@@ -543,13 +529,8 @@ fn recovery_vsock(directory: &File) -> io::Result<Option<File>> {
     }
 }
 
-fn remove_directory(
-    host: &File,
-    leaf: &OsStr,
-    generation: &str,
-    full_name: bool,
-) -> io::Result<()> {
-    let Some(directory) = recoverable(host, leaf, generation, full_name)? else {
+fn remove_directory(host: &File, leaf: &OsStr, generation: &str) -> io::Result<()> {
+    let Some(directory) = recoverable(host, leaf, generation, true)? else {
         return Ok(());
     };
     if let Some(vsock) = recovery_vsock(&directory)? {
