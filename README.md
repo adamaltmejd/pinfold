@@ -10,9 +10,9 @@ Network egress goes through an allowlisting proxy.
 - **From another agent:** `pinfold -- pi -p` (see below).
 - Spec: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-A share is writable throughout, `.git` included. The box can delete or
-corrupt shared files and Git history, and host tools can run box-written
-content, Git hooks and configuration included. See
+With a share, the box can delete or corrupt shared files and Git history,
+and host tools can run box-written content, Git hooks and configuration
+included. See
 [Mounts](docs/ARCHITECTURE.md#mounts) and the
 [threat model](docs/ARCHITECTURE.md#threat-model). A linked worktree under
 a shared main root uses that root's configuration; external worktrees and
@@ -131,10 +131,12 @@ configuration path.
 Box work runs as your host uid; the built-in images name uids 501 and
 1000 `pinfold`. The project home, `/home/pinfold`, is a disk that persists.
 A disk project also retains its project disk. Both are created at 64G
-unless `home_disk_size` or `project_disk_size` sets another size before
-the first start; a disk never grows. `pinfold disk list` shows
-sizes and originating folders. `disk rm --all` removes unattached disks in
-the current state root.
+unless `home_disk_size = "128G"` or `project_disk_size = "…"` is set in
+the project's configuration before the first start (a whole number and `G`,
+at least 1G; a share has no project disk); a disk never grows. On Linux,
+free space inside a disk is returned to the host when pinfold stops the box.
+`pinfold disk list` shows sizes and originating folders. `disk rm --all`
+removes unattached disks in the current state root.
 
 **Where an agent's login lives.**
 
@@ -173,9 +175,7 @@ from = "op://Private/Claude setup token/credential"
 The 1Password CLI (`op`) must be installed and signed in. Only the launch
 that starts the box asks 1Password; a session joining it does not.
 
-Login routes generate native configuration for the whole box. Claude and Codex
-use system configuration; Pi autoloads a read-only extension under its writable
-home. Agents reach their real hosts; the proxy terminates TLS there and
+Agents reach their real hosts; the proxy terminates TLS there and
 adds the host credential, so a key the box sends to that host is
 replaced. A box with a login route or an `https` injecting route starts
 only if its image has a regular file at
@@ -222,11 +222,9 @@ launch if its identity changed.
 
 Every built-in image includes standalone Pi, native Claude and Codex with
 its code-mode host on PATH. Built-in profiles seed `.pi/agent/APPEND_SYSTEM.md`,
-`.claude/CLAUDE.md` and `.codex/AGENTS.md` for both mount kinds only when missing,
-including Linux and explicit macOS disk homes. Existing instruction files,
-including earlier seeds, stay untouched and can therefore miss updated guidance.
-Instructions do not enforce containment. Home settings are also missing-only;
-rebuilding preserves edited settings.
+`.claude/CLAUDE.md` and `.codex/AGENTS.md` into a home only when missing, so
+edited files and older seeds stay. Home settings follow the same rule.
+Instructions do not enforce containment.
 
 Linux build egress has its own allowlist. Add exact hosts with
 `pinfold build --allow HOST`. Apple builds reject `--allow` additions.
@@ -401,9 +399,8 @@ For a share, removing the home resets only home contents; it never clears
 host shared files. For a disk project, remove both disks for a fresh home
 and project. Removing only the home preserves the guest repository; removing
 only the project preserves sessions, settings and other home files.
-Everything on a deleted disk is lost, including uncommitted work and
-home-only files. Fetch brings back commits, not uncommitted or home-only
-files, and later fetches can move `box/*` refs.
+Everything on a deleted disk is lost, including uncommitted work; `git fetch
+box` brings back commits only.
 
 `pinfold clean [--dry-run] [--idle AGE [--all-projects]]` reclaims disk
 space: it runs the automatic maintenance now and removes the unused build
@@ -412,8 +409,9 @@ same flags would remove, without cleaning. `--idle AGE` also removes the
 state and disks of the current folder's project if it has not run for that
 long and has no live box; `--all-projects` widens that to every such
 project, named by its folder. AGE is a whole number and a unit, `s`, `m`,
-`h` or `d`, such as `30d`. That is never automatic, because a project disk
-holds unfetched work and a home disk sessions and logins.
+`h` or `d`, such as `30d`. That is never automatic. A project whose checkout
+was moved or deleted keeps its state and disks; they go only with
+`--idle AGE --all-projects` or `disk rm`.
 
 ## Configuration
 
@@ -482,16 +480,15 @@ from = "op://…"   # or a host variable's name
 
 The box's `git`, `gh` and `curl` then reach `github.com`,
 `api.github.com` and `uploads.github.com` by their real names, and
-`git@github.com:` remotes are rewritten to HTTPS. The proxy terminates
-TLS to these hosts with a per-box CA the box trusts, and replaces any
-credential the box sends there with the token. They need no `allow`
-entry. The box can use the token but never read it. Prefer a fine-grained token scoped to
-the one repository the box works on, with only the permissions it needs.
+`git@github.com:` remotes are rewritten to HTTPS. The proxy replaces any
+credential the box sends to these hosts with the token. They need no `allow`
+entry. The box can use the token but never read it. Prefer a fine-grained
+token scoped to the one repository the box works on, with only the permissions it needs.
 
 Release download (public and private repositories), upload and
 `--archive`, and `gh api --paginate` work. `gh run download` does not: its artifacts redirect to varying
 Azure hosts. A Java client fails at these hosts, since Java does not
-read the CA bundle.
+read the box's CA bundle.
 
 ## Limits
 
