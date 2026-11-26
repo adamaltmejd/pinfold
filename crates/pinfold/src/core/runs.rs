@@ -44,25 +44,17 @@ pub fn egress_log(run_id: &str) -> io::Result<PathBuf> {
 pub fn create(run_id: &str) -> io::Result<()> {
     let runs = dirs::runs_dir()?;
     fs::create_dir_all(runs.parent().expect("runs has a parent"))?;
-    private_dir(&runs)?;
-    fs::DirBuilder::new().mode(0o700).create(dir(run_id)?)
-}
-
-fn private_dir(path: &Path) -> io::Result<()> {
-    match fs::DirBuilder::new().mode(0o700).create(path) {
-        Ok(()) => Ok(()),
+    match fs::DirBuilder::new().mode(0o700).create(&runs) {
+        Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            if fs::symlink_metadata(path)?.is_dir() {
-                Ok(())
-            } else {
-                Err(io::Error::other(format!(
-                    "{} is not a directory",
-                    path.display()
-                )))
+            if !fs::symlink_metadata(&runs)?.is_dir() {
+                let message = format!("{} is not a directory", runs.display());
+                return Err(io::Error::other(message));
             }
         }
-        Err(error) => Err(error),
+        Err(error) => return Err(error),
     }
+    fs::DirBuilder::new().mode(0o700).create(dir(run_id)?)
 }
 
 /// Open the egress log for append, 0600, following no symlink.
