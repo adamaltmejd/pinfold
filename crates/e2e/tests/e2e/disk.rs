@@ -39,6 +39,8 @@ fn disks_persist_and_attach_exclusively() {
     // The guest's trim at stop then fails, and the image keeps the deleted
     // file's blocks. Sabotage (run): open each writable root in init's
     // `unmount` instead of at mount; PID 1 cannot open the private root.
+    // Sabotage (run): stop init's `trim` after its first range. One range
+    // is 128 MiB, under the 240 MiB the check needs, wherever the file sits.
     // The writable recovery run and the read-only run after it are the
     // positive controls; the image's growth by the written file is the
     // reclaim's.

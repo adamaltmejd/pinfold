@@ -710,17 +710,19 @@ fn unmount(request: &Request, trims: Vec<OwnedFd>) -> io::Result<()> {
     Ok(())
 }
 
-/// FITRIM the filesystem `disk` is on, one GiB at a time, starting no range
-/// after `deadline`; one FITRIM cannot be interrupted. Ranges past the end
-/// fail, as does any other error, which leaves only space unreclaimed and
-/// does not fail the stop.
+/// FITRIM the filesystem `disk` is on, 128 MiB at a time, starting no
+/// range after `deadline`; one FITRIM cannot be interrupted. Ranges past
+/// the end fail, as does any other error, which leaves only space
+/// unreclaimed and does not fail the stop.
 fn trim(disk: &OwnedFd, deadline: Instant) {
     // linux/fs.h: _IOWR('X', 121, struct fstrim_range).
     const FITRIM: libc::c_ulong = 0xc018_5879;
-    const RANGE: u64 = 1 << 30;
+    // One ext4 block group. With MINLEN a range sends at most 128 discards,
+    // so the last one started ends long before the host's deadline
+    // (docs/archive/2026-11-26-linux-disk-discard.md).
+    const RANGE: u64 = 128 << 20;
     // ext4 forgets what it trimmed at unmount, so each stop discards every
-    // free extent again. Skipping extents under 1 MiB caps a range at 1024
-    // discards (docs/archive/2026-11-26-linux-disk-discard.md).
+    // free extent again; extents under 1 MiB are skipped.
     const MINLEN: u64 = 1 << 20;
     let mut start = 0;
     while Instant::now() < deadline {

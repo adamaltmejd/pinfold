@@ -114,13 +114,13 @@ pass the host's 30 s.
 
 So the trim now:
 
-- issues `FITRIM` one GiB at a time and starts no range after 20 s from
-  UNMOUNT, which includes the 10 s for box work to end; the unmounts keep
-  the rest of the host's 30 s;
-- sets `minlen` to 1 MiB, so one range sends at most 1024 discards. The
-  worst case measured, 1 MiB holes, cost about 0.18 s per GiB on the
-  first stop and 0.08 s after; a 64 GiB disk at that density would take
-  about 11 s;
+- issues `FITRIM` 128 MiB at a time, one ext4 block group, and starts no
+  range after 20 s from UNMOUNT, which includes the 10 s for box work to
+  end; the unmounts keep the rest of the host's 30 s (ranges were 1 GiB
+  until the second review, below);
+- sets `minlen` to 1 MiB, so one range sends at most 128 discards. The
+  1 MiB holes above cost about 0.18 s per GiB on the first stop and
+  0.08 s after;
 - uses a descriptor on each writable root that init opens at mount, while
   it still holds every capability. The exec service, forked after, closes
   its copies; PID 1 closes them after the trims, before unmounting.
@@ -130,9 +130,46 @@ whole trees mostly frees large extents: four copies of the image's
 `/usr` (17,136 files, 763 MB) took the image from 6.8 MB to 837 MB, and
 after `rm -rf` and a 0.22 s stop it held 37 MB.
 
-A plain box's `box down` waits 10 s for teardown, so on a large,
-fragmented disk it can report a timeout before the stop ends. That was
-not measured with the bound in place.
+## Second review: range size and `box down`'s wait
+
+Review found that a range started just before the 20 s cutoff could run
+past the host's 30 s, and that `box down` waited only 10 s for an owner
+whose teardown may now take most of the unmount's 30.
+
+Ranges went from 1 GiB to 128 MiB. With the 1 MiB floor a range is then
+at most about 128 discards instead of 1024. `box down` on Linux now
+waits 40 s: the unmount's 30 s plus the 10 s it waited before, for the
+rest of teardown. Claim acquisition keeps its 10 s. On macOS nothing
+changed.
+
+Same dev VM, 32 GiB disk, release build of the change. Each run writes
+8 GiB of zeros, punches holes with `fallocate` in a stride across the
+whole file, syncs, then times `box down` until `box up` exits. Then a
+read-only box attaches the disk, and a writable box with no work is
+stopped by closing stdin.
+
+| Build | Holes / kept | `box down` (s) | Image after | Read-only up | Next idle stop (s) |
+|---|---|---:|---:|---|---:|
+| 1 MiB floor | 1 MiB / 4 KiB | 4.05 | 104 MB | ready | 2.45 |
+| no floor | 4 KiB / 4 KiB | 20.50 | 8,167 MB | ready | 22.91 |
+
+The first row is the densest layout the floor still trims: about 1,020
+discards per GiB, twice the archive's 1 MiB-hole run. It cost about
+0.5 s per GiB on the first stop and 0.3 s after, so about 0.06 s per
+128 MiB range. A 64 GiB disk at that density would take about 32 s, so
+the cutoff, not the disk's end, would stop that trim; the rest stays
+allocated until a later stop.
+
+The second row repeats the earlier failed case, 4 KiB holes over 8 GiB
+without a floor, with a temporary build that sets `minlen` to 0. Each
+range then sends about 16,000 discards and takes about 2.8 s. The trim
+reached about 430 MB before the cutoff. `box down` exited 0 after
+20.5 s, past the old 10 s wait, and the disk was clean: the read-only
+box came ready. The idle stop's 22.9 s is the cutoff plus one range
+started just before it, still about 7 s inside the 30.
+
+An idle stop of a box with two fresh 64 GiB disks took 0.26, 0.32 and
+0.27 s, so 512 ranges a disk cost no more than the single whole-disk trim in "Measurements" (0.35 s).
 
 ## Test
 
@@ -153,7 +190,15 @@ the box is live, and requires the drop across the stop; a disk mounted
 with continuous discard would fail it. Before the stop the box makes the
 disk's root mode 0700.
 
+With 128 MiB ranges the 256 MiB file cannot sit in one range, so a trim
+that stopped after its first range would reclaim at most 128 MiB, under
+the 240 MiB the check needs. The disk stays 1 GiB. On the VM the test
+passed (210 s, cold default image). With `trim` returning after its
+first range it failed at the reclaim check, `269467648 -> 269467648`.
+With the `discard` field removed it failed at the same check with the
+same numbers.
+
 ## Cleanup
 
 `pinfold stop`, `disk rm --all` under the scratch roots, the scratch
-directory and the clone deleted. No Firecracker process remained.
+directory and the clone deleted, after each round. No Firecracker process remained.

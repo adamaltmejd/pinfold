@@ -433,7 +433,8 @@ leaves any live box alone. `down` uses a host-only control socket and addresses
 the observed generation. Public requests retain the 64-byte generation and
 `done`, `gone` or `failed` reply. Private project requests prefix that generation
 with `P` and receive `stopping` after validation, before the final reply. The
-owner acknowledges completion after teardown. A timed-out request
+owner acknowledges completion after teardown. `down` waits ten seconds
+for it, and on Linux 40, the unmount's 30 seconds plus ten. A timed-out request
 fails without releasing ownership or removing a live owner's state.
 Orphan removal and `prune` acquire the lifetime lock and recheck the
 generation before removing anything; an old observation cannot remove a
@@ -1535,9 +1536,11 @@ are returned to the host by the next stop pinfold requests: Firecracker offers d
 each writable drive, and init's trim at step 8 punches holes in that
 disk's own image, which the VMM already writes. Init opens each
 writable disk's root at mount, so a root the box makes private is still
-trimmed. The trim goes one GiB at a time and starts no range after the
-unmount's first 20 seconds; what it does not reach, like a failed trim,
-stays allocated and does not fail the stop. A box that ends otherwise
+trimmed. The trim goes 128 MiB at a time and starts no range after the
+unmount's first 20 seconds; a range is at most 128 discards, measured
+under 0.1 seconds, so the unmounts keep nearly 10 of the 30. What it does
+not reach, like a failed trim, stays allocated and does not fail the
+stop. A box that ends otherwise
 returns nothing until a later requested stop.
 
 - **Attachment:** at `up`, after the claim. One box may attach a disk writable; while it does,

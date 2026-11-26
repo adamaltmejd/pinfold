@@ -90,7 +90,7 @@ pub fn stat(sockets: &Sockets) -> io::Result<[Option<u64>; 5]> {
 
 /// Ask PID 1 to kill the work cgroup, sync and unmount every attachment.
 pub fn unmount(sockets: &Sockets) -> io::Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + super::UNMOUNT_TIMEOUT;
     let mut stream = connect_until(sockets, CONTROL_PORT, deadline, None, "box unmount")?;
     let mut transport = Bounded {
         stream: &mut stream,
