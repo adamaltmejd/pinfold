@@ -170,7 +170,6 @@ fn read_owner(path: &Path) -> io::Result<Option<Record>> {
     }
 }
 
-/// Hold public dispatch against name reuse; startup publishes ready last.
 /// Try `attempt` every 10 ms until it takes its lock; `None` past `deadline`.
 async fn poll_lock(
     deadline: tokio::time::Instant,
@@ -187,6 +186,7 @@ async fn poll_lock(
     }
 }
 
+/// Hold public dispatch against name reuse; startup publishes ready last.
 pub(crate) fn exec_lock(name: &str, generation: &str) -> io::Result<Option<Flock<File>>> {
     let ready = |record: Option<Record>| {
         record.is_some_and(|record| {
@@ -603,8 +603,7 @@ pub(crate) fn request_stop(
         if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
             return Err(io::ErrorKind::Interrupted.into());
         }
-        if let Some(lock) = try_name_lock(name)? {
-            drop(lock);
+        if try_name_lock(name)?.is_some() {
             return Ok(false);
         }
         if record(name)?.is_none_or(|current| current.generation != observed.generation) {
