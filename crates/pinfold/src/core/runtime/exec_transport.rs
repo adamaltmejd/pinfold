@@ -11,7 +11,6 @@ use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -33,16 +32,20 @@ pub(crate) fn env_payload(vars: &[(OsString, OsString)]) -> Vec<u8> {
 
 /// Run `argv` in the box and relay stdio until it exits:
 /// its exit code, or `128+n` for signal `n`. The client stays in pinfold's
-/// process.
+/// process. Frames arrive on `from_box` and leave on `to_box`; a native
+/// client's exit, reported by `native_exited`, starts the output deadline.
 pub fn exec(
-    connection: UnixStream,
+    from_box: impl Read + AsFd,
+    mut to_box: impl Write + AsFd,
+    mut native_exited: impl FnMut() -> io::Result<bool>,
     context: &crate::core::runtime::ExecContext<'_>,
     argv: &[String],
 ) -> io::Result<i32> {
     let cancel = context.cancel;
     cancelled(cancel)?;
     let tty = context.tty;
-    connection.set_nonblocking(true)?;
+    crate::core::pipe::nonblocking(&from_box, "exec")?;
+    crate::core::pipe::nonblocking(&to_box, "exec")?;
     let mut metadata = crate::init::ExecMetadata {
         agent: context.agent.map(str::to_string),
         project_directory: context
@@ -71,27 +74,52 @@ pub fn exec(
     let stdin = StdioRelay::new(input, true)?;
     let stdout = StdioRelay::new(output, false)?;
     let stderr = StdioRelay::new(errors, false)?;
-    write_frame(
-        &mut Cancellable {
-            connection: &connection,
-            cancel,
-            completed_first: true,
-        },
-        EXEC,
-        &payload,
-    )?;
+    let mut frame = Vec::new();
+    write_frame(&mut frame, EXEC, &payload)?;
+    // Cancellation must end the frame before any write that could complete
+    // it. A descendant can hold a native client's stdin open after it exits.
+    let mut sent = 0;
+    while sent < frame.len() {
+        cancelled(cancel)?;
+        if native_exited()? {
+            return Err(io::Error::other("the box ended the exec before it exited"));
+        }
+        match to_box.write(&frame[sent..]) {
+            Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+            Ok(written) => sent += written,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let mut ready = [nix::poll::PollFd::new(
+                    to_box.as_fd(),
+                    nix::poll::PollFlags::POLLOUT,
+                )];
+                match nix::poll::poll(&mut ready, 100u16) {
+                    Ok(_) | Err(nix::errno::Errno::EINTR) => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
 
-    let result = relay(connection, context, stdin, stdout, stderr, winch.as_ref());
+    let result = relay(
+        from_box,
+        to_box,
+        native_exited,
+        context,
+        [stdin, stdout, stderr],
+        winch.as_ref(),
+    );
     drop((winch, raw));
     result
 }
 
 fn relay(
-    mut connection: UnixStream,
+    mut from_box: impl Read + AsFd,
+    mut to_box: impl Write + AsFd,
+    mut native_exited: impl FnMut() -> io::Result<bool>,
     context: &crate::core::runtime::ExecContext<'_>,
-    mut stdin: StdioRelay,
-    mut stdout: StdioRelay,
-    mut stderr: StdioRelay,
+    [mut stdin, mut stdout, mut stderr]: [StdioRelay; 3],
     winch: Option<&Winch>,
 ) -> io::Result<i32> {
     use crate::init::exec_wire::{CHUNK, CREDIT, FrameReader, FrameWriter, OUTPUT_END, WINDOW};
@@ -114,14 +142,24 @@ fn relay(
     let mut connected = true;
     let mut writable = true;
     let mut send_failure = None;
+    let mut native_exit = false;
     let result = (|| -> io::Result<i32> {
         loop {
+            // A native client's exit is observed without trusting its pipes' EOF.
+            if !native_exit && native_exited()? {
+                native_exit = true;
+                writable = false;
+                input_open = false;
+                input.clear();
+                stdin.close();
+                deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(1));
+            }
             // Read control and status even while the caller's output is full.
             for _ in 0..16 {
                 if !connected {
                     break;
                 }
-                let frame = match reader.read(&mut connection) {
+                let frame = match reader.read(&mut from_box) {
                     Ok(Some(frame)) => frame,
                     Ok(None) => break,
                     Err(_) if completed.is_some() => {
@@ -173,7 +211,11 @@ fn relay(
                 }
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                return completed.ok_or_else(|| send_failure.take().expect("failure deadline"));
+                return completed.ok_or_else(|| {
+                    send_failure.take().unwrap_or_else(|| {
+                        io::Error::other("the box ended the exec before it exited")
+                    })
+                });
             }
             if cancelled(context.cancel).is_err() {
                 return completed
@@ -250,7 +292,7 @@ fn relay(
             if connected
                 && writable
                 && writer.pending()
-                && let Err(error) = writer.flush(&mut connection)
+                && let Err(error) = writer.flush(&mut to_box)
             {
                 // A guest can close input after sending EXIT, before it reaches us.
                 writable = false;
@@ -264,16 +306,20 @@ fn relay(
             let mut fds = [
                 libc::pollfd {
                     fd: if connected {
-                        connection.as_raw_fd()
+                        from_box.as_fd().as_raw_fd()
                     } else {
                         -1
                     },
-                    events: libc::POLLIN
-                        | if writable && writer.pending() {
-                            libc::POLLOUT
-                        } else {
-                            0
-                        },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: if connected && writable && writer.pending() {
+                        to_box.as_fd().as_raw_fd()
+                    } else {
+                        -1
+                    },
+                    events: libc::POLLOUT,
                     revents: 0,
                 },
                 libc::pollfd {
@@ -322,11 +368,11 @@ fn relay(
                 }
                 return Err(error);
             }
-            if fds[4].revents != 0 {
+            if fds[5].revents != 0 {
                 let _ = (&winch.expect("watched window").read).read(&mut [0; 64]);
                 resize = window()?;
             }
-            if fds[1].revents != 0 {
+            if fds[2].revents != 0 {
                 let mut bytes = [0; CHUNK];
                 match nix::unistd::read(stdin.as_fd(), &mut bytes[..CHUNK.min(input_credit)]) {
                     Ok(0) => {
@@ -356,6 +402,7 @@ pub(super) fn cancelled(cancel: Option<&AtomicBool>) -> io::Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn wait(fd: libc::c_int, events: libc::c_short, cancel: Option<&AtomicBool>) -> io::Result<()> {
     loop {
         cancelled(cancel)?;
@@ -379,24 +426,23 @@ fn wait(fd: libc::c_int, events: libc::c_short, cancel: Option<&AtomicBool>) -> 
     }
 }
 
-pub(super) struct Cancellable<'a> {
-    connection: &'a UnixStream,
+#[cfg(target_os = "linux")]
+pub(super) struct Cancellable<'a, T> {
+    connection: T,
     cancel: Option<&'a AtomicBool>,
-    completed_first: bool,
 }
 
-impl<'a> Cancellable<'a> {
-    #[cfg(target_os = "linux")]
-    pub(super) fn startup(connection: &'a UnixStream, cancel: &'a AtomicBool) -> Self {
+#[cfg(target_os = "linux")]
+impl<'a, T> Cancellable<'a, T> {
+    pub(super) fn startup(connection: T, cancel: &'a AtomicBool) -> Self {
         Self {
             connection,
             cancel: Some(cancel),
-            completed_first: false,
         }
     }
 
     fn cancellation(&self, error: io::Error) -> io::Error {
-        if !self.completed_first && error.kind() == io::ErrorKind::Interrupted {
+        if error.kind() == io::ErrorKind::Interrupted {
             // Buffered copy routines retry Interrupted rather than ending BOOT.
             io::Error::new(io::ErrorKind::ConnectionAborted, "startup cancelled")
         } else {
@@ -405,17 +451,19 @@ impl<'a> Cancellable<'a> {
     }
 }
 
-impl Read for Cancellable<'_> {
+#[cfg(target_os = "linux")]
+impl<T: Read + AsFd> Read for Cancellable<'_, T> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         loop {
-            if !self.completed_first {
-                cancelled(self.cancel).map_err(|error| self.cancellation(error))?;
-            }
-            // A frame already readable, including EXIT, precedes client cancellation.
+            cancelled(self.cancel).map_err(|error| self.cancellation(error))?;
             match self.connection.read(buffer) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    wait(self.connection.as_raw_fd(), libc::POLLIN, self.cancel)
-                        .map_err(|error| self.cancellation(error))?;
+                    wait(
+                        self.connection.as_fd().as_raw_fd(),
+                        libc::POLLIN,
+                        self.cancel,
+                    )
+                    .map_err(|error| self.cancellation(error))?;
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
@@ -435,14 +483,19 @@ impl Read for Cancellable<'_> {
     }
 }
 
-impl Write for Cancellable<'_> {
+#[cfg(target_os = "linux")]
+impl<T: Write + AsFd> Write for Cancellable<'_, T> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         loop {
             cancelled(self.cancel).map_err(|error| self.cancellation(error))?;
             match self.connection.write(buffer) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    wait(self.connection.as_raw_fd(), libc::POLLOUT, self.cancel)
-                        .map_err(|error| self.cancellation(error))?;
+                    wait(
+                        self.connection.as_fd().as_raw_fd(),
+                        libc::POLLOUT,
+                        self.cancel,
+                    )
+                    .map_err(|error| self.cancellation(error))?;
                 }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
