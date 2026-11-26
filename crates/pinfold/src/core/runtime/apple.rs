@@ -100,6 +100,7 @@ pub fn up(
     values: &Values,
     init: &Path,
     proxy_socket: Option<&Path>,
+    bundle: Option<&Path>,
 ) -> io::Result<Client> {
     let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
     let mut command = Command::new("container");
@@ -189,6 +190,12 @@ pub fn up(
         }
         command.arg("--mount").arg(value);
     }
+    // Only `--volume` takes a file; `--mount` takes directories alone.
+    if let Some(bundle) = bundle {
+        let mut value = bundle.as_os_str().to_owned();
+        value.push(format!(":{}:ro", crate::init::BUNDLE));
+        command.arg("--volume").arg(value);
+    }
     command
         .arg("--mount")
         .arg(init_mount(init))
@@ -208,6 +215,174 @@ pub fn up(
             Client(child, stderr, None, None, None, env)
         })
         .map_err(|error| spawn_error("container", error))
+}
+
+/// The image's CA bundle with the box CA `ca` appended, written in
+/// `state_dir` for a file mount over the image's own. A networkless helper
+/// box on the image reads the image's, as init.
+#[cfg_attr(target_os = "linux", expect(dead_code))]
+pub fn trust_bundle(
+    plan: &Plan,
+    init: &Path,
+    state_dir: &Path,
+    image_id: &str,
+    ca: &str,
+    cancel: &AtomicBool,
+) -> io::Result<std::path::PathBuf> {
+    let image = plan.image.as_deref().expect("up resolved the image");
+    let user = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
+    // Under the box's name, which its owner holds: another root's
+    // maintenance prunes an unnamed helper as a dead box.
+    let mut command = std::process::Command::new("container");
+    command
+        .args(["run", "--name", &plan.name, "--progress", "none"])
+        .args(["--network", "none"])
+        .args(["--read-only", "--cap-drop", "ALL", "--workdir", "/"])
+        .args(["--user", &user])
+        .arg("--label")
+        .arg(format!(
+            "{}={}",
+            ownership::GENERATION_LABEL,
+            plan.labels[ownership::GENERATION_LABEL]
+        ))
+        .arg("--label")
+        .arg(format!(
+            "{}={}",
+            clean::OWNER_LABEL,
+            plan.labels[clean::OWNER_LABEL]
+        ))
+        .arg("--mount")
+        .arg(init_mount(init))
+        .arg("--entrypoint")
+        .arg(init)
+        .arg(image)
+        .args(["init", "bundle"])
+        .stdin(Stdio::null());
+    let output = crate::core::process::output_cancellable(&mut command, None, cancel)
+        .map_err(|error| spawn_error("container", error));
+    let removal = remove_helper(
+        &plan.name,
+        &plan.labels[ownership::GENERATION_LABEL],
+        &plan.labels[clean::OWNER_LABEL],
+    );
+    if removal.unremoved {
+        let error = removal
+            .removed
+            .expect_err("an unremoved helper has an error");
+        let error = if error.to_string().starts_with("cleanup-timeout") {
+            error
+        } else {
+            io::Error::other(format!(
+                "remove the CA bundle helper {}: {error}",
+                plan.name
+            ))
+        };
+        return Err(io::Error::other(PreparationUnremoved(error)));
+    }
+    let output = output?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "read the image's CA bundle: {}",
+            terminal_text(String::from_utf8_lossy(&output.stderr).trim())
+        )));
+    }
+    // Apple runs a reference, not a local digest: the helper's own record
+    // says which image it read.
+    let Some(helper) = removal.helper? else {
+        return Err(io::Error::other("the CA bundle helper's record is gone"));
+    };
+    if box_info(helper).image_id != image_id {
+        return Err(io::Error::other(
+            "image-changed: the CA bundle helper read a different image",
+        ));
+    }
+    if let Err(error) = removal.stopped.and(removal.removed) {
+        return Err(io::Error::other(format!(
+            "remove the CA bundle helper {}: {error}",
+            plan.name
+        )));
+    }
+    let mut bundle = output.stdout;
+    if bundle.len() > crate::init::MAX_BUNDLE {
+        return Err(io::Error::other("the image's CA bundle exceeds 4 MiB"));
+    }
+    if !bundle.is_empty() && !bundle.ends_with(b"\n") {
+        bundle.push(b'\n');
+    }
+    bundle.extend_from_slice(ca.as_bytes());
+    // A directory of its own: the runtime may share a file mount's parent
+    // directory with the VM.
+    let dir = state_dir.join("trust");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("ca-certificates.crt");
+    std::fs::write(&path, bundle)?;
+    Ok(path)
+}
+
+/// A helper's removal: its record as inspected first, whether each step
+/// succeeded, and whether the name may still hold it.
+struct HelperRemoval {
+    helper: io::Result<Option<ListedContainer>>,
+    stopped: io::Result<Vec<u8>>,
+    /// An error whenever `unremoved`: `cleanup-timeout` once the deadline
+    /// passed.
+    removed: io::Result<Vec<u8>>,
+    unremoved: bool,
+}
+
+/// Stop and remove the helper this start ran under the box's name, within
+/// the removal deadline. Only a container carrying this start's `generation`
+/// and `owner` is touched: one that took the name since is another start's.
+/// The box reuses the name, so the helper must be gone first. Apple reports
+/// a container `running` for a moment after `run` returns, and `rm` refuses
+/// it then; `run --rm` removes it just as late. `stop` returns once it has
+/// stopped, after which `rm` succeeds.
+fn remove_helper(name: &str, generation: &str, owner: &str) -> HelperRemoval {
+    let ours = || {
+        container(name).map(|helper| {
+            helper.filter(|helper| {
+                let labels = &helper.configuration.labels;
+                labels.get(ownership::GENERATION_LABEL).map(String::as_str) == Some(generation)
+                    && labels.get(clean::OWNER_LABEL).map(String::as_str) == Some(owner)
+            })
+        })
+    };
+    crate::core::process::with_deadline(REMOVAL_TIMEOUT, |expired| {
+        let helper = ours();
+        let mut removal = match &helper {
+            // Gone, or another start's: nothing is removed.
+            Ok(None) => HelperRemoval {
+                helper,
+                stopped: Ok(Vec::new()),
+                removed: Ok(Vec::new()),
+                unremoved: false,
+            },
+            // Not provably ours: nothing is removed, and the name may hold it.
+            Err(error) => HelperRemoval {
+                removed: Err(io::Error::other(format!("inspect helper {name}: {error}"))),
+                helper,
+                stopped: Ok(Vec::new()),
+                unremoved: true,
+            },
+            Ok(Some(_)) => {
+                let stopped = output(&["container", "stop", name]);
+                let removed = output(&["container", "rm", name]);
+                let unremoved = removed.is_err() && !matches!(ours(), Ok(None));
+                HelperRemoval {
+                    helper,
+                    stopped,
+                    removed,
+                    unremoved,
+                }
+            }
+        };
+        if removal.unremoved && expired.load(std::sync::atomic::Ordering::Acquire) {
+            removal.removed = Err(io::Error::other(format!(
+                "cleanup-timeout: helper {name} removal"
+            )));
+        }
+        removal
+    })
 }
 
 fn bind(host: &Path, guest: &Path, readonly: bool) -> OsString {
@@ -1037,17 +1212,12 @@ impl Runtime for Apple {
         if !spawned {
             return result.map(drop);
         }
-        // The box reuses the helper's name, so the helper must be gone first.
-        // Apple reports a container `running` for a moment after `run` returns,
-        // and `rm` refuses it then; `run --rm` removes it just as late. `stop`
-        // returns once it has stopped, after which `rm` succeeds.
-        let (stopped, removed, unremoved) =
-            crate::core::process::with_deadline(REMOVAL_TIMEOUT, |_| {
-                let stopped = output(&["container", "stop", name]);
-                let removed = output(&["container", "rm", name]);
-                let unremoved = removed.is_err() && !matches!(container(name), Ok(None));
-                (stopped, removed, unremoved)
-            });
+        let HelperRemoval {
+            stopped,
+            removed,
+            unremoved,
+            ..
+        } = remove_helper(name, generation, &plan.labels[clean::OWNER_LABEL]);
         let leftover = match (&stopped, &removed) {
             (Ok(_), Ok(_)) => String::new(),
             _ => format!("; removing helper {name}: {stopped:?}, {removed:?}"),
