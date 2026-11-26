@@ -1586,10 +1586,7 @@ default list plus `github.com` and `api.github.com`.
 
 On Linux a disk is an ext4 image at
 `~/.local/state/pinfold/disks/<name>.ext4`, mode 0600, created by
-pinfold. pinfold formats each new disk with its own mke2fs profile: 4 KiB
-blocks, no `bigalloc`, and a fixed ext4 feature set, whatever the host's
-`mke2fs.conf` or `MKE2FS_CONFIG` says. An existing image is reused as it
-is. On macOS it is an Apple `container` volume named
+pinfold; on macOS it is an Apple `container` volume named
 `<first 16 hex digits of the sha256 of the canonical state dir>-<name>`. The next `up` naming a disk pinfold created whose box never came ready treats
 it as absent: it removes it and creates it again. Before `ready` the guest
 syncs each new disk's copy. On Linux pinfold then fsyncs the disk's image,

@@ -323,3 +323,21 @@ passed there with `MKE2FS_CONFIG` unset, in 217 s with a cold image
 cache. Only e2fsprogs 1.47.2 was run, and other `MKE2FS_*` variables still
 reach every mkfs. The clone, the scratch directories and the test's `TMPDIR`
 were deleted after the runs.
+
+## Round 6, 2026-11-26: the format pin reverted
+
+The operator reverted rounds 4 and 5's format work after the fifth
+review. `create_disk` runs the host's `mkfs.ext4` with the same
+arguments as before this change, so a new disk takes the host's
+`mke2fs.conf` defaults. The spec makes no format promise.
+
+The pin served one host profile, `bigalloc`. There the only effect is
+that the 128 MiB trim ranges cover less than a block group, so a stop
+may discard some extents more than once. That costs time, not
+correctness, and the 20 s cutoff still bounds it. Each fix brought a
+new failure mode: `-O` dropped a host profile's `default_features` and
+refused a valid `meta_bg` profile; a profile of pinfold's own had to
+choose features an older e2fsprogs may reject (`metadata_csum` before
+1.43), and had to settle block size and inode ratio, the size types'
+overrides, and the name and lifetime of a file beside the image. Rounds
+4 and 5 above are kept as written.

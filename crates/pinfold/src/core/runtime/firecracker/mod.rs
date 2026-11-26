@@ -11,7 +11,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
 
 use nix::unistd::Pid;
 
@@ -20,9 +20,8 @@ pub use vm::{Prepared, Vm, prepare};
 use crate::core::disk::{Directory, Fill, Seeding};
 use crate::core::ownership;
 use crate::core::plan::Plan;
-use crate::core::process::CommandGuard;
 use crate::core::runtime::{
-    BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, spawn_error,
+    BoxInfo, BoxStat, DiskInfo, ExecContext, MemoryStat, PidsStat, Runtime, output,
 };
 use crate::dirs;
 
@@ -235,7 +234,19 @@ impl Runtime for Firecracker {
             .create_new(true)
             .mode(0o600)
             .open(&path)?;
-        let made = file.set_len(bytes).and_then(|()| format_disk(&path));
+        let made = file.set_len(bytes).and_then(|()| {
+            let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
+            output(&[
+                &preflight::mkfs_ext4()?.to_string_lossy(),
+                "-q",
+                "-F",
+                "-m",
+                "0",
+                "-E",
+                &format!("lazy_itable_init=1,lazy_journal_init=1,root_owner={uid}:{gid}"),
+                &path.to_string_lossy(),
+            ])
+        });
         if let Err(error) = made {
             let _ = fs::remove_file(&path);
             return Err(error);
@@ -274,64 +285,6 @@ impl Runtime for Firecracker {
     fn version(&self) -> io::Result<String> {
         Ok(crate::core::artifacts::vmm_version().to_owned())
     }
-}
-
-/// The format of every disk pinfold creates, as mke2fs's whole profile.
-/// Init's trim takes one 128 MiB block group of 4 KiB blocks per range, so
-/// no size type may change the block size and no host profile may add
-/// `bigalloc`. The features are ones every e2fsprogs since 1.43 knows; an
-/// unknown name fails the format on an older host.
-const DISK_FORMAT: &str = "\
-[defaults]
-    base_features = sparse_super,large_file,filetype,resize_inode,dir_index,ext_attr
-    default_mntopts = acl,user_xattr
-    enable_periodic_fsck = 0
-    blocksize = 4096
-    inode_size = 256
-    inode_ratio = 16384
-
-[fs_types]
-    ext4 = {
-        features = has_journal,extent,huge_file,flex_bg,metadata_csum,64bit,dir_nlink,extra_isize
-    }
-";
-
-/// Format the image at `path` with [`DISK_FORMAT`], its root the user's.
-/// MKE2FS_CONFIG names pinfold's own profile, so neither the host's
-/// mke2fs.conf nor the caller's MKE2FS_CONFIG is read. An empty or missing
-/// profile pins nothing: mke2fs then falls back to ext2-like or built-in
-/// defaults.
-fn format_disk(path: &Path) -> io::Result<()> {
-    let mkfs = preflight::mkfs_ext4()?;
-    // Beside the image, whose create_new made the name this call's.
-    let profile = path.with_extension("mke2fs.conf");
-    fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&profile)?
-        .write_all(DISK_FORMAT.as_bytes())?;
-    let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
-    let ran = Command::new(&mkfs)
-        .args(["-q", "-F", "-m", "0", "-E"])
-        .arg(format!(
-            "lazy_itable_init=1,lazy_journal_init=1,root_owner={uid}:{gid}"
-        ))
-        .arg(path)
-        .env("MKE2FS_CONFIG", &profile)
-        .stdin(Stdio::null())
-        .output_guarded();
-    let _ = fs::remove_file(&profile);
-    let ran = ran.map_err(|error| spawn_error(&mkfs.to_string_lossy(), error))?;
-    if !ran.status.success() {
-        return Err(io::Error::other(format!(
-            "{}: {}",
-            mkfs.display(),
-            String::from_utf8_lossy(&ran.stderr).trim()
-        )));
-    }
-    Ok(())
 }
 
 /// A VMM's exit code, or `128+n` for signal `n`, as the exit status a
