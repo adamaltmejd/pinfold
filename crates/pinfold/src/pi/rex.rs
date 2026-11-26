@@ -50,22 +50,23 @@ pub(crate) fn wanted() -> bool {
         && io::stderr().is_terminal()
 }
 
-fn leaf(key: &str) -> String {
-    format!("{key}.rex")
+/// The socket is named for the project id, so Rex names the host after it.
+fn leaf(id: &str) -> String {
+    format!("{id}.rex")
 }
 
 /// Remove this project's socket. Only a caller that has established that
 /// no owner is live, and none can start, may call this.
-pub(crate) fn remove_left(key: &str) {
+pub(crate) fn remove_left(id: &str) {
     if cfg!(target_os = "macos") {
-        let _ = HostSocket::remove_left(&leaf(key));
+        let _ = HostSocket::remove_left(&leaf(id));
     }
 }
 
 /// Print a start's outcome on stderr. An absent `rex` prints nothing.
 pub(crate) async fn report(
     status: Option<Status>,
-    key: &str,
+    id: &str,
     signals: &mut Signals,
 ) -> io::Result<()> {
     let lines = match status {
@@ -74,7 +75,7 @@ pub(crate) async fn report(
             "pinfold start: rex: add this address in the Rex app under Add Remote Host…".into(),
             format!(
                 "unix://{}",
-                ownership::host_dir()?.join(leaf(key)).display()
+                ownership::host_dir()?.join(leaf(id)).display()
             ),
         ],
         Some(Status::RemoteControl) => vec![
@@ -123,13 +124,13 @@ impl Drop for Relay {
 impl Rex {
     /// Called by a new owner while it holds the launch lock, so a socket a
     /// dead owner left is removed here.
-    pub(crate) fn new(name: &str, init: PathBuf, key: &str) -> Self {
-        remove_left(key);
+    pub(crate) fn new(name: &str, init: PathBuf, id: &str) -> Self {
+        remove_left(id);
         Self {
             state: Arc::new(Mutex::new(State {
                 name: name.to_owned(),
                 init,
-                leaf: leaf(key),
+                leaf: leaf(id),
                 relay: None,
             })),
             closing: Arc::new(watch::channel(false).0),

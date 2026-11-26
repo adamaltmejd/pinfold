@@ -793,7 +793,7 @@ async fn admit(
                 Reply::Kept { rex, .. } => {
                     drop(launch);
                     let _ = forward_diagnostics("pinfold start: already running", signals).await;
-                    let _ = rex::report(rex, &key(root), signals).await;
+                    let _ = rex::report(rex, &state::project_id(root), signals).await;
                     return Ok(None);
                 }
                 Reply::Error { reason, fields } if reason == "config-changed" => {
@@ -890,7 +890,7 @@ async fn admit(
             Reply::Kept { rex, .. } => {
                 let _ = child.1.try_wait();
                 let _ = forward_diagnostics("pinfold start: started", signals).await;
-                let _ = rex::report(rex, &key(root), signals).await;
+                let _ = rex::report(rex, &state::project_id(root), signals).await;
                 return Ok(None);
             }
             other => return Err(reply_error(other)),
@@ -1664,7 +1664,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
                 result = &mut checking => break result.map_err(|_| timed_out()).and_then(|result| result).transpose(),
             }}
         };
-        let relay = rex::Rex::new(&plan.name, init.clone(), &key(&root));
+        let relay = rex::Rex::new(&plan.name, init.clone(), &state::project_id(&root));
         // A first start's Rex setup yields to stop, box exit, a signal or the client leaving.
         let (stopped, status) = if stopped.is_none() && matches!(intent, Intent::KeepRex) {
             let request = relay.request();
@@ -2100,7 +2100,7 @@ pub(crate) fn stop(args: &[String]) -> io::Result<i32> {
                 && let Ok(Some(_launch)) = try_launch(&root)
                 && matches!(read_locator(&root), Ok(None))
             {
-                rex::remove_left(&key(&root));
+                rex::remove_left(&state::project_id(&root));
             }
             Ok(stopped)
         }

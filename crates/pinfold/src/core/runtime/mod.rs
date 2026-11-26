@@ -350,6 +350,10 @@ fn guest_vars(plan: &Plan, values: &Values) -> Vec<(String, OsString)> {
     if plan.egress.is_some() {
         vars.push(("HTTPS_PROXY".into(), PROXY_URL.into()));
         vars.push(("http_proxy".into(), PROXY_URL.into()));
+        // The box's own loopback servers are not egress (#497).
+        for name in ["NO_PROXY", "no_proxy"] {
+            vars.push((name.into(), "localhost,127.0.0.1,::1".into()));
+        }
     }
     vars
 }
