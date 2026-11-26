@@ -50,7 +50,7 @@ pub struct Egress {
 }
 
 /// Where a route name leads.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Route {
     /// `host:port`: a host service.
@@ -66,7 +66,7 @@ pub enum Route {
 /// A login route: the token stays in the proxy's process and pinfold
 /// supplies the origin, the headers and what the box's harness needs to use
 /// the route.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Login {
     /// The agent the login belongs to.
@@ -88,7 +88,7 @@ pub struct Login {
 }
 
 /// An injecting route: the credential stays in the proxy's process.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Inject {
     /// An `http://` or `https://` origin.
@@ -99,7 +99,7 @@ pub struct Inject {
 
 /// One injected header: `prefix` then the value of its [`Source`]. Only
 /// the variable's name or the reference is ever written down.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Header {
     pub from: String,

@@ -1923,8 +1923,9 @@ its project.
   environment names, literals and the values their `from` variables hold,
   so a client whose `from` variable holds another value refuses as
   `config-changed` (`env.values`). A 1Password reference compares as
-  written (`env.names`, `routes.declarations`), never its value. Absent
-  and empty differ. Command
+  written (`env.names`, `routes.declarations`), never its value. An absent
+  value and an empty one differ; a route declaration compares as parsed,
+  so an omitted `headers` or `prefix` equals an empty one. Command
   metadata, refreshed Codex tokens, recipe freshness, and seed/shared-file
   contents are excluded. HOME is canonicalized like the other host roots.
   Mount kind and canonical source and destination paths are startup

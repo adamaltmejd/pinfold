@@ -144,37 +144,6 @@ struct Disk {
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-enum Declaration {
-    Address(String),
-    Inject(Inject),
-    Login(Login),
-}
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Inject {
-    to: String,
-    headers: Option<BTreeMap<String, Header>>,
-}
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Header {
-    from: String,
-    prefix: Option<String>,
-}
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Login {
-    login: String,
-    provider: Option<String>,
-    from: Option<String>,
-    to: Option<String>,
-}
-
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 enum EnvSource {
     Exact {},
@@ -199,7 +168,7 @@ pub(crate) struct Snapshot {
     mounts: Vec<Mount>,
     disks: Vec<Disk>,
     allow: Vec<String>,
-    routes: BTreeMap<String, Declaration>,
+    routes: BTreeMap<String, plan::Route>,
     route_values: BTreeMap<String, Option<Bytes>>,
     env_names: BTreeMap<String, EnvSource>,
     env_values: BTreeMap<String, Option<Bytes>>,
@@ -317,15 +286,14 @@ impl Snapshot {
         let declared_op: std::collections::BTreeSet<&str> = self
             .routes
             .values()
-            .flat_map(|declaration| match declaration {
-                Declaration::Inject(inject) => inject
+            .flat_map(|route| match route {
+                plan::Route::Inject(inject) => inject
                     .headers
-                    .iter()
-                    .flatten()
-                    .map(|(_, header)| header.from.as_str())
+                    .values()
+                    .map(|header| header.from.as_str())
                     .collect(),
-                Declaration::Login(login) => login.from.as_deref().into_iter().collect(),
-                Declaration::Address(_) => Vec::new(),
+                plan::Route::Login(login) => login.from.as_deref().into_iter().collect(),
+                plan::Route::Address(_) => Vec::new(),
             })
             .filter(|from| matches!(Source::declared(from), Ok(Source::Op(_))))
             .chain(self.env_names.values().filter_map(|source| match source {
@@ -340,28 +308,14 @@ impl Snapshot {
             op.0.iter()
                 .map(|(reference, value)| decode(Source::Op(reference.clone()), Some(value)));
         let values: BTreeMap<_, _> = routes.chain(env).chain(op).collect::<io::Result<_>>()?;
-        let has =
-            |from: &str| Source::declared(from).is_ok_and(|source| values.contains_key(&source));
-        let declared = self.routes.values().all(|declaration| match declaration {
-            Declaration::Inject(inject) => inject
-                .headers
-                .iter()
-                .flatten()
-                .all(|(_, header)| has(&header.from)),
-            Declaration::Login(login) => {
-                let host_codex = plan::Login {
-                    login: login.login.clone(),
-                    provider: login.provider.clone(),
-                    from: None,
-                    to: None,
-                }
-                .uses_host_codex();
-                match &login.from {
-                    None => true,
-                    Some(from) => !host_codex && has(from),
-                }
+        let has = |source: Result<Source, _>| source.is_ok_and(|s| values.contains_key(&s));
+        let declared = self.routes.values().all(|route| match route {
+            plan::Route::Inject(inject) => {
+                inject.headers.values().all(|header| has(header.source()))
             }
-            Declaration::Address(_) => true,
+            // A login on the host's Codex login takes no `from`.
+            plan::Route::Login(login) => login.source().map_or(login.from.is_none(), has),
+            plan::Route::Address(_) => true,
         }) && self.env_names.iter().all(|(name, source)| match source {
             // An `op` value travels only in `op`, never in an env slot.
             EnvSource::Op { reference } => {
@@ -488,12 +442,6 @@ impl Snapshot {
                 readonly: disk.readonly,
             })
             .collect();
-        let mut routes = BTreeMap::new();
-        for (name, declaration) in &config.route_declarations {
-            let declaration = Declaration::deserialize(declaration.clone())
-                .map_err(|_| io::Error::other("spec-invalid: invalid route declaration"))?;
-            routes.insert(name.clone(), declaration);
-        }
         // An `op` source's value is never compared, so it is in neither
         // table: a joining client reads none.
         let route_values = plan
@@ -543,7 +491,7 @@ impl Snapshot {
             mounts,
             disks,
             allow: config.allow.clone(),
-            routes,
+            routes: config.routes.clone(),
             route_values,
             env_names,
             env_values,
