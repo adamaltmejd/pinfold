@@ -507,8 +507,16 @@ fn connect(
     if port.parse::<u16>() != Ok(443) {
         return refuse(client, log, host, Some("CONNECT"), 403, "port not allowed");
     }
-    let Some(address) = resolve_checked(client, log, host, Some("CONNECT"), host, 443, connection)
-    else {
+    let Some(address) = resolve_checked(
+        client,
+        log,
+        host,
+        Some("CONNECT"),
+        None,
+        host,
+        443,
+        connection,
+    ) else {
         return;
     };
     if respond(client, 200).is_err() {
@@ -594,7 +602,8 @@ fn intercept(
     };
     let request = match parse_origin(&method, version, &target, host, &headers) {
         Ok(request) => request,
-        Err(reason) => return refuse(client, log, host, Some(&method), 400, reason),
+        // Unparsed, so empty, as plain HTTP's.
+        Err(reason) => return refuse(client, log, host, None, 400, reason),
     };
     if request.expect == Some(false) {
         return refuse(
@@ -654,6 +663,7 @@ fn plain(
         log,
         &request.host,
         Some(&request.method),
+        None,
         &host,
         80,
         connection,
@@ -687,23 +697,21 @@ fn route(
     connection: &Connection,
 ) {
     let mut report = |status: Option<u16>| {
-        let path = request
-            .target
-            .split_once('?')
-            .map_or(request.target.as_str(), |(path, _)| path);
-        let fields = serde_json::json!({
-            "method": request.method,
-            "path": path,
-            "status": status,
-        });
-        record(log, &request.host, "allowed", "route", Some(fields))
+        record(
+            log,
+            &request.host,
+            "allowed",
+            "route",
+            Some(route_fields(request, status)),
+        )
     };
     let deny = |client: &mut Client, code: u16, reason: &'static str| {
-        refuse(
+        refuse_with(
             client,
             log,
             &request.host,
             Some(&request.method),
+            Some(route_fields(request, None)),
             code,
             reason,
         )
@@ -764,6 +772,7 @@ fn route(
         log,
         &request.host,
         Some(&request.method),
+        Some(request),
         &target.host,
         target.port,
         connection,
@@ -784,12 +793,15 @@ fn route(
 }
 
 /// Resolve once and check every address before anything is dialed. A
-/// forbidden address is refused 403 with its reason, an unresolved name 502.
+/// forbidden address is refused 403 with its reason, an unresolved name 502;
+/// a route request's refusal names it as its other lines do.
+#[allow(clippy::too_many_arguments)]
 fn resolve_checked(
     client: &mut Client,
     log: &AuditLog,
     log_host: &str,
     method: Option<&str>,
+    route: Option<&Plain>,
     host: &str,
     port: u16,
     connection: &Connection,
@@ -800,12 +812,13 @@ fn resolve_checked(
     }
     match resolved {
         Ok(address) => Some(address),
-        Err(network::ResolveError::Forbidden(reason)) => {
-            refuse(client, log, log_host, method, 403, reason);
-            None
-        }
-        Err(network::ResolveError::Unresolved) => {
-            refuse(client, log, log_host, method, 502, "resolve failed");
+        Err(error) => {
+            let (code, reason) = match error {
+                network::ResolveError::Forbidden(reason) => (403, reason),
+                network::ResolveError::Unresolved => (502, "resolve failed"),
+            };
+            let fields = route.map(|request| route_fields(request, None));
+            refuse_with(client, log, log_host, method, fields, code, reason);
             None
         }
     }
@@ -936,7 +949,7 @@ fn parse_origin(
     host: &str,
     headers: &[(String, Vec<u8>)],
 ) -> Result<Plain, &'static str> {
-    if !target.starts_with('/') {
+    if !target.starts_with('/') || target.contains('#') {
         return Err("malformed request");
     }
     let host = host.to_ascii_lowercase();
@@ -1520,7 +1533,30 @@ fn refuse(
     code: u16,
     reason: &'static str,
 ) {
-    if record(log, host, "refused", reason, None).is_err() {
+    refuse_with(client, log, host, method, None, code, reason)
+}
+
+/// A route request's log fields: its method, its path without the query,
+/// and the upstream's status, null when none arrived.
+fn route_fields(request: &Plain, status: Option<u16>) -> serde_json::Value {
+    let path = request
+        .target
+        .split_once('?')
+        .map_or(request.target.as_str(), |(path, _)| path);
+    serde_json::json!({ "method": request.method, "path": path, "status": status })
+}
+
+/// [`refuse`], its log line carrying a route request's `fields`.
+fn refuse_with(
+    client: &mut Client,
+    log: &AuditLog,
+    host: &str,
+    method: Option<&str>,
+    fields: Option<serde_json::Value>,
+    code: u16,
+    reason: &'static str,
+) {
+    if record(log, host, "refused", reason, fields).is_err() {
         return;
     }
     let error = match reason {

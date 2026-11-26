@@ -982,9 +982,10 @@ network listener, no token: the socket identifies the box.
 - **Routed hosts:** an injecting route with an `https` target is served at
   that target's host, and a login route at its agent's hosts (below), by
   their real names on port 443; the route's name is only its label. An
-  `https` target that is an IP address or on another port is refused as
-  `spec`. A routed host needs no allowlist entry. Two routes may serve
-  one host only with the same upstream and the same credential (the same
+  `https` target that is an IP address, ends in a dot or is on another
+  port is refused as `spec`. A routed host needs no allowlist entry. Two routes may serve
+  one host only with the same upstream, a trailing `/` aside, and the
+  same credential (the same
   header names, `from` sources and prefixes, or both the host's Codex
   login); otherwise `spec`. A route label equal to a routed host,
   ignoring ASCII case, is refused as `spec`. Plain HTTP to a routed host
@@ -998,7 +999,8 @@ network listener, no token: the socket identifies the box.
   offers ALPN `http/1.1` only. A handshake the box aborts, as a client
   that does not trust the CA does, is logged `closed` with reason
   `tls handshake`. After the handshake the proxy reads one origin-form
-  request (any other form is 400 `malformed request`) and serves it under
+  request (any other form, or a fragment, is an empty 400 `malformed
+  request`) and serves it under
   the route rules: Host regenerated from the target, `Upgrade` dropped,
   framing and `Expect` as for plain HTTP, `Connection: close` upstream and
   one request per connection.
@@ -1039,7 +1041,8 @@ network listener, no token: the socket identifies the box.
   named authentication channels. A spec has at most one login route per
   agent, or for Pi one per Pi provider; otherwise `spec`. An optional `to`
   replaces the upstream the proxy dials, checked like an injecting route's
-  target; the box still reaches the agent's own hosts. Routes generate native configuration
+  target but on any port; the box still reaches the agent's own hosts on
+  443. Routes generate native configuration
   for the whole box. Agent precedence remains in force: Claude's managed env
   overrides user settings and inherited env; Codex's user config, supported
   project settings and explicit options override its system layer. Project-local

@@ -49,9 +49,10 @@ pub fn issue(hosts: &[String], label: &str, now: u64) -> io::Result<Issued> {
     let leaf_key =
         EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, leaf_pkcs8.as_ref(), &rng)
             .map_err(fail)?;
+    let not_before = now.saturating_sub(BEFORE);
     let validity = seq(&[
-        &time(now.saturating_sub(BEFORE)),
-        &time(now.saturating_add(LIFETIME)),
+        &time(not_before),
+        &time(not_before.saturating_add(LIFETIME)),
     ]);
     let ca_name = name(&format!("pinfold box CA {label}"));
     let ca_id = key_id(ca_key.public_key().as_ref());

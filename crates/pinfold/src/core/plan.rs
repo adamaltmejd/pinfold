@@ -137,9 +137,12 @@ impl Route {
                     return Ok(plain(&inject.to));
                 }
                 // The box reaches the host on 443, by a name the leaf carries.
-                if target.port != 443 || network::literal(&target.host).is_some() {
+                if target.port != 443
+                    || network::literal(&target.host).is_some()
+                    || target.host.ends_with('.')
+                {
                     return Err(invalid(format!(
-                        "route {label:?}: an https `to` must name a host on port 443"
+                        "route {label:?}: an https `to` must name a host, without a trailing dot, on port 443"
                     )));
                 }
                 Ok(vec![Serving {
@@ -1165,7 +1168,8 @@ impl Plan {
                     match routed.get(&serving.name) {
                         // Two routes may share a host only to send the same thing.
                         Some((other, first, shared))
-                            if shared.to != serving.to
+                            if shared.to.trim_end_matches('/')
+                                != serving.to.trim_end_matches('/')
                                 || shared.base_path != serving.base_path
                                 || first.credential()? != route.credential()? =>
                         {
