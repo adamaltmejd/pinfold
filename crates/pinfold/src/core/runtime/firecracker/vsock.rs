@@ -111,7 +111,7 @@ fn connect(
     cancel: Option<&AtomicBool>,
     operation: &str,
 ) -> io::Result<UnixStream> {
-    let mut connection = sockets.connect(deadline)?;
+    let mut connection = sockets.connect(deadline, cancel)?;
     connection.set_nonblocking(true)?;
     crate::core::pipe::write_all(
         &mut connection,
