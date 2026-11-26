@@ -82,8 +82,8 @@ fn run(host: &mut UnixStream) -> io::Result<()> {
     }
     capabilities()?;
     if relay {
-        let relay = std::net::TcpListener::bind(super::RELAY_LISTEN)?;
-        super::serve_relay(relay, || {
+        let relay = std::net::TcpListener::bind(super::pid1::RELAY_LISTEN)?;
+        super::pid1::serve_relay(relay, || {
             firecracker::vsock_connect(firecracker::PROXY_PORT)
         })?;
     }

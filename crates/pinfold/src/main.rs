@@ -54,6 +54,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         // PID 1 never returns, so it never reaches `report`.
+        #[cfg(target_os = "linux")]
         "init" => |args| init::run(args),
         "box" => cli::run,
         "build" => cli::build,

@@ -19,8 +19,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use super::r#box::{Box, Shutdown, Signals, UpError};
 use super::plan::{Disk, Plan};
 use super::{artifacts, runtime};
-use crate::init::export::{ABORT, CONTENT_BYTES, ENTRIES, METADATA_BYTES, PATH_BYTES};
-use crate::init::{STREAM_DIR, STREAM_END, STREAM_EXECUTABLE, STREAM_FILE, STREAM_SYMLINK};
+use crate::init::{
+    ABORT, CONTENT_BYTES, ENTRIES, METADATA_BYTES, PATH_BYTES, STREAM_DIR, STREAM_END,
+    STREAM_EXECUTABLE, STREAM_FILE, STREAM_SYMLINK,
+};
 
 /// The caller chooses files to cross; this operation never reads Pi policy.
 pub fn run(name: &str, destination: &Path, image: Option<&str>) -> io::Result<i32> {

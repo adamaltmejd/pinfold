@@ -6,13 +6,10 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-use super::{STREAM_DIR, STREAM_END, STREAM_EXECUTABLE, STREAM_FILE, STREAM_SYMLINK};
-
-pub(crate) const ENTRIES: u64 = 65_536;
-pub(crate) const PATH_BYTES: usize = 4096;
-pub(crate) const METADATA_BYTES: u64 = 16 << 20;
-pub(crate) const CONTENT_BYTES: u64 = 64 << 30;
-pub(crate) const ABORT: u8 = b'!';
+use super::{
+    ABORT, CONTENT_BYTES, ENTRIES, METADATA_BYTES, PATH_BYTES, STREAM_DIR, STREAM_END,
+    STREAM_EXECUTABLE, STREAM_FILE, STREAM_SYMLINK,
+};
 
 pub(crate) fn run(args: &[String]) -> io::Result<()> {
     let [root] = args else {
