@@ -1619,7 +1619,7 @@ pub(crate) fn owner(args: &[String]) -> io::Result<i32> {
         let mut locator = Locator { version: 1, root: root.clone(), name: plan.name.clone(), generation: None, mount: resolved.snapshot.project_mount() };
         owned_name = Some(locator.name.clone());
         locator.publish()?;
-        state::record_run(&root)?;
+        state::record_run(&root, locator.mount)?;
         let (cancel, cancelled) = watch::channel(false);
         let init = artifacts::init_path()?;
         let image_id = resolved.snapshot.image_id().ok_or_else(unavailable)?.to_string();

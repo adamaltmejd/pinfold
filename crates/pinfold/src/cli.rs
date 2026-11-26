@@ -880,7 +880,7 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
     println!("pinfold clean: {action}");
     match idle.as_ref().map(|idle| &idle.scope) {
         Some(Scope::NoProject) => {
-            println!("pinfold clean: not in a project folder; no project removed")
+            println!("pinfold clean: this folder is no project pinfold runs; no project removed")
         }
         Some(Scope::Project(id))
             if !crate::pi::state::state_dirs()?
@@ -1032,7 +1032,8 @@ impl CleanPlan {
                 project_state += clean::path_bytes(&project.dir);
                 idle_state.push(project.dir.clone());
                 idle_roots.push(project.root.clone());
-                let names: Vec<String> = crate::pi::state::disk_names(&project.id)
+                let names: Vec<String> = project
+                    .disks()
                     .into_iter()
                     .filter(|name| disks.iter().any(|disk| &disk.name == name))
                     .collect();
@@ -1181,20 +1182,35 @@ impl CleanPlan {
                     continue;
                 }
                 if Self::idle(&project, &live, self.idle.as_ref()) {
-                    clean::remove_paths(vec![project.dir.clone()])?;
-                    // A disk a box attaches stays; `disk::remove` checks.
+                    // Disks first: a kept disk keeps the state that names
+                    // its origin, so a later clean still finds it. A disk a
+                    // box attaches stays; `disk::remove` checks.
+                    let mut kept = false;
                     for name in self.project_disks.get(&project.id).into_iter().flatten() {
                         match disk::remove(runtime, name) {
-                            Ok(disk::Removal::Removed { existed: true }) => removed += 1,
-                            Ok(_) => {}
+                            Ok(disk::Removal::Removed { existed }) => {
+                                removed += usize::from(existed)
+                            }
+                            Ok(disk::Removal::InUse(holder)) => {
+                                kept = true;
+                                println!(
+                                    "pinfold clean: disk {} is attached to box {}; kept, with its project's state",
+                                    terminal_text(name),
+                                    terminal_text(&holder)
+                                );
+                            }
                             Err(error) => {
+                                kept = true;
                                 let _ = writeln!(
                                     io::stderr(),
-                                    "pinfold clean: disk {name:?}: {error}; kept"
+                                    "pinfold clean: disk {name:?}: {error}; kept, with its project's state"
                                 );
                                 disk_failure.get_or_insert(error);
                             }
                         }
+                    }
+                    if !kept {
+                        clean::remove_paths(vec![project.dir.clone()])?;
                     }
                 }
             }
@@ -1228,13 +1244,23 @@ impl CleanPlan {
 }
 
 /// The project the current folder resolves to, as project commands
-/// resolve it.
+/// resolve it and check its mount. A folder they would refuse, such as a
+/// linked worktree of a disk project, selects none.
 fn current_scope() -> Scope {
-    std::env::current_dir()
-        .and_then(|cwd| crate::pi::context::Context::discover(&cwd))
-        .map_or(Scope::NoProject, |context| {
-            Scope::Project(crate::pi::state::project_id(&context.root))
-        })
+    let accepted = || -> io::Result<Option<String>> {
+        let context = crate::pi::context::Context::discover(&std::env::current_dir()?)?;
+        match crate::config::project_mount(&context.root)? {
+            Some(mount) => context.check_metadata(mount)?,
+            // Without a configuration the mount is unknown.
+            None if context.worktree.is_some() => return Ok(None),
+            None => {}
+        }
+        Ok(Some(crate::pi::state::project_id(&context.root)))
+    };
+    match accepted() {
+        Ok(Some(id)) => Scope::Project(id),
+        _ => Scope::NoProject,
+    }
 }
 
 fn parse_clean(args: &[String]) -> io::Result<(bool, Option<Idle>)> {
