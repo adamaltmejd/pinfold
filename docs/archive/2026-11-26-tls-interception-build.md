@@ -57,8 +57,9 @@ Enumerated by running gh 2.x through the proxy and logging CONNECTs:
 | `gh release download --archive` | `codeload.github.com` |
 | `gh run download` | `productionresultssa<N>.blob.core.windows.net`, varying |
 
-No private repository with releases was available, so private-repo
-redirects were not observed.
+A private repository behaves the same: a draft release with a 200 KB
+asset was created, downloaded byte-identical and deleted through the
+route. The asset came from `release-assets.githubusercontent.com`.
 
 ## Mac CLI checks
 
@@ -98,10 +99,13 @@ differs.
 
 ## Agents and Upgrade
 
-Codex's run shows two `GET /backend-api/codex/responses` answered 405
-before its POSTs succeeded. The proxy drops `Upgrade`, so Codex's
-WebSocket attempt reaches the upstream as a plain GET, and Codex falls
-back to HTTP. Codex works at `chatgpt.com` only through that fallback.
+Codex's first run showed two `GET /backend-api/codex/responses`
+answered 405 before its POSTs succeeded: the proxy drops `Upgrade`, so
+its WebSocket attempt reached the upstream as a plain GET, and Codex
+fell back to HTTP. Codex 0.172.0 has a provider setting,
+`supports_websockets`; with it false in the generated configuration,
+`codex exec` answered with one `POST /backend-api/codex/responses` 200
+and no GET.
 
 Claude at `api.anthropic.com`, one short exchange each, on the Mac:
 
@@ -139,3 +143,24 @@ non-secret header, `pi.dev` allowed:
 - Plain HTTP to `api.github.com`: 403 `route`.
 - Java: 200 at `pi.dev`; handshake failure at `api.github.com`, logged
   `closed`, reason `tls handshake`.
+
+## Images without a CA bundle
+
+Box images are Debian-based with `ca-certificates` installed. A box with
+a routed host on `debian:trixie-slim`, which lacks the package, fails its
+start on both runtimes, the `failed` detail naming the file:
+
+- macOS: `read the image's CA bundle: pinfold init bundle: the image has
+  no regular file at /etc/ssl/certs/ca-certificates.crt; box images are
+  Debian-based with the ca-certificates package installed`.
+- Linux (dev VM): `write /etc/ssl/certs/ca-certificates.crt: the image
+  has no regular file at /etc/ssl/certs/ca-certificates.crt; box images
+  are Debian-based with the ca-certificates package installed: exit
+  status: 137`.
+
+## macOS file mount
+
+Inside the box the bundle shows as its own `virtiofs` mount at
+`/etc/ssl/certs/ca-certificates.crt`; whether Apple shares the host
+file's parent directory with the VM could not be seen from the guest.
+The host file sits in a directory of its own, holding nothing else.

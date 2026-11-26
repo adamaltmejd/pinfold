@@ -341,7 +341,8 @@ pub const CODEX_CONFIG: &str = "model_provider = \"pinfold\"\n\
      name = \"pinfold\"\n\
      base_url = \"https://chatgpt.com/backend-api/codex\"\n\
      wire_api = \"responses\"\n\
-     requires_openai_auth = false\n";
+     requires_openai_auth = false\n\
+     supports_websockets = false\n";
 
 /// Claude's system settings carry only placeholders.
 pub const CLAUDE_CONFIG_DIR: &str = "/etc/claude-code";

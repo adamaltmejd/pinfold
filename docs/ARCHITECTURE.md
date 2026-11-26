@@ -1006,9 +1006,9 @@ network listener, no token: the socket identifies the box.
   one request per connection.
 - **Box trust:** a box with a routed host gets `/etc/ssl/certs/ca-certificates.crt`
   replaced, read-only, by the image's own file at that path followed by
-  the box CA. Box images are Debian-based: where the image has no regular
-  file there, reached without a link, the start fails, its `failed`
-  detail naming the file. The box gets `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and `REQUESTS_CA_BUNDLE`
+  the box CA. Box images are Debian-based with the `ca-certificates`
+  package installed: where the image has no regular file there, reached
+  without a link, the start fails, its `failed` detail naming the file. The box gets `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS` and `REQUESTS_CA_BUNDLE`
   naming it. On Linux PID 1 writes it into the root's overlay before the
   root turns read-only; on macOS a networkless helper box on the image
   reads the image's file and the box gets the result as a single-file
@@ -1126,8 +1126,9 @@ network listener, no token: the socket identifies the box.
     never include its output. The route is served at `chatgpt.com`. The
     box gets `/etc/codex/config.toml`, mounted read-only, selecting a
     custom provider with `base_url =
-    "https://chatgpt.com/backend-api/codex"`, `wire_api = "responses"` and
-    `requires_openai_auth = false`.
+    "https://chatgpt.com/backend-api/codex"`, `wire_api = "responses"`,
+    `requires_openai_auth = false` and `supports_websockets = false`, since
+    the proxy drops `Upgrade`.
   - `pi`: `{ "login": "pi", "provider": P, "from": VAR }`, where P is
     `openrouter`, `anthropic`, `openai` or `anthropic-subscription` and
     `$VAR` is that provider's API key, or for `anthropic-subscription` a

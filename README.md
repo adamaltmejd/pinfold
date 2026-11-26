@@ -175,7 +175,10 @@ Login routes generate native configuration for the whole box. Claude and Codex
 use system configuration; Pi autoloads a read-only extension under its writable
 home. Agents reach their real hosts; the proxy terminates TLS there and
 adds the host credential, so a key the box sends to that host is
-replaced. Agent configuration precedence still applies. Launch agents through PATH.
+replaced. The box image must be Debian-based with the `ca-certificates`
+package installed, or a box with a login route or an `https` injecting
+route does not start. Codex is
+set to use HTTP, not WebSockets, which the proxy does not carry. Agent configuration precedence still applies. Launch agents through PATH.
 An explicit project `routes` table replaces the profile's routes. An API
 key can also arrive through the environment.
 
@@ -480,8 +483,8 @@ credential the box sends there with the token. They need no `allow`
 entry. The box can use the token but never read it. Prefer a fine-grained token scoped to
 the one repository the box works on, with only the permissions it needs.
 
-Release download, upload and `--archive`, and `gh api --paginate`
-work. `gh run download` does not: its artifacts redirect to varying
+Release download (public and private repositories), upload and
+`--archive`, and `gh api --paginate` work. `gh run download` does not: its artifacts redirect to varying
 Azure hosts. A Java client fails at these hosts, since Java does not
 read the CA bundle.
 

@@ -683,7 +683,7 @@ pub(crate) fn image_bundle(root: &OwnedFd) -> io::Result<Vec<u8>> {
     use nix::fcntl::OFlag;
     let missing = || {
         io::Error::other(format!(
-            "the image has no regular file at {BUNDLE}; box images are Debian-based"
+            "the image has no regular file at {BUNDLE}; box images are Debian-based with the ca-certificates package installed"
         ))
     };
     let path = Path::new(BUNDLE).strip_prefix("/").expect("absolute");
