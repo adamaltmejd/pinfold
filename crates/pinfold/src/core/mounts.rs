@@ -11,17 +11,8 @@ use super::profile::{Profile, Share};
 use crate::dirs;
 
 /// Reused by project admission, for the project root and each read-only
-/// folder; `extra` names its configuration files too.
+/// folder.
 pub(crate) fn check_paths_outside(
-    root: &Path,
-    profile: Option<&Profile>,
-    extra: impl IntoIterator<Item = PathBuf>,
-    bidirectional: bool,
-) -> io::Result<()> {
-    check_extra_paths_outside(root, protected_paths(profile, extra)?, bidirectional)
-}
-
-fn check_extra_paths_outside(
     root: &Path,
     paths: impl IntoIterator<Item = PathBuf>,
     bidirectional: bool,
@@ -49,7 +40,8 @@ fn check_extra_paths_outside(
     Ok(())
 }
 
-fn protected_paths(
+/// `extra` names the project's configuration files too.
+pub(crate) fn protected_paths(
     profile: Option<&Profile>,
     extra: impl IntoIterator<Item = PathBuf>,
 ) -> io::Result<BTreeSet<PathBuf>> {
@@ -140,7 +132,7 @@ pub(crate) fn prepare(plan: &mut Plan, profile: Option<&Profile>, init: &Path) -
                 return Err(invalid("share source must be a plain directory"));
             }
             mount.host = fs::canonicalize(&mount.host)?;
-            check_extra_paths_outside(&mount.host, paths.iter().cloned(), true)?;
+            check_paths_outside(&mount.host, paths.iter().cloned(), true)?;
             if supplied(&mount.guest) {
                 return Err(invalid("share overlaps supplied init or forwarded socket"));
             }

@@ -375,25 +375,21 @@ pub fn builtin_hash() -> io::Result<String> {
 fn load_dir(name: &str, root: &Path) -> io::Result<Profile> {
     let read = |file: &str| {
         let path = root.join(file);
-        fs::read(&path).map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!(
-                    "profile {name:?}: read {}: {error}",
-                    crate::formatting::terminal_text(&path.to_string_lossy())
-                ),
-            )
-        })
+        match fs::read(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            read => read.map(Some).map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!(
+                        "profile {name:?}: read {}: {error}",
+                        crate::formatting::terminal_text(&path.to_string_lossy())
+                    ),
+                )
+            }),
+        }
     };
-    let containerfile = match read("Containerfile") {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error),
-    };
-    let config = match read("pinfold.toml") {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-        config => config?,
-    };
+    let containerfile = read("Containerfile")?;
+    let config = read("pinfold.toml")?.unwrap_or_default();
     let home_dir = root.join("home");
     let mut home = Vec::new();
     if home_dir.is_dir() {
