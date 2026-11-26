@@ -968,7 +968,7 @@ struct CleanPlan {
     disk_bytes: u64,
     disk_count: usize,
     /// Recorded checkouts that are gone or moved; their state and disks
-    /// stay until `--idle` or `disk rm`.
+    /// stay until `--idle --all-projects` or `disk rm`.
     moved: Vec<PathBuf>,
     automatic_bytes: u64,
     project_state: u64,
