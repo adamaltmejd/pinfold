@@ -1203,6 +1203,11 @@ impl CleanPlan {
             let fresh = clean::boxes(runtime)?;
             let mut live = fresh.live_projects;
             live.extend(fresh.dead.into_iter().filter_map(|dead| dead.project));
+            let present: BTreeSet<String> = runtime
+                .list_disks()?
+                .into_iter()
+                .map(|disk| disk.name)
+                .collect();
             for project in crate::pi::state::state_dirs()? {
                 if !locks.contains_key(project.id.as_str()) {
                     continue;
@@ -1210,11 +1215,16 @@ impl CleanPlan {
                 if Self::idle(&project, &live, self.idle.as_ref()) {
                     // Disks first: a kept disk keeps the state that names
                     // its origin, so a later clean still finds it. The
-                    // names, not the measurement, pick the disks, so one
-                    // made since goes too; `disk::remove` checks the
-                    // inventory and attachments under the disk's lock.
+                    // locked inventory, not the measurement, picks the
+                    // disks, so one made since goes too. Only a present
+                    // disk reaches `disk::remove`, which reads every
+                    // attachment record: an unrelated unreadable one must
+                    // not keep a diskless project's state.
                     let mut kept = false;
-                    for name in &crate::pi::state::disk_names(&project.id) {
+                    for name in crate::pi::state::disk_names(&project.id)
+                        .iter()
+                        .filter(|name| present.contains(name.as_str()))
+                    {
                         match disk::remove(runtime, name) {
                             Ok(disk::Removal::Removed { existed }) => {
                                 removed += usize::from(existed)
