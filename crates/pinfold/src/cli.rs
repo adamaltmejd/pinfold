@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::core::artifacts;
 use crate::core::r#box::{Box, Refusal, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::image::{self, Build, Context, ImageError, ImageRequest};
-use crate::core::plan::{Plan, Route, valid_name};
+use crate::core::plan::{Plan, Route};
 use crate::core::profile::{self, Profile};
 use crate::core::runtime::{BoxInfo, Runtime, runtime};
 use crate::core::{clean, disk, runs};
@@ -802,10 +802,8 @@ pub fn disk(args: &[String]) -> io::Result<i32> {
 }
 
 fn remove_disk(runtime: &dyn Runtime, name: &str, json: bool) -> io::Result<i32> {
-    // Looser than a new disk's name, so one an older release made can go.
-    if !valid_name(name) {
-        let detail =
-            format!("disk name {name:?} must start alphanumeric and hold only [A-Za-z0-9._-]");
+    if let Err(error) = profile::check_name("disk", name) {
+        let detail = error.to_string();
         return Ok(if json {
             refused("disk", Some(name), RefusalReason::Spec, &detail)
         } else {
