@@ -9,10 +9,10 @@ use std::time::Duration;
 use nix::fcntl::{Flock, FlockArg};
 use serde::Deserialize;
 
-use super::{allocated_bytes, container};
+use super::{allocated_bytes, container, output};
 use crate::core::image::{BuildRequest, ImageInfo};
 use crate::core::process::CommandGuard;
-use crate::core::runtime::{captured, output, parse_json, spawn_error};
+use crate::core::runtime::{captured, parse_json, spawn_error};
 use crate::core::{clean, ownership, process};
 
 /// One `container image list --format json` entry, as much as pinfold needs.

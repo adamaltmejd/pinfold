@@ -1746,7 +1746,7 @@ Automatic, never prompting:
   in the last hour stays, so the ref its `built` line named still comes
   up; past the hour the newest two rule applies.
 - At most once a day, at the start of a working command (except the deferred
-  cases below, and not `--version`, `--help`, `doctor`, `config`, `profile`, `profile list`, `update`, `apparmor-profile`, `box list`, `box down`, `box inspect`, `box events`, `box prune`, `clean --dry-run`, `--`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
+  cases below, and not `--version`, `--help`, `doctor`, `config`, `profile`, `profile list`, `update`, `apparmor-profile`, `box list`, `box down`, `box inspect`, `box events`, `box prune`, `clean`, `--`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
   is gone (nothing owns its generation's lifetime lock), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
   builds beyond each source's newest two (the after-build rule, applied
@@ -1758,6 +1758,8 @@ Automatic, never prompting:
   The Git remote helper defers it until the running owner’s mount decision
   and the configuration's loading and protected-path check. A refusal
   before then, a share refusal included, runs no pass. Signal handlers are installed before this deferred maintenance.
+  When its box list finds the runtime unreachable, the pass ends
+  silently; the command's own runtime call, if it makes one, reports it.
 
 A run is inactive when its generation owns no lifetime lock. An inactive
 run's directory goes when its newest file is older than 14 days; then,
@@ -1784,15 +1786,22 @@ of NAME, whatever its age, and no other name's.
   the stop. Linux: remove
   only an exclusively claimed idle owned builder cache)
 - with `--idle AGE`, state and disks of projects not run for that long,
-  except a project's with a live box. Never automatic: a project disk
+  except a project's with a live box (one whose owner holds its
+  generation's lifetime lock) or with a dead box clean failed to remove.
+  Never automatic: a project disk
   holds unfetched work, and a home disk sessions and logins.
+
+It then measures again and reports what it freed: how much the listed
+categories shrank, in total and per category. Image bytes are not among
+them.
 
 A project's configuration is the user's; nothing removes it. A project
 whose checkout is gone or moved keeps its state and disks;
 `clean` lists them, and they go only with `--idle AGE` or `disk rm`.
 Other disks go only by `disk rm`; a project home's caches are inside its
 disk and not cleaned. The listing counts the disks and names both ways
-to remove them.
+to remove them; under `--idle` it counts those the run removes, which
+excludes a disk a live box attaches.
 
 `--dry-run` only lists. Run records are a category of their own. `doctor` shows disk use per category and suggests
 `clean --dry-run` above 20 GiB. `doctor` runs no maintenance and changes no pinfold

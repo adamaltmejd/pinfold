@@ -131,6 +131,26 @@ pub(crate) fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
     Ok(Ok(output.stdout))
 }
 
+/// The Apple container service cannot be reached. Only the Apple adapter
+/// makes it, so [`unreachable`] matches no other failure.
+#[derive(Debug)]
+struct Unreachable;
+
+impl std::fmt::Display for Unreachable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cannot reach the container service; run `container system start`")
+    }
+}
+
+impl std::error::Error for Unreachable {}
+
+/// Whether `error` says the Apple container service cannot be reached.
+pub fn unreachable(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<Unreachable>())
+}
+
 /// Run `argv` with stdin closed and return its stdout. A failed run's error
 /// names the command and carries its stderr; a failed spawn keeps its kind.
 pub(crate) fn output(argv: &[&str]) -> io::Result<Vec<u8>> {

@@ -17,7 +17,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     // Dropping only the live test passes: the owner's project lock still
     // keeps the project.
     // The idle project's state and disks going is the positive control.
-    // Sabotage (run): in main.rs, drop the `clean --dry-run` exemption
+    // Sabotage (run): in main.rs, drop the `clean` exemption
     // from the automatic pass. A dry run from a state root whose daily
     // pass is due then removes the unpinned artifact version; `clean`
     // removing it is the control.
