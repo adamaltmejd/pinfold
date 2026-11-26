@@ -210,13 +210,16 @@ pub fn trust_bundle(
     plan: &Plan,
     init: &Path,
     state_dir: &Path,
+    image_id: &str,
     ca: &str,
+    cancel: &AtomicBool,
 ) -> io::Result<std::path::PathBuf> {
     let image = plan.image.as_deref().expect("up resolved the image");
     let user = format!("{}:{}", nix::unistd::getuid(), nix::unistd::getgid());
     // Under the box's name, which its owner holds: another root's
     // maintenance prunes an unnamed helper as a dead box.
-    let output = std::process::Command::new("container")
+    let mut command = std::process::Command::new("container");
+    command
         .args(["run", "--name", &plan.name, "--progress", "none"])
         .args(["--network", "none"])
         .args(["--read-only", "--cap-drop", "ALL", "--workdir", "/"])
@@ -239,16 +242,30 @@ pub fn trust_bundle(
         .arg(init)
         .arg(image)
         .args(["init", "bundle"])
-        .stdin(Stdio::null())
-        .output_guarded()
+        .stdin(Stdio::null());
+    let output = crate::core::process::output_cancellable(&mut command, None, cancel)
         .map_err(|error| spawn_error("container", error));
-    let (stopped, removed, _) = remove_helper(&plan.name);
+    // Apple runs a reference, not a local digest: the helper's own record
+    // says which image it read.
+    let ran = container(&plan.name).map(|helper| helper.map(|helper| box_info(helper).image_id));
+    let (stopped, removed, unremoved) = remove_helper(&plan.name);
+    if unremoved {
+        return Err(io::Error::other(format!(
+            "remove the CA bundle helper {}: {removed:?}",
+            plan.name
+        )));
+    }
     let output = output?;
     if !output.status.success() {
         return Err(io::Error::other(format!(
             "read the image's CA bundle: {}",
             terminal_text(String::from_utf8_lossy(&output.stderr).trim())
         )));
+    }
+    if ran?.as_deref() != Some(image_id) {
+        return Err(io::Error::other(
+            "image-changed: the CA bundle helper read a different image",
+        ));
     }
     if let Err(error) = stopped.and(removed) {
         return Err(io::Error::other(format!(
@@ -264,7 +281,11 @@ pub fn trust_bundle(
         bundle.push(b'\n');
     }
     bundle.extend_from_slice(ca.as_bytes());
-    let path = state_dir.join("ca-certificates.crt");
+    // A directory of its own: the runtime may share a file mount's parent
+    // directory with the VM.
+    let dir = state_dir.join("trust");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("ca-certificates.crt");
     std::fs::write(&path, bundle)?;
     Ok(path)
 }

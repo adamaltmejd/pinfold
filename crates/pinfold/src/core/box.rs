@@ -557,8 +557,15 @@ impl Box {
                     None => {
                         #[cfg(target_os = "linux")]
                         let removed = runtime.down(&plan.name).map(|()| false);
+                        // The CA bundle helper runs under the box's name; one
+                        // it could not remove must go before the claim does.
                         #[cfg(not(target_os = "linux"))]
-                        let removed = Ok(false);
+                        let removed = match plan.egress.as_ref() {
+                            Some(egress) if !egress.routed_hosts().is_empty() => {
+                                runtime.down(&plan.name).map(|()| false)
+                            }
+                            _ => Ok(false),
+                        };
                         (removed, None)
                     }
                 };

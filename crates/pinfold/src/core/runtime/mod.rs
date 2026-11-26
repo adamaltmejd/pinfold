@@ -60,11 +60,11 @@ pub fn prepare(
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (sockets, image_id, cancel, generated);
+        let _ = (sockets, generated);
         let bundle = plan
             .trust
             .as_deref()
-            .map(|ca| apple::trust_bundle(plan, init, state_dir, ca))
+            .map(|ca| apple::trust_bundle(plan, init, state_dir, image_id, ca, cancel))
             .transpose()?;
         Ok(Prepared(bundle))
     }
