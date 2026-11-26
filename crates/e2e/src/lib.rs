@@ -1313,7 +1313,16 @@ enum Answer {
     /// empty 200 elsewhere. Anything else gets 400, so a request whose body
     /// was lost fails.
     Model(Arc<str>, Arc<str>),
+    /// 200 to every request, as GitHub's API names further URLs: a `Link`
+    /// to [`GITHUB_NEXT`] and a JSON body whose `upload_url` is
+    /// [`GITHUB_UPLOAD`] with its URI template.
+    Github,
 }
+
+/// The absolute next-page URL [`Fixture::github`] links to.
+pub const GITHUB_NEXT: &str = "https://api.github.com/user?page=2";
+/// The absolute upload URL [`Fixture::github`] returns, without its template.
+pub const GITHUB_UPLOAD: &str = "https://uploads.github.com/repos/e2e/repo/releases/1/assets";
 
 impl Fixture {
     /// Answer every request with `status` and no body.
@@ -1325,6 +1334,11 @@ impl Fixture {
     /// whose body holds `prompt`.
     pub fn model(reply: &str, prompt: &str) -> Fixture {
         Fixture::serving(Answer::Model(reply.into(), prompt.into()))
+    }
+
+    /// A GitHub API stand-in that names absolute URLs on GitHub's hosts.
+    pub fn github() -> Fixture {
+        Fixture::serving(Answer::Github)
     }
 
     fn serving(answer: Answer) -> Fixture {
@@ -1382,8 +1396,16 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, answer: &Answer) {
     }
     let mut sent = Vec::new();
     let _ = reader.by_ref().take(length).read_to_end(&mut sent);
+    let mut extra = String::new();
     let (status, body) = match answer {
         Answer::Status(status) => (*status, String::new()),
+        Answer::Github => {
+            extra = format!("Link: <{GITHUB_NEXT}>; rel=\"next\"\r\n");
+            (
+                200,
+                format!("{{\"upload_url\":\"{GITHUB_UPLOAD}{{?name,label}}\"}}"),
+            )
+        }
         Answer::Model(reply, prompt)
             if method == "POST"
                 && sent
@@ -1401,7 +1423,7 @@ fn serve(stream: TcpStream, seen: &Mutex<Vec<Request>>, answer: &Answer) {
     });
     let _ = (&stream).write_all(
         format!(
-            "HTTP/1.1 {status} Fixture\r\nContent-Type: text/event-stream\r\n\
+            "HTTP/1.1 {status} Fixture\r\nContent-Type: text/event-stream\r\n{extra}\
              Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )

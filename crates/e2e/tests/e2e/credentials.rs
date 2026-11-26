@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use e2e::{
-    COMMAND, Client, Fixture, Project, READER, Request, TestEnv, default_image, first_on_path,
-    json_lines, op_calls, run, spawn, stand_in_op,
+    COMMAND, Client, Fixture, GITHUB_NEXT, GITHUB_UPLOAD, Project, READER, Request, TestEnv,
+    default_image, first_on_path, json_lines, op_calls, run, spawn, stand_in_op,
 };
 
 /// A throwaway random word.
@@ -316,8 +316,9 @@ fn credentials_stay_on_the_host() {
     let env = TestEnv::new("credentials");
     let project = Project::new(&env, "credentials");
     let inject = Fixture::start(418);
-    // One origin for both GitHub names, served as GitHub Enterprise Server.
-    let github = Fixture::start(418);
+    // One origin for GitHub's three hosts, served as GitHub Enterprise
+    // Server, naming absolute URLs on GitHub's own hosts.
+    let github = Fixture::github();
     let (claude_reply, pi_reply) = (format!("claude-{}", random()), format!("pi-{}", random()));
     // A model fixture answers only a POST whose body holds its prompt.
     let (claude_prompt, pi_prompt) = (
@@ -368,11 +369,16 @@ fn credentials_stay_on_the_host() {
     let literal = format!("pfsecretliteral{}", random());
     let file = project.config_dir().join("pinfold.toml");
     let saved = fs::read_to_string(&file).unwrap();
+    // The allowlist also names two routed hosts, one exactly and GitHub's by
+    // `.suffix`: a routed host is terminated all the same.
+    // Sabotage (run): in proxy.rs's `connect`, check the allowlist before
+    // the routed set. Git, the GitHub API and Claude then tunnel to the
+    // real hosts, and no request reaches their fixtures.
     let configure = |claude_op: &str| {
         fs::write(
             &file,
             format!(
-                "{saved}allow = []\n\
+                "{saved}allow = [\"api.anthropic.com\", \".github.com\"]\n\
                  [env]\n\
                  E2E_FROM = {{ from = \"E2E_FROM_SOURCE\" }}\n\
                  E2E_OP = {{ from = \"{env_reference}\" }}\n\
@@ -501,9 +507,9 @@ fn credentials_stay_on_the_host() {
     };
 
     // The GitHub route replaces the guest's own mixed-case Authorization
-    // and drops its X-Api-Key on both names. Git reaches the route through
-    // the generated rewrite of a github.com remote; the fixture's 418 fails
-    // the command.
+    // and drops its X-Api-Key at its hosts, over TLS the box trusts with no
+    // client option. Git reaches the route through the generated rewrite
+    // of a github.com remote; the fixture's answer fails the command.
     // Sabotage (run): in core/plan.rs's `Login::resolve`, put the github
     // token after `Basic ` unencoded. The Git request then holds the raw
     // value.
@@ -521,7 +527,7 @@ fn credentials_stay_on_the_host() {
         ["ran"]
     );
     let github_api = "-H 'AuTHorization: Bearer pfbox-h' -H 'X-Api-Key: pfbox-hk' \
-                      'http://api.github.localhost/user";
+                      'https://api.github.com/user";
     let before = decisions().len();
     let upstream = github.requests().len();
     assert_eq!(
@@ -537,7 +543,7 @@ fn credentials_stay_on_the_host() {
             &lines[0]["reason"]
         ),
         (
-            &serde_json::json!("api.github.localhost"),
+            &serde_json::json!("api.github.com"),
             &serde_json::json!("refused"),
             &serde_json::json!("login credential query")
         ),
@@ -551,7 +557,33 @@ fn credentials_stay_on_the_host() {
     );
     // Control: the same request with an ordinary query reaches the
     // fixture.
-    assert_eq!(ask(&curl(&format!("{github_api}?per_page=2'"))), ["418"]);
+    assert_eq!(ask(&curl(&format!("{github_api}?per_page=2'"))), ["200"]);
+    // A client follows the absolute `Link` and `upload_url` the API
+    // returned, sending its own credential again; each arrives with the
+    // host's alone.
+    // Sabotage (run): in core/plan.rs's `Login::served`, drop
+    // uploads.github.com. The upload then tunnels to the real host and
+    // never reaches the fixture.
+    assert_eq!(
+        ask("cd /tmp && h='AuTHorization: Bearer pfbox-l' && \
+             curl -sS --max-time 20 -D head -o body -H \"$h\" https://api.github.com/user && \
+             next=$(sed -n 's/^[Ll]ink: <\\([^>]*\\)>.*/\\1/p' head) && \
+             upload=$(sed 's/.*\"upload_url\":\"\\([^\"{]*\\).*/\\1/' body) && \
+             curl -sS --max-time 20 -o /dev/null -w '%{http_code}\\n' -H \"$h\" \"$next\" && \
+             curl -sS --max-time 20 -o /dev/null -w '%{http_code}\\n' -H \"$h\" \
+             -H 'Content-Type: application/octet-stream' --data-binary e2e \"$upload?name=e2e\""),
+        ["200", "200"]
+    );
+    // A request whose Host names another site arrives with the fixture's
+    // own authority.
+    // Sabotage (run): in proxy.rs's `forward`, write the box's Host. The
+    // fixture then receives `example.com`.
+    assert_eq!(
+        ask(&curl(
+            "-H 'Host: example.com' https://api.github.com/e2e-host"
+        )),
+        ["200"]
+    );
     let requests = github.requests();
     let request = |part: &str| {
         requests
@@ -559,7 +591,27 @@ fn credentials_stay_on_the_host() {
             .find(|request| request.target.contains(part))
             .unwrap_or_else(|| panic!("no request for {part} at the GitHub fixture"))
     };
-    let (git, api) = (request("/info/refs"), request("/user"));
+    assert_eq!(
+        request("/api/v3/e2e-host").header("host"),
+        [github.route()],
+        "the Host the fixture received"
+    );
+    let next = GITHUB_NEXT.trim_start_matches("https://api.github.com");
+    let upload = GITHUB_UPLOAD.trim_start_matches("https://uploads.github.com");
+    for (part, what) in [
+        (format!("/api/v3{next}"), "the followed Link"),
+        (
+            format!("/api/uploads{upload}?name=e2e"),
+            "the followed upload_url",
+        ),
+    ] {
+        assert!(
+            only_bearer(request(&part), &claude_login),
+            "credential fields at {what}: {:?}",
+            credential_fields(request(&part))
+        );
+    }
+    let (git, api) = (request("/info/refs"), request("/api/v3/user?per_page"));
     assert!(
         credential_fields(git) == ["authorization"]
             && git.header("authorization") == [format!("Basic {basic}")],
@@ -577,7 +629,7 @@ fn credentials_stay_on_the_host() {
     // A credential query is refused before any upstream request. Each
     // request posts the Pi fixture's prompt, so the fixture's 200 also
     // shows the body arrived.
-    let completions = "http://openrouter.login/api/v1/chat/completions";
+    let completions = "https://openrouter.ai/api/v1/chat/completions";
     let forged = format!(
         "-d '{pi_prompt}' \
          -H 'authorization: Bearer pfbox-a' -H 'AUTHORIZATION: Bearer pfbox-b' \
@@ -598,7 +650,7 @@ fn credentials_stay_on_the_host() {
             &lines[0]["reason"]
         ),
         (
-            &serde_json::json!("openrouter.login"),
+            &serde_json::json!("openrouter.ai"),
             &serde_json::json!("refused"),
             &serde_json::json!("login credential query")
         ),
