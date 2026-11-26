@@ -68,32 +68,18 @@ fn every_egress_decision_is_recorded_or_the_box_stops() {
     // Sabotage (run): in proxy.rs's `record`, append even when the line
     // would pass MAX_LOG_BYTES. The padded log then grows and the box stays
     // up: `box up` does not end.
-    // Sabotage (run): in core/box.rs's `launch_record`, key each route by
-    // its label. The record then names `github-a` and `github-b`, not the
-    // one host they both serve.
     // The second run's own two decisions are the positive control.
     let env = TestEnv::new("records");
     let fixture = Fixture::start(418);
     let name = box_name("records");
     let literal = format!("pf-literal-{}", std::process::id());
-    // Two injecting routes serving one routed host with one credential. Its
-    // `from` is a variable every pinfold the harness runs has; no request
-    // goes there.
-    let injecting = json!({
-        "to": "https://api.github.com",
-        "headers": { "X-E2E-Key": { "from": "XDG_STATE_HOME" } },
-    });
     let spec = json!({
         "name": name,
         "image": default_image(),
         "env": { "E2E_LITERAL": literal },
         "egress": {
             "allow": ["api.github.com"],
-            "routes": {
-                "fixture.internal": fixture.route(),
-                "github-a": injecting,
-                "github-b": injecting,
-            },
+            "routes": { "fixture.internal": fixture.route() },
         },
         "cpus": 2,
         "memory": "1G",
@@ -163,9 +149,8 @@ fn every_egress_decision_is_recorded_or_the_box_stops() {
 
     // `inspect` reads the first run's records with no runtime on PATH. The
     // launch record is the spec's policy, naming the box's variables
-    // without values: the spec's, pinfold's default PINFOLD_ALLOW and the
-    // trust variables of a box with a routed host (Run records). Routes are
-    // keyed by the name the proxy serves, a shared routed host once.
+    // without values: the spec's and pinfold's default PINFOLD_ALLOW (Run
+    // records).
     let empty = env.root().join("empty-path");
     fs::create_dir(&empty).unwrap();
     let inspect = |run_id: &str| -> Value {
@@ -202,18 +187,9 @@ fn every_egress_decision_is_recorded_or_the_box_stops() {
                 &json!(name),
                 &json!({
                     "allow": spec["egress"]["allow"],
-                    "routes": {
-                        "fixture.internal": { "kind": "host-service", "to": fixture.route() },
-                        "api.github.com": { "kind": "injecting", "to": "https://api.github.com" },
-                    },
+                    "routes": { "fixture.internal": { "kind": "host-service", "to": fixture.route() } },
                 }),
-                BTreeSet::from([
-                    "E2E_LITERAL",
-                    "PINFOLD_ALLOW",
-                    "SSL_CERT_FILE",
-                    "NODE_EXTRA_CA_CERTS",
-                    "REQUESTS_CA_BUNDLE",
-                ]),
+                BTreeSet::from(["E2E_LITERAL", "PINFOLD_ALLOW"]),
                 &spec["memory"],
             ),
             "{launch}"

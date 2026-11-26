@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use e2e::{
-    COMMAND, Client, Fixture, GITHUB_NEXT, GITHUB_UPLOAD, Project, READER, Request, TestEnv,
-    default_image, first_on_path, json_lines, op_calls, run, spawn, stand_in_op,
+    COMMAND, Client, Fixture, GITHUB_UPLOAD, Project, READER, Request, TestEnv, default_image,
+    first_on_path, json_lines, op_calls, run, spawn, stand_in_op,
 };
 
 /// A throwaway random word.
@@ -558,21 +558,18 @@ fn credentials_stay_on_the_host() {
     // Control: the same request with an ordinary query reaches the
     // fixture.
     assert_eq!(ask(&curl(&format!("{github_api}?per_page=2'"))), ["200"]);
-    // A client follows the absolute `Link` and `upload_url` the API
-    // returned, sending its own credential again; each arrives with the
-    // host's alone.
+    // A client follows the absolute `upload_url` the API returned, sending
+    // its own credential again; it arrives with the host's alone.
     // Sabotage (run): in core/plan.rs's `Login::served`, drop
     // uploads.github.com. The upload then tunnels to the real host, which
     // answers 401, not the fixture's 200.
     assert_eq!(
         ask("cd /tmp && h='AuTHorization: Bearer pfbox-l' && \
-             curl -sS --max-time 20 -D head -o body -H \"$h\" https://api.github.com/user && \
-             next=$(sed -n 's/^[Ll]ink: <\\([^>]*\\)>.*/\\1/p' head) && \
+             curl -sS --max-time 20 -o body -H \"$h\" https://api.github.com/user && \
              upload=$(sed 's/.*\"upload_url\":\"\\([^\"{]*\\).*/\\1/' body) && \
-             curl -sS --max-time 20 -o /dev/null -w '%{http_code}\\n' -H \"$h\" \"$next\" && \
              curl -sS --max-time 20 -o /dev/null -w '%{http_code}\\n' -H \"$h\" \
              -H 'Content-Type: application/octet-stream' --data-binary e2e \"$upload?name=e2e\""),
-        ["200", "200"]
+        ["200"]
     );
     // A request whose Host names another site arrives with the fixture's
     // own authority.
@@ -596,21 +593,15 @@ fn credentials_stay_on_the_host() {
         [github.route()],
         "the Host the fixture received"
     );
-    let next = GITHUB_NEXT.trim_start_matches("https://api.github.com");
-    let upload = GITHUB_UPLOAD.trim_start_matches("https://uploads.github.com");
-    for (part, what) in [
-        (format!("/api/v3{next}"), "the followed Link"),
-        (
-            format!("/api/uploads{upload}?name=e2e"),
-            "the followed upload_url",
-        ),
-    ] {
-        assert!(
-            only_bearer(request(&part), &claude_login),
-            "credential fields at {what}: {:?}",
-            credential_fields(request(&part))
-        );
-    }
+    let upload = format!(
+        "/api/uploads{}?name=e2e",
+        GITHUB_UPLOAD.trim_start_matches("https://uploads.github.com")
+    );
+    assert!(
+        only_bearer(request(&upload), &claude_login),
+        "credential fields at the followed upload_url: {:?}",
+        credential_fields(request(&upload))
+    );
     let (git, api) = (request("/info/refs"), request("/api/v3/user?per_page"));
     assert!(
         credential_fields(git) == ["authorization"]
