@@ -878,7 +878,7 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
         format!("{total} measured; removing unused data")
     };
     println!("pinfold clean: {action}");
-    plan.print();
+    plan.print(dry_run);
     if !dry_run {
         let (disk_count, before) = (plan.disk_count, plan.sizes());
         let removal = plan.remove(runtime);
@@ -893,7 +893,7 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
                     .collect();
                 let total = freed.iter().map(|(_, bytes)| bytes).sum();
                 println!("pinfold clean: freed {}", human_size(total));
-                for (what, bytes) in freed {
+                for (what, bytes) in freed.into_iter().filter(|(_, bytes)| *bytes > 0) {
                     println!("  {what}: {}", human_size(bytes));
                 }
             }
@@ -1033,7 +1033,7 @@ impl CleanPlan {
         ]
     }
 
-    fn print(&self) {
+    fn print(&self, dry_run: bool) {
         println!(
             "  reclaimable by daily cleanup: {}",
             human_size(self.automatic_bytes)
@@ -1050,8 +1050,9 @@ impl CleanPlan {
         } else if self.idle.is_some() {
             let idle: usize = self.project_disks.values().map(Vec::len).sum();
             println!(
-                "  disks: {disks} in {}; removes {} of idle projects (pinfold disk list)",
+                "  disks: {disks} in {}; {} {} of idle projects (pinfold disk list)",
                 disks_text(self.disk_count),
+                if dry_run { "would remove" } else { "removes" },
                 disks_text(idle)
             );
             println!("    remove others with `pinfold disk rm NAME|--all`");
@@ -1352,7 +1353,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     }
     if let Some(plan) = disk {
         println!("Disk usage");
-        plan.print();
+        plan.print(false);
     }
     Ok(0)
 }

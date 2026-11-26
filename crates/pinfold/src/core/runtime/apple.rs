@@ -1376,9 +1376,11 @@ fn container(name: &str) -> io::Result<Option<ListedContainer>> {
         {
             return Ok(None);
         }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        super::stopped_service(&stderr)?;
         return Err(io::Error::other(format!(
             "container inspect: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            stderr.trim()
         )));
     }
     let mut containers: Vec<ListedContainer> = parse_json("container inspect", &output.stdout)?;

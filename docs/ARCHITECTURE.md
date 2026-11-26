@@ -1746,7 +1746,7 @@ Automatic, never prompting:
   in the last hour stays, so the ref its `built` line named still comes
   up; past the hour the newest two rule applies.
 - At most once a day, at the start of a working command (except the deferred
-  cases below, and not `--version`, `--help`, `doctor`, `config`, `profile`, `profile list`, `update`, `apparmor-profile`, `box list`, `box down`, `box inspect`, `box events`, `box prune`, `clean --dry-run`, `--`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
+  cases below, and not `--version`, `--help`, `doctor`, `config`, `profile`, `profile list`, `update`, `apparmor-profile`, `box list`, `box down`, `box inspect`, `box events`, `box prune`, `clean`, `--`, `stop`, the private owner entrypoint or `init`): prune boxes whose owner
   is gone (nothing owns its generation's lifetime lock), leftover sockets,
   artifact `<name>/<version>` directories no pin names (`init/` aside),
   builds beyond each source's newest two (the after-build rule, applied
@@ -1758,8 +1758,8 @@ Automatic, never prompting:
   The Git remote helper defers it until the running owner’s mount decision
   and the configuration's loading and protected-path check. A refusal
   before then, a share refusal included, runs no pass. Signal handlers are installed before this deferred maintenance.
-  An unreachable runtime ends the pass at its first runtime step, with one
-  line naming the cause; `clean` leaves that line to its own failure.
+  An unreachable runtime ends the pass silently at its first runtime step;
+  the command's own runtime call names the cause once.
 
 A run is inactive when its generation owns no lifetime lock. An inactive
 run's directory goes when its newest file is older than 14 days; then,
@@ -1771,7 +1771,7 @@ are never removed or truncated.
 of NAME, whatever its age, and no other name's.
 
 `pinfold clean` lists sizes, removes the following, then measures again
-and reports what it freed per category and in total:
+and reports what it freed in total and in each category that shrank:
 - everything automatic, now
 - the unused build cache (Apple: prune BuildKit records, return their
   blocks to the host, then stop the idle builder, which releases build

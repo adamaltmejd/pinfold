@@ -29,16 +29,9 @@ const PASS_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const CALLER_IMAGE_GRACE: Duration = Duration::from_secs(60 * 60);
 
 /// Run the daily pass if a day has passed. A problem goes to stderr; the
-/// caller's command continues.
+/// caller's command continues. An unreachable runtime ends the pass
+/// silently: the command's own runtime call reports it once.
 pub fn maintain() {
-    if let Err(error) = maintain_due() {
-        eprintln!("pinfold: maintenance: {error}");
-    }
-}
-
-/// The daily pass before `clean`, which measures through the runtime next
-/// and reports an unreachable one itself: one line, not two.
-pub fn maintain_before_clean() {
     if let Err(error) = maintain_due()
         && !unreachable(&error)
     {

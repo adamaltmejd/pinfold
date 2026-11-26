@@ -126,18 +126,23 @@ pub(crate) fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
         .map_err(|error| spawn_error(program, error))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        // The container CLI ends each error of a stopped service with this
-        // hint.
-        #[cfg(not(target_os = "linux"))]
-        if stderr.contains("`container system start`") {
-            return Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "the container service is not running; run `container system start`",
-            ));
-        }
+        stopped_service(&stderr)?;
         return Ok(Err(stderr));
     }
     Ok(Ok(output.stdout))
+}
+
+/// The unreachable error when a failed `container` run's `stderr` says the
+/// service is stopped: the CLI ends each such error with this hint. Apple
+/// only; no Linux tool prints it.
+pub(crate) fn stopped_service(stderr: &str) -> io::Result<()> {
+    if stderr.contains("`container system start`") {
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "the container service is not running; run `container system start`",
+        ));
+    }
+    Ok(())
 }
 
 /// Whether `error` says the runtime cannot be reached at all, so every
