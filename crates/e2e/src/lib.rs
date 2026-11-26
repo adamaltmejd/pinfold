@@ -133,8 +133,11 @@ pub fn run(command: &mut Command, timeout: Duration) -> Exec {
         }
     }
     // The pipes are closed; the command itself gets the rest of the deadline.
-    let status = wait_until(&mut child, deadline)
-        .unwrap_or_else(|| panic!("{command:?} did not exit within {timeout:?}"));
+    let status = try_wait_until(&mut child, deadline).unwrap_or_else(|| {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("{command:?} did not exit within {timeout:?}")
+    });
     let [stdout, stderr] = streams.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
     Exec {
         code: exit_code(status),
@@ -157,16 +160,14 @@ pub fn spawn(command: &mut Command) -> Child {
         .unwrap_or_else(|error| panic!("spawn {command:?}: {error}"))
 }
 
-/// Wait for `child` until `deadline`; past it, kill and reap it and return
-/// `None`.
-fn wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
+/// Wait for `child` until `deadline`; past it, return `None` and leave it
+/// running.
+fn try_wait_until(child: &mut Child, deadline: Instant) -> Option<ExitStatus> {
     loop {
         if let Some(status) = child.try_wait().expect("wait for a host process") {
             return Some(status);
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
             return None;
         }
         thread::sleep(Duration::from_millis(10));
@@ -655,15 +656,9 @@ impl Client {
     /// Close stdin and wait, bounded, for the client's exit code.
     pub fn finish(mut self) -> i32 {
         drop(self.stdin.take());
-        let status = wait_until(&mut self.child, Instant::now() + COMMAND)
+        let status = try_wait_until(&mut self.child, Instant::now() + COMMAND)
             .unwrap_or_else(|| panic!("client {} did not exit", self.child.id()));
         exit_code(status)
-    }
-
-    /// SIGKILL the client and reap it.
-    pub fn kill(mut self) {
-        self.child.kill().expect("SIGKILL the client");
-        self.child.wait().expect("reap the client");
     }
 }
 
@@ -702,7 +697,6 @@ fn host_git_setup(env: &TestEnv) {
          [gc]\n\tauto = 0\n[maintenance]\n\tauto = false\n",
     )
     .unwrap();
-    fs::write(env.root().join("gitconfig-system"), "").unwrap();
 }
 
 fn pinfold_command(env: &TestEnv, root: &Path) -> Command {
@@ -727,7 +721,7 @@ fn host_git_env(env: &TestEnv, command: &mut Command) {
     first_on_path(command, &env.root().join("bin"));
     command
         .env("GIT_CONFIG_GLOBAL", env.root().join("gitconfig"))
-        .env("GIT_CONFIG_SYSTEM", env.root().join("gitconfig-system"));
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
 }
 
 /// A stand-in for the 1Password CLI: `op` in a new directory `name` in the
@@ -909,18 +903,9 @@ impl BoxUp {
             .unwrap_or_else(|| panic!("box up {} did not end", self.name));
         // The owner stays in the guard until its `down` line is parsed, so a
         // panic here still gets recovery and keeps the roots.
-        let status = loop {
-            let child = self.child.as_mut().expect("a running owner");
-            if let Some(status) = child.try_wait().expect("wait for box up") {
-                break status;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "box up {} was not reaped",
-                self.name
-            );
-            thread::sleep(Duration::from_millis(10));
-        };
+        let child = self.child.as_mut().expect("a running owner");
+        let status = try_wait_until(child, deadline)
+            .unwrap_or_else(|| panic!("box up {} was not reaped", self.name));
         let last =
             last.unwrap_or_else(|| panic!("box up {} printed nothing after ready", self.name));
         let line: Value = serde_json::from_str(&last)
@@ -1029,12 +1014,7 @@ impl BoxUp {
 
     /// Wait for the owner within `timeout`, without blocking past it.
     fn reap(&mut self, timeout: Duration) -> Option<ExitStatus> {
-        let mut child = self.child.take()?;
-        let (send, status) = mpsc::channel();
-        thread::spawn(move || {
-            let _ = send.send(child.wait());
-        });
-        status.recv_timeout(timeout).ok().and_then(Result::ok)
+        try_wait_until(&mut self.child.take()?, Instant::now() + timeout)
     }
 
     fn fail(&mut self, what: &str) {
@@ -1093,10 +1073,8 @@ impl Below {
     /// Wait, bounded, until each process has exited: gone from /proc, or a
     /// zombie no one has reaped yet.
     pub fn wait_gone(&self) {
-        let deadline = Instant::now() + COMMAND;
-        while self.0.iter().any(|(pid, _)| !exited(*pid)) {
-            assert!(Instant::now() < deadline, "outlived their owner: {self:?}");
-            thread::sleep(Duration::from_millis(10));
+        for (pid, _) in &self.0 {
+            wait_exited(*pid);
         }
     }
 }
