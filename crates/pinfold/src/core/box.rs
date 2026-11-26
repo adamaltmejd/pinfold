@@ -749,10 +749,16 @@ pub fn down(name: &str) -> io::Result<()> {
     if let Some(lock) = ownership::try_name_lock(name)? {
         return remove_orphan(lock);
     }
+    // The owner answers only after teardown, which on Linux includes the
+    // guest's unmount under its own deadline.
+    #[cfg(target_os = "linux")]
+    let wait = ownership::STOP_TIMEOUT + runtime::firecracker::UNMOUNT_TIMEOUT;
+    #[cfg(not(target_os = "linux"))]
+    let wait = ownership::STOP_TIMEOUT;
     let stopped = ownership::request_stop(
         name,
         observed.as_ref(),
-        std::time::Instant::now() + ownership::STOP_TIMEOUT,
+        std::time::Instant::now() + wait,
         None,
     );
     if matches!(stopped, Ok(true)) {

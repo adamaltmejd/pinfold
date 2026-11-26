@@ -25,6 +25,9 @@ use crate::core::runtime::{
 };
 use crate::dirs;
 
+/// The host's absolute deadline for the guest's UNMOUNT answer.
+pub(crate) const UNMOUNT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Firecracker, run by pinfold itself.
 pub struct Firecracker;
 
