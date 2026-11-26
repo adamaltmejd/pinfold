@@ -1357,6 +1357,7 @@ fn box_info(container: ListedContainer) -> BoxInfo {
         image_ref: configuration.image.reference,
         created: configuration.created,
         running: container.status.state == "running",
+        memory_limit: configuration.resources.memory,
         stopped: container.status.state == "stopped" && container.status.started_date.is_some(),
     }
 }

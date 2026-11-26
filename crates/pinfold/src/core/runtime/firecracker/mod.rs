@@ -59,6 +59,7 @@ impl Firecracker {
     fn info(record: ownership::Record, running: Option<bool>) -> Option<BoxInfo> {
         let described = record.described?;
         Some(BoxInfo {
+            memory_limit: Some(vm::memory_mib(described.memory.as_deref()) << 20),
             running: running == Some(true),
             stopped: running == Some(false),
             id: record.name,

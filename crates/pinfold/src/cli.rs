@@ -1263,6 +1263,20 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
             human_size(plan.total())
         ));
     }
+    // `list` asks Apple's runtime once and Firecracker's records only, so
+    // no box can stall doctor.
+    let boxes: Vec<(String, Option<u64>)> = if ready {
+        runtime
+            .list()
+            .map_err(|e| findings.push(format!("Boxes: {e}")))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|box_| box_.running && clean::pinfold_box(box_))
+            .map(|box_| (box_.id, box_.memory_limit))
+            .collect()
+    } else {
+        Vec::new()
+    };
     if json {
         // `json!` panics on a path that is not UTF-8.
         let pins = serde_json::to_value(&pins)?;
@@ -1271,6 +1285,10 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
         } else {
             "working directory"
         };
+        let boxes: Vec<_> = boxes
+            .iter()
+            .map(|(name, limit)| serde_json::json!({"box": name, "memory_limit": limit}))
+            .collect();
         let disk = match &disk {
             Some(plan) => Some(serde_json::json!({
                 "automatic_bytes": plan.automatic_bytes, "run_bytes": plan.run_bytes,
@@ -1284,7 +1302,7 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
             serde_json::json!({
                 "root": utf8(root, what)?, "runtime": runtime.describe(), "runtime_ready": ready,
                 "version": version, "kernel": kernel, "config": configuration, "image": image,
-                "artifacts": pins, "findings": findings, "disk": disk
+                "artifacts": pins, "findings": findings, "boxes": boxes, "disk": disk
             })
         );
         return Ok(0);
@@ -1317,6 +1335,23 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
     }
     if let Ok((_, config)) = &project {
         println!("Logins    {}", logins_description(config));
+    }
+    if !boxes.is_empty() {
+        if cfg!(target_os = "macos") {
+            println!("Running boxes (macOS may keep up to each memory limit until `pinfold stop`)");
+        } else {
+            println!("Running boxes (memory limit)");
+        }
+        let rows: Vec<Vec<String>> = boxes
+            .iter()
+            .map(|(name, limit)| {
+                vec![
+                    format!("  {}", terminal_text(name)),
+                    limit.map_or_else(|| "unknown".to_string(), human_size),
+                ]
+            })
+            .collect();
+        print_table(&rows);
     }
     if let Some(plan) = disk {
         println!("Disk usage");

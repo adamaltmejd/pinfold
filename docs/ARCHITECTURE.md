@@ -2332,9 +2332,13 @@ images built on it and the build, where `--json` lists each image.
 In a configured project its `Logins` line names each effective login route
 with its agent, and Pi's provider, or says there is none. It reads
 configuration only: no value, and not whether a variable is set.
+When the runtime is ready, doctor lists each running pinfold box host-wide
+with its memory limit; on macOS that limit is what the box's VM may keep
+from the host until `pinfold stop`, since Apple's guest use does not show it.
 `doctor --json` prints the diagnostic report as structured data. Its
 `config` has the `config --json` report's shape, or is null when doctor
-has no project report. Its `egress.routes` holds each route as
+has no project report. Its `boxes` lists those boxes as `{box,
+memory_limit}`, limit in bytes or null. Its `egress.routes` holds each route as
 configured, a login route with its `login`.
 
 `pinfold --version` (`-V`) and `pinfold --help` (`-h`) answer without
