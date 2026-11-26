@@ -1786,8 +1786,9 @@ of NAME, whatever its age, and no other name's.
   the stop. Linux: remove
   only an exclusively claimed idle owned builder cache)
 - with `--idle AGE`, state and disks of projects not run for that long,
-  except a project's with a live box: one whose owner holds its
-  generation's lifetime lock. Never automatic: a project disk
+  except a project's with a live box (one whose owner holds its
+  generation's lifetime lock) or with a dead box clean failed to remove.
+  Never automatic: a project disk
   holds unfetched work, and a home disk sessions and logins.
 
 It then measures again and reports what it freed: how much the listed
