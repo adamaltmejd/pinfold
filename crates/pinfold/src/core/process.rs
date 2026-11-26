@@ -1,5 +1,6 @@
 //! Exclude process creation while descriptors temporarily lack CLOEXEC.
 
+use super::pipe::check_cancel;
 use nix::poll::{PollFd, PollFlags, poll};
 use std::cell::RefCell;
 use std::io::{self, Read, Write};
@@ -512,9 +513,7 @@ pub(crate) fn output_cancellable(
     input: Option<&[u8]>,
     cancel: &AtomicBool,
 ) -> io::Result<Output> {
-    if cancel.load(Ordering::Acquire) {
-        return Err(io::ErrorKind::Interrupted.into());
-    }
+    check_cancel(cancel)?;
     if input.is_some() {
         command.stdin(Stdio::piped());
     }
@@ -523,14 +522,13 @@ pub(crate) fn output_cancellable(
     let mut stdin = child.take_stdin();
     let mut stdout = child.take_stdout();
     let mut stderr = child.take_stderr();
-    if let Some(pipe) = stdin.as_ref() {
-        super::pipe::nonblocking(pipe, "crossing")?;
-    }
-    if let Some(pipe) = stdout.as_ref() {
-        super::pipe::nonblocking(pipe, "crossing")?;
-    }
-    if let Some(pipe) = stderr.as_ref() {
-        super::pipe::nonblocking(pipe, "crossing")?;
+    let fds = [
+        stdin.as_ref().map(AsFd::as_fd),
+        stdout.as_ref().map(AsFd::as_fd),
+        stderr.as_ref().map(AsFd::as_fd),
+    ];
+    for pipe in fds.into_iter().flatten() {
+        super::pipe::nonblocking(&pipe, "crossing")?;
     }
     let mut input = input.unwrap_or_default();
     let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -543,8 +541,8 @@ pub(crate) fn output_cancellable(
             input_failed |= !input.is_empty();
             stdin.take();
         }
-        if cancel.load(Ordering::Acquire) && exited.is_none() {
-            return Err(io::ErrorKind::Interrupted.into());
+        if exited.is_none() {
+            check_cancel(cancel)?;
         }
         if input.is_empty() {
             stdin.take();
@@ -578,16 +576,14 @@ pub(crate) fn output_cancellable(
                 stderr: err,
             });
         }
-        let mut ready = Vec::new();
-        if let Some(pipe) = stdin.as_ref() {
-            ready.push(PollFd::new(pipe.as_fd(), PollFlags::POLLOUT));
-        }
-        if let Some(pipe) = stdout.as_ref() {
-            ready.push(PollFd::new(pipe.as_fd(), PollFlags::POLLIN));
-        }
-        if let Some(pipe) = stderr.as_ref() {
-            ready.push(PollFd::new(pipe.as_fd(), PollFlags::POLLIN));
-        }
+        let mut ready: Vec<PollFd> = [
+            (stdin.as_ref().map(AsFd::as_fd), PollFlags::POLLOUT),
+            (stdout.as_ref().map(AsFd::as_fd), PollFlags::POLLIN),
+            (stderr.as_ref().map(AsFd::as_fd), PollFlags::POLLIN),
+        ]
+        .into_iter()
+        .filter_map(|(pipe, flags)| Some(PollFd::new(pipe?, flags)))
+        .collect();
         wait.poll(&mut ready)?;
     }
 }
