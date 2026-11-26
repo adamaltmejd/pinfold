@@ -329,7 +329,7 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
                 if disk.join(relative) == attachment.guest {
                     let directory = disk_root(root, disk)?;
                     as_box_user(request.uid, request.gid, || {
-                        super::make_directories(directory, relative).map(drop)
+                        super::pid1::make_directories(directory, relative).map(drop)
                     })
                     .map_err(|error| {
                         let path = disk.join(relative);
@@ -348,9 +348,9 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
                 Some("noinit_itable"),
             )?;
             if attachment.writable {
-                trims.push(super::open_directory(&target)?);
+                trims.push(super::pid1::open_directory(&target)?);
                 if attachment.fresh {
-                    super::own_fresh_root(&target, request.uid, request.gid)?;
+                    super::pid1::own_fresh_root(&target, request.uid, request.gid)?;
                 }
             }
             for (guest, missing) in &request.fills {
@@ -359,7 +359,7 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
                     as_box_user(request.uid, request.gid, || {
                         nix::unistd::fchdir(&directory)?;
                         // Unbuffered reads leave the next fill or seed stream for its owner.
-                        super::receive_into(Path::new("."), host, false)
+                        super::pid1::receive_into(Path::new("."), host, false)
                     })
                     .map_err(|error| {
                         io::Error::other(format!("populate {}: {error}", guest.display()))
@@ -467,8 +467,8 @@ fn mount_at(
         Some(errno) => io::Error::other(format!("make {}: {errno}", guest.display())),
         None => io::Error::other(format!("make {}: {error}", guest.display())),
     };
-    super::open_directory(root)
-        .and_then(|root| super::make_directories(root, relative))
+    super::pid1::open_directory(root)
+        .and_then(|root| super::pid1::make_directories(root, relative))
         .map_err(walk)?;
     mount(source, &target, fstype, flags, data)?;
     Ok(target)
@@ -478,8 +478,8 @@ fn mount_at(
 /// appended, walking the path without following a link.
 fn write_bundle(root: &Path, ca: &[u8]) -> io::Result<()> {
     use nix::fcntl::OFlag;
-    let root = super::open_directory(root)?;
-    let mut bundle = super::image_bundle(&root)?;
+    let root = super::pid1::open_directory(root)?;
+    let mut bundle = super::pid1::image_bundle(&root)?;
     if !bundle.is_empty() && !bundle.ends_with(b"\n") {
         bundle.push(b'\n');
     }
@@ -487,7 +487,7 @@ fn write_bundle(root: &Path, ca: &[u8]) -> io::Result<()> {
     let path = Path::new(super::BUNDLE)
         .strip_prefix("/")
         .expect("absolute");
-    let certs = super::make_directories(root, path.parent().expect("a directory"))?;
+    let certs = super::pid1::make_directories(root, path.parent().expect("a directory"))?;
     let name = path.file_name().expect("a file name");
     match nix::unistd::unlinkat(&certs, name, nix::unistd::UnlinkatFlags::NoRemoveDir) {
         Ok(()) | Err(nix::errno::Errno::ENOENT) => {}
@@ -505,7 +505,7 @@ fn write_bundle(root: &Path, ca: &[u8]) -> io::Result<()> {
 /// An open disk descriptor avoids the private staging tree's root-only
 /// ancestors.
 fn disk_root(root: &Path, disk: &Path) -> io::Result<OwnedFd> {
-    super::open_directory(&root.join(disk.strip_prefix("/").unwrap()))
+    super::pid1::open_directory(&root.join(disk.strip_prefix("/").unwrap()))
 }
 
 /// The child has no box work or threads and cannot regain root.
@@ -515,7 +515,7 @@ fn as_box_user(uid: u32, gid: u32, operation: impl FnOnce() -> io::Result<()>) -
     let child = match unsafe { nix::unistd::fork() }? {
         ForkResult::Child => {
             drop(errors);
-            let result = super::drop_identity(uid, gid).and_then(|()| operation());
+            let result = super::pid1::drop_identity(uid, gid).and_then(|()| operation());
             if let Err(error) = result {
                 let _ = write!(report, "{error}");
                 process::exit(1);
@@ -799,14 +799,14 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
             if !missing {
                 continue;
             }
-            super::receive_into(fill, &mut host, *missing).map_err(|error| {
+            super::pid1::receive_into(fill, &mut host, *missing).map_err(|error| {
                 io::Error::other(format!("copy into {}: {error}", fill.display()))
             })?;
         }
         let exec = vsock_listen(EXEC_PORT)?;
         // Without a proxy nothing listens, so a request finds no listener.
         let relay = (request.relay)
-            .then(|| TcpListener::bind(super::RELAY_LISTEN))
+            .then(|| TcpListener::bind(super::pid1::RELAY_LISTEN))
             .transpose()?;
         Ok((exec, relay))
     })();
@@ -816,7 +816,7 @@ fn exec_service(request: &Request, host: UnixStream, mut dropped: io::PipeReader
         Err(error) => fail(&mut host, &error),
     };
     if let Some(relay) = relay
-        && let Err(error) = super::serve_relay(relay, || vsock_connect(PROXY_PORT))
+        && let Err(error) = super::pid1::serve_relay(relay, || vsock_connect(PROXY_PORT))
     {
         fail(&mut host, &error)
     }
@@ -962,7 +962,7 @@ pub(super) fn exec(
             command
                 .env_clear()
                 .envs(vars.into_iter().map(|(name, value)| {
-                    let mut key = OsString::from(super::BOX_ENV_PREFIX);
+                    let mut key = OsString::from(super::pid1::BOX_ENV_PREFIX);
                     key.push(name);
                     (key, super::hex(value.as_bytes()))
                 }));
@@ -1060,7 +1060,7 @@ fn open_pty(window: Option<(u16, u16)>) -> io::Result<(File, File)> {
         }
         let slave = File::from_raw_fd(slave);
         if let Some((rows, cols)) = window {
-            super::set_window(&master, rows, cols)
+            super::pid1::set_window(&master, rows, cols)
                 .map_err(|error| context("set the window", error))?;
         }
         Ok((master, slave))
@@ -1131,7 +1131,7 @@ fn vsock_listen(port: u32) -> io::Result<OwnedFd> {
 /// accept backs off. Either way there is no connection.
 fn accept_host(listener: &OwnedFd) -> Option<UnixStream> {
     let Ok(connection) = nix::sys::socket::accept4(listener, SockFlag::SOCK_CLOEXEC) else {
-        super::back_off();
+        super::pid1::back_off();
         return None;
     };
     match nix::sys::socket::getpeername::<VsockAddr>(connection.as_raw_fd()) {

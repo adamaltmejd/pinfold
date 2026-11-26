@@ -1,6 +1,7 @@
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "../../pinfold/src/image_limits.rs"]
 mod image_limits;
+#[cfg(target_os = "linux")]
 #[path = "../../pinfold/src/init.rs"]
 mod init;
 
@@ -19,6 +20,7 @@ fn main() -> ExitCode {
         }
     };
     match args.first().map(String::as_str) {
+        #[cfg(target_os = "linux")]
         Some("init") => init::run(&args[1..]),
         _ => {
             eprintln!("usage: pinfold init");

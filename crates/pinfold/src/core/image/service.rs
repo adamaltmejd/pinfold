@@ -3,7 +3,7 @@
 //!
 //! - `list_images`: every image, with the labels recorded on it.
 //! - `resolve_image`: resolve a local image reference or content identity.
-//!   Never pulls. The inner `Err` describes an unavailable image.
+//!   Never pulls. `None` when the runtime has no such image.
 //! - `remove_image`: remove one image by reference, and any layers no image
 //!   references.
 //! - `purge_build_cache`: remove unused build cache without interrupting

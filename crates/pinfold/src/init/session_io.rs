@@ -194,7 +194,7 @@ pub(super) fn relay(
                         if let Some(master) = &terminal {
                             let rows = u16::from_be_bytes([payload[0], payload[1]]);
                             let cols = u16::from_be_bytes([payload[2], payload[3]]);
-                            if super::set_window(master, rows, cols).is_err() {
+                            if super::pid1::set_window(master, rows, cols).is_err() {
                                 disconnect(&connection, &mut connected, &mut writer);
                                 break;
                             }

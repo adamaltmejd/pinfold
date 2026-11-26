@@ -148,7 +148,7 @@ pub fn build(build: Build) -> io::Result<Result<Built, String>> {
     // A runtime that cannot answer does not fail a build that succeeded.
     let id = service::resolve_image(&reference)
         .ok()
-        .and_then(Result::ok)
+        .flatten()
         .map(|image| image.id);
     Ok(Ok(Built {
         reference,
