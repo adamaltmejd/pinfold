@@ -242,3 +242,79 @@ their format.
 After merging main (TLS interception, #476), row 11 passed on the dev VM
 at f729acd5 in 233 s, and CI's Linux suite passed on the same commit.
 The clone and scratch directory were deleted after the run.
+
+## Round 5, 2026-11-26: pinfold's own mke2fs profile, after the fourth review
+
+Review found that `-O` makes mke2fs skip the profile's whole
+`default_features` list. A valid host profile that enables `meta_bg`
+with `default_features = ^resize_inode` formatted fine with the plain
+arguments, but with round 4's `-b 4096 -O ^bigalloc` mke2fs 1.47.2 (the
+dev VM's) refused: "The resize_inode and meta_bg features are not
+compatible." So `box up` failed whenever it needed a new disk.
+
+`create_disk` now passes no `-O` and no `-b`. It writes a profile beside
+the image, `<name>.mke2fs.conf`, mode 0600, points `MKE2FS_CONFIG` at it
+for the one mkfs run, and removes it. Setting the variable on the child
+replaces any `MKE2FS_CONFIG` the caller has. The profile:
+
+```
+[defaults]
+    base_features = sparse_super,large_file,filetype,resize_inode,dir_index,ext_attr
+    default_mntopts = acl,user_xattr
+    enable_periodic_fsck = 0
+    blocksize = 4096
+    inode_size = 256
+    inode_ratio = 16384
+
+[fs_types]
+    ext4 = {
+        features = has_journal,extent,huge_file,flex_bg,metadata_csum,64bit,dir_nlink,extra_isize
+    }
+```
+
+It is the stock profile of e2fsprogs 1.43 to 1.46 without the size
+types. The 1.47 stock list adds `metadata_csum_seed` and `orphan_file`;
+`orphan_file` exists only from 1.47.0, and a host mke2fs that does not
+know a feature name refuses to format. The spec sets no e2fsprogs floor. The guest kernel (6.18.57) mounts
+both sets. The size types are left out because stock `small` and `floppy`
+set 1 KiB blocks. A disk is at least 1G (the spec refuses `256M`), so no
+size type applied to a pinfold disk anyway.
+
+An empty or missing profile is no pin. On the VM, `MKE2FS_CONFIG` naming
+an empty file gave an ext2-like image (no journal, no extents, 128-byte
+inodes) after a warning that the ext4 type is undefined. Naming a missing
+file gave mke2fs's compiled-in profile, which differs by version: on
+1.47.2 it adds `orphan_file` and `metadata_csum_seed`, and on a 256 MiB
+image it used 1 KiB blocks and 8,192 blocks per group.
+
+Stock mke2fs.conf on the VM gave a 1 GiB image
+`has_journal ext_attr resize_inode dir_index orphan_file filetype extent
+64bit flex_bg metadata_csum_seed sparse_super large_file huge_file
+dir_nlink extra_isize metadata_csum`, 4,096-byte blocks, 32,768 blocks
+per group, 256-byte inodes, 65,536 inodes. A new pinfold disk differs only
+in lacking `orphan_file` and `metadata_csum_seed`.
+
+Each disk below was created by `pinfold box up` (1 GiB disk, default
+image), written to from inside, stopped with `box down`, and read on the
+host with `dumpe2fs -h` and `e2fsck -fn`:
+
+| `MKE2FS_CONFIG` for pinfold | Up | Block size | Blocks per group | `bigalloc` | Features | `e2fsck -fn` |
+|---|---|---:|---:|---|---|---|
+| unset | ready | 4096 | 32768 | no | the profile's | clean |
+| `bigalloc`, 64 KiB clusters | ready | 4096 | 32768 | no | the profile's | clean |
+| missing file | ready | 4096 | 32768 | no | the profile's | clean |
+| `meta_bg`, `default_features = ^resize_inode` | ready* | 4096 | 32768 | no | the profile's | clean |
+
+\* With that profile, `up` first failed before any disk existed: the
+init image's mkfs (`vm.rs` `mount_image`, which passes `-O ^has_journal`)
+hit the same `resize_inode`/`meta_bg` error. That call and the builder's
+are outside this change and read the host profile as before. For this
+row a wrapper `mkfs.ext4` first on PATH unset `MKE2FS_CONFIG` for every
+call except the one naming a `disks/*.mke2fs.conf`. It logged that
+`create_disk`'s run got pinfold's profile, not the caller's, and the
+bytes it saw matched `DISK_FORMAT`. Only `d.ext4` remained in the
+disks directory after each run.
+
+Row 11 passed on the VM with `MKE2FS_CONFIG` unset, in 217 s with a cold
+image cache. The clone, the scratch directories and the test's `TMPDIR`
+were deleted after the runs.
