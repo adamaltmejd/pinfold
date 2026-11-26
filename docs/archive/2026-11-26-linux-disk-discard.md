@@ -16,9 +16,8 @@ change it stayed at 2.25 GB. Stop took about 0.4 s longer.
   works only for writable drives on the `Sync` engine, the default. For a
   regular backing file it punches holes.
 - Guest init, at UNMOUNT: after ending box work and `sync`, a `FITRIM`
-  ioctl on each writable attachment, then the unmounts. A failed trim is
-  ignored. The tables below used one call over the whole range; the
-  bound in "Trim budget" came after review.
+  ioctl over the whole range on each writable attachment, then the
+  unmounts. A failed trim is ignored.
 - The jail needed nothing new. The hole punch passed Firecracker's
   seccomp filter and pinfold's Landlock rules (read and write on the
   writable disk).
@@ -75,7 +74,9 @@ After:
 First start allocated 7,077,888 bytes in both runs. An idle stop after
 the cycles took 0.11 s before and 0.35 s after. That is about 0.4 s
 added per stop, for two 64 GiB disks with almost no data. Stop time on
-a fragmented disk is under "Trim budget".
+a full or fragmented disk, where a trim sends more discards, was not
+measured. The trim runs inside the 30 s unmount deadline; a stop that
+exceeds it leaves the disk unclean.
 
 Before the change this run grew by 93 MB over five rewrites; the
 2026-11-23 run grew by 2.2 GB. After it, the image grew by about 230 KB
@@ -84,7 +85,32 @@ per cycle, and the deleted data came back each time.
 A 100 MB file written before a stop had the same SHA-256 after the trim
 and a new start.
 
-## Trim budget
+## Test
+
+Row 11's test (`disks_persist_and_attach_exclusively`) was extended: on
+Linux the recovery run writes and deletes 256 MiB on the 1 GiB disk, and
+after its stop the image's allocation must be at least 240 MiB below its
+allocation with the file written. The write itself must grow the image
+by at least 240 MiB, not 256: the first run on the VM grew it by
+268,419,072 bytes, 16 KiB short of the file, since the file reused
+blocks already allocated.
+
+On the VM the extended test passed in 43 s (default image cached). With
+the `discard` field removed from `vm.rs` it failed at the reclaim check,
+269,426,688 bytes with the file written and 269,467,648 after the stop.
+
+## Cleanup
+
+`pinfold stop`, `disk rm --all` under the scratch roots, the scratch
+directory and the clone deleted. No Firecracker process remained.
+
+## Round 2, 2026-11-26: trim budget, after the first review
+
+The first round's text above stands as it was written. This section and
+the ones after it record later rounds; where they differ, the later one
+holds.
+
+### Trim budget
 
 Review found two gaps. The trims run inside the host's 30 s unmount
 deadline, and a stop past it leaves the disk unclean. And PID 1 keeps
@@ -114,13 +140,13 @@ pass the host's 30 s.
 
 So the trim now:
 
-- issues `FITRIM` 128 MiB at a time, one ext4 block group, and starts no
-  range after 20 s from UNMOUNT, which includes the 10 s for box work to
-  end; the unmounts keep the rest of the host's 30 s (ranges were 1 GiB
-  until the second review, below);
-- sets `minlen` to 1 MiB, so one range sends at most 128 discards. The
-  1 MiB holes above cost about 0.18 s per GiB on the first stop and
-  0.08 s after;
+- issues `FITRIM` one GiB at a time and starts no range after 20 s from
+  UNMOUNT, which includes the 10 s for box work to end; the unmounts keep
+  the rest of the host's 30 s;
+- sets `minlen` to 1 MiB, so one range sends at most 1024 discards. The
+  worst case measured, 1 MiB holes, cost about 0.18 s per GiB on the
+  first stop and 0.08 s after; a 64 GiB disk at that density would take
+  about 11 s;
 - uses a descriptor on each writable root that init opens at mount, while
   it still holds every capability. The exec service, forked after, closes
   its copies; PID 1 closes them after the trims, before unmounting.
@@ -130,7 +156,18 @@ whole trees mostly frees large extents: four copies of the image's
 `/usr` (17,136 files, 763 MB) took the image from 6.8 MB to 837 MB, and
 after `rm -rf` and a 0.22 s stop it held 37 MB.
 
-## Second review: range size and `box down`'s wait
+A plain box's `box down` waits 10 s for teardown, so on a large,
+fragmented disk it can report a timeout before the stop ends. That was
+not measured with the bound in place.
+
+### Test
+
+After review the test samples allocation after the delete as well, while
+the box is live, and requires the drop across the stop; a disk mounted
+with continuous discard would fail it. Before the stop the box makes the
+disk's root mode 0700.
+
+## Round 3, 2026-11-26: range size and `box down`'s wait, after the second review
 
 Review found that a range started just before the 20 s cutoff could run
 past the host's 30 s, and that `box down` waited only 10 s for an owner
@@ -171,24 +208,7 @@ started just before it, still about 7 s inside the 30.
 An idle stop of a box with two fresh 64 GiB disks took 0.26, 0.32 and
 0.27 s, so 512 ranges a disk cost no more than the single whole-disk trim in "Measurements" (0.35 s).
 
-## Test
-
-Row 11's test (`disks_persist_and_attach_exclusively`) was extended: on
-Linux the recovery run writes and deletes 256 MiB on the 1 GiB disk, and
-after its stop the image's allocation must be at least 240 MiB below its
-allocation with the file written. The write itself must grow the image
-by at least 240 MiB, not 256: the first run on the VM grew it by
-268,419,072 bytes, 16 KiB short of the file, since the file reused
-blocks already allocated.
-
-On the VM the extended test passed in 43 s (default image cached). With
-the `discard` field removed from `vm.rs` it failed at the reclaim check,
-269,426,688 bytes with the file written and 269,467,648 after the stop.
-
-After review the test samples allocation after the delete as well, while
-the box is live, and requires the drop across the stop; a disk mounted
-with continuous discard would fail it. Before the stop the box makes the
-disk's root mode 0700.
+### Test
 
 With 128 MiB ranges the 256 MiB file cannot sit in one range, so a trim
 that stopped after its first range would reclaim at most 128 MiB, under
@@ -199,10 +219,8 @@ With the `discard` field removed, in a separate build from the first
 sabotage's, it failed at the same check with the same numbers: neither
 trimmed any of the file's blocks.
 
-## Cleanup
+### Cleanup
 
-`pinfold stop`, `disk rm --all` under the scratch roots, the scratch
-directory and the clone deleted, after each round. In the second round
-every box of the scratch roots had ended with `down` before the
-deletion; the one Firecracker process seen then belonged to another
+As in the first round, after each round. In this round every box of
+the scratch roots had ended with `down` before the deletion; the one Firecracker process seen then belonged to another
 session's checkout on the same VM and was left alone.

@@ -236,10 +236,16 @@ impl Runtime for Firecracker {
             .open(&path)?;
         let made = file.set_len(bytes).and_then(|()| {
             let (uid, gid) = (nix::unistd::getuid(), nix::unistd::getgid());
+            // Pinned over the host's mke2fs.conf: init's trim takes one
+            // 128 MiB block group of 4 KiB blocks per range.
             output(&[
                 &preflight::mkfs_ext4()?.to_string_lossy(),
                 "-q",
                 "-F",
+                "-b",
+                "4096",
+                "-O",
+                "^bigalloc",
                 "-m",
                 "0",
                 "-E",

@@ -1586,7 +1586,8 @@ default list plus `github.com` and `api.github.com`.
 
 On Linux a disk is an ext4 image at
 `~/.local/state/pinfold/disks/<name>.ext4`, mode 0600, created by
-pinfold; on macOS it is an Apple `container` volume named
+pinfold with 4 KiB blocks and no `bigalloc`, whatever the host's
+`mke2fs.conf` says; on macOS it is an Apple `container` volume named
 `<first 16 hex digits of the sha256 of the canonical state dir>-<name>`. The next `up` naming a disk pinfold created whose box never came ready treats
 it as absent: it removes it and creates it again. Before `ready` the guest
 syncs each new disk's copy. On Linux pinfold then fsyncs the disk's image,
@@ -1600,8 +1601,8 @@ each writable drive, and init's trim at step 8 punches holes in that
 disk's own image, which the VMM already writes. Init opens each
 writable disk's root at mount, so a root the box makes private is still
 trimmed. The trim goes 128 MiB at a time and starts no range after the
-unmount's first 20 seconds; a range is at most 128 discards, so the
-unmounts keep nearly 10 of the 30. What it does not reach, like a failed
+unmount's first 20 seconds of the 30; a range is at most 128 discards.
+What it does not reach, like a failed
 trim, stays allocated and does not fail the stop. A box that ends
 otherwise returns nothing until a later requested stop.
 
