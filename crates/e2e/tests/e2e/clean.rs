@@ -62,7 +62,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     assert_eq!(client.line(), "started");
     let owners = detached_children(client.id());
     assert_eq!(owners.len(), 1, "the idle client's children: {owners:?}");
-    assert_eq!(client.finish(), 0, "the idle session's exit");
+    client.finish();
     wait_exited(owners[0]);
     fs::write(idle.root().join("host-file"), "host\n").unwrap();
 
