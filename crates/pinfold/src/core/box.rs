@@ -299,18 +299,22 @@ impl Box {
         let image_plan = plan.clone();
         let selected = image.clone();
         #[cfg(not(target_os = "linux"))]
-        let identity = startup_work(signals, &mut cancel_start, early_claim.as_mut(), move || {
-            crate::core::image::service::resolve_image(&selected)?
-                .map_err(|message| {
+        let identity = startup_work(
+            signals,
+            &mut cancel_start,
+            early_claim.as_mut(),
+            move || {
+                crate::core::image::service::resolve_image(&selected)?.ok_or_else(|| {
                     refused(
                         &image_plan,
                         RefusalReason::ImageMissing,
                         format!(
-                            "image {selected:?} is not present locally; build or pull it first: {message}"
+                            "image {selected:?} is not present locally; build or pull it first"
                         ),
                     )
                 })
-        })
+            },
+        )
         .await?;
         #[cfg(target_os = "linux")]
         let (identity, image_lease) = startup_work(

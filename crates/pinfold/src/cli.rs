@@ -1429,7 +1429,9 @@ pub fn doctor(args: &[String]) -> io::Result<i32> {
             let resolved = (ready || cfg!(target_os = "linux"))
                 .then(|| image::service::resolve_image(&reference));
             let found = match &resolved {
-                Some(Ok(found)) => crate::pi::launch::outdated_images(config, &reference, found),
+                Some(Ok(found)) => {
+                    crate::pi::launch::outdated_images(config, &reference, found.as_ref())
+                }
                 Some(Err(error)) => Err(io::Error::other(error.to_string())),
                 None => Ok(Default::default()),
             };
@@ -1837,16 +1839,10 @@ fn config_edit() -> io::Result<i32> {
 }
 
 /// Whether an image lookup found the image, and why when it cannot tell.
-fn image_built(
-    resolved: &io::Result<Result<image::ImageInfo, String>>,
-) -> (Option<bool>, Option<String>) {
+fn image_built(resolved: &io::Result<Option<image::ImageInfo>>) -> (Option<bool>, Option<String>) {
     match resolved {
-        Ok(Ok(_)) => (Some(true), None),
-        #[cfg(target_os = "macos")]
-        Ok(Err(message)) if !message.starts_with("Error: image not found: ") => {
-            (None, Some(message.clone()))
-        }
-        Ok(Err(_)) => (Some(false), None),
+        Ok(Some(_)) => (Some(true), None),
+        Ok(None) => (Some(false), None),
         Err(error) => (None, Some(error.to_string())),
     }
 }
@@ -1857,7 +1853,7 @@ fn config_report(
     root: &Path,
     config: &Config,
     image: &str,
-    resolved: Option<&io::Result<Result<image::ImageInfo, String>>>,
+    resolved: Option<&io::Result<Option<image::ImageInfo>>>,
 ) -> io::Result<serde_json::Value> {
     let project = crate::pi::state::project_id(root);
     let [home_disk, project_disk] = crate::pi::state::disk_names(&project);

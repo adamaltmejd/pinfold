@@ -659,20 +659,17 @@ pub fn list() -> io::Result<Vec<ImageInfo>> {
 }
 
 /// Resolve tags or an admitted runnable manifest digest locally.
-pub fn resolve(reference: &str) -> io::Result<Result<ImageInfo, String>> {
+pub fn resolve(reference: &str) -> io::Result<Option<ImageInfo>> {
     let catalog = read_catalog()?;
     let id = catalog
         .references
         .get(reference)
         .map(String::as_str)
         .unwrap_or(reference);
-    Ok(match catalog.images.get(id) {
-        Some(image) => Ok(info(id, reference, image)),
-        None => Err(
-            "image-missing: rebuild this image with pinfold build or pinfold image build"
-                .to_string(),
-        ),
-    })
+    Ok(catalog
+        .images
+        .get(id)
+        .map(|image| info(id, reference, image)))
 }
 
 fn startup_lock(key: &str, operation: FlockArg) -> io::Result<Flock<File>> {
@@ -697,12 +694,15 @@ fn startup_lock(key: &str, operation: FlockArg) -> io::Result<Flock<File>> {
 pub fn resolve_leased(reference: &str) -> io::Result<Result<(ImageInfo, Flock<File>), String>> {
     let _lock = startup_lock(&key("catalog")?, FlockArg::LockExclusiveNonblock)?;
     Ok(match resolve(reference)? {
-        Ok(image) => {
+        Some(image) => {
             digest_hex(&image.id)?;
             let lease = startup_lock(&key(&image.id)?, FlockArg::LockSharedNonblock)?;
             Ok((image, lease))
         }
-        Err(reason) => Err(reason),
+        None => Err(
+            "image-missing: rebuild this image with pinfold build or pinfold image build"
+                .to_string(),
+        ),
     })
 }
 

@@ -189,19 +189,25 @@ pub fn list_images() -> io::Result<Vec<ImageInfo>> {
     images.into_iter().map(image_info).collect()
 }
 
-pub fn resolve_image(reference: &str) -> io::Result<Result<ImageInfo, String>> {
-    // `image inspect` prints the same entries as `image list`. Its stderr is
-    // the inner `Err` when the runtime cannot resolve the reference.
-    let json = match captured(&["container", "image", "inspect", reference])? {
+pub fn resolve_image(reference: &str) -> io::Result<Option<ImageInfo>> {
+    // `image inspect` prints the same entries as `image list`.
+    let argv = ["container", "image", "inspect", reference];
+    let json = match captured(&argv)? {
         Ok(json) => json,
-        Err(stderr) => return Ok(Err(stderr)),
+        Err(stderr) if stderr.starts_with("Error: image not found:") => return Ok(None),
+        Err(stderr) => {
+            return Err(super::stopped_service(io::Error::other(format!(
+                "{}: {stderr}",
+                argv.join(" ")
+            ))));
+        }
     };
     let images: Vec<ListedImage> = parse_json("container image inspect", &json)?;
     let image = images
         .into_iter()
         .next()
         .ok_or_else(|| io::Error::other("container image inspect returned no image"))?;
-    image_info(image).map(Ok)
+    image_info(image).map(Some)
 }
 
 pub fn remove_image(reference: &str) -> io::Result<()> {
@@ -295,7 +301,7 @@ fn refresh_base(containerfile: &[u8]) -> io::Result<()> {
             // pinfold build records [`clean::BASE_LABEL`], empty when its
             // own base did not resolve, so its presence marks the image; a
             // caller image's family labels are all empty.
-            if let Ok(image) = resolve_image(base)?
+            if let Some(image) = resolve_image(base)?
                 && image.labels.contains_key(clean::BASE_LABEL)
             {
                 return Ok(());

@@ -259,7 +259,8 @@ impl std::fmt::Display for MissingManagedImage {
 impl std::error::Error for MissingManagedImage {}
 
 pub(crate) fn image_warnings(config: &Config, image: &str) -> io::Result<Vec<String>> {
-    outdated_images(config, image, &service::resolve_image(image)?).map(|found| found.warnings())
+    outdated_images(config, image, service::resolve_image(image)?.as_ref())
+        .map(|found| found.warnings())
 }
 
 /// The outdated images in the selected chain, root first, each with its
@@ -303,12 +304,12 @@ impl Outdated {
 pub(crate) fn outdated_images(
     config: &Config,
     image: &str,
-    resolved: &Result<ImageInfo, String>,
+    resolved: Option<&ImageInfo>,
 ) -> io::Result<Outdated> {
     if config.image.is_some() {
         return match resolved {
-            Ok(_) => Ok(Outdated::default()),
-            Err(_) => Err(io::Error::new(
+            Some(_) => Ok(Outdated::default()),
+            None => Err(io::Error::new(
                 io::ErrorKind::NotFound,
                 format!(
                     "image-missing: image {image} is not present locally; build or pull it explicitly"
@@ -316,27 +317,18 @@ pub(crate) fn outdated_images(
             )),
         };
     }
-    let built = match resolved {
-        Ok(built) => built,
-        #[cfg(target_os = "macos")]
-        Err(message) if *message != format!("Error: image not found: {image}") => {
-            return Err(io::Error::other(format!(
-                "container image inspect: {message}"
-            )));
-        }
-        Err(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                MissingManagedImage {
-                    reference: image.to_owned(),
-                    mount: config.mount,
-                    profile: config
-                        .containerfile
-                        .is_none()
-                        .then(|| config.profile.name.clone()),
-                },
-            ));
-        }
+    let Some(built) = resolved else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            MissingManagedImage {
+                reference: image.to_owned(),
+                mount: config.mount,
+                profile: config
+                    .containerfile
+                    .is_none()
+                    .then(|| config.profile.name.clone()),
+            },
+        ));
     };
     // The selected image and the images it builds on, top first, each with
     // its recipe: the project's, then each profile in the chain that has one.
@@ -355,7 +347,7 @@ pub(crate) fn outdated_images(
         let info = if chain.is_empty() {
             Some(built.clone())
         } else {
-            service::resolve_image(&link.image_ref())?.ok()
+            service::resolve_image(&link.image_ref())?
         };
         chain.push((info, bytes.as_slice()));
     }
