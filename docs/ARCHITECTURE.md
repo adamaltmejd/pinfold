@@ -1994,7 +1994,8 @@ its project.
   its source, and how to retry. Other values and fingerprints are omitted.
   Comparison uses the owner's in-memory startup snapshot, not its launch record.
   Compare host roots, profile selection, image source/reference/resolved
-  identity, resources, mount and disk definitions, ordered allow entries,
+  identity, resources, mount and disk definitions (a disk's size
+  excepted), ordered allow entries,
   complete route declarations and sources, static referenced values, and
   environment names, literals and the values their `from` variables hold,
   so a client whose `from` variable holds another value refuses as
