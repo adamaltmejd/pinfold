@@ -729,8 +729,9 @@ run ...` (or `events`); it may never have existed or have been removed
   namespaces. Workloads requiring them are unsupported.
 - Firecracker adds: no network device; the root disk and init disk
   read-only; `vcpu_count` and `mem_size_mib` from `cpus` and `memory`, or 4 and 1G
-  when the box spec omits them, as Apple's runtime does (a project box's
-  spec names both, from Configuration); no swap; the image's
+  when the box spec omits them (Apple then uses its own configured
+  defaults; a project box's spec always names both, from Configuration);
+  no swap; the image's
   `Env` as defaults under the spec's `env`; an empty `/etc/resolv.conf`;
   Firecracker's own seccomp filters. The box owner runs the VMM as the user in
   the VMM jail with a parent-death signal, so the VM ends with its owner.
