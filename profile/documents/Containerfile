@@ -4,10 +4,10 @@ FROM localhost/pinfold/profile-default:latest AS base
 # Only the selected architecture's stage is built. Release archives stay
 # in build stages; final images copy the installed files.
 FROM base AS bun-arm64
-ADD --checksum=sha256:baa6bb36f51d6e58561e02bbea825038a9df454f673d6d776e8bbf86f8c7850e https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-aarch64.zip /tmp/bun-aarch64.zip
+ADD --checksum=sha256:18656a3bf0ea5641f5796ae4213b75255579a70a0fded2f337933785568cdf84 https://github.com/oven-sh/bun/releases/download/bun-v1.4.5/bun-linux-aarch64.zip /tmp/bun-aarch64.zip
 
 FROM base AS bun-amd64
-ADD --checksum=sha256:bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-linux-x64.zip /tmp/bun-x64.zip
+ADD --checksum=sha256:94559b3b528995a49452f9f2404cec74f2efd7d06e0a000a8cd214b02c3666eb https://github.com/oven-sh/bun/releases/download/bun-v1.4.5/bun-linux-x64.zip /tmp/bun-x64.zip
 
 FROM bun-${TARGETARCH} AS bun-install
 RUN set -eux; \
@@ -18,14 +18,14 @@ RUN set -eux; \
     install -m 0755 /tmp/bun/bun-linux-*/bun /usr/local/bin/bun
 
 FROM base AS anydoc-arm64
-ADD --checksum=sha256:ed71661425a9959009d39ba495dbc565cc27a27f4eb0c93336b89f217e5c56b2 https://registry.npmjs.org/@firecrawl/anydoc-linux-arm64-gnu/-/anydoc-linux-arm64-gnu-0.2.4.tgz /tmp/anydoc-aarch64.tgz
+ADD --checksum=sha256:1158e39d22117743c8e127fcf3159322b850af9a4a7074a12934d77ef5aa23d7 https://registry.npmjs.org/@firecrawl/anydoc-linux-arm64-gnu/-/anydoc-linux-arm64-gnu-0.2.5.tgz /tmp/anydoc-aarch64.tgz
 
 FROM base AS anydoc-amd64
-ADD --checksum=sha256:ca822ea3ad29a9b9ca6b7f6d2a6b3d5311153af25a6c35a7f5bdf0791fe7f2c9 https://registry.npmjs.org/@firecrawl/anydoc-linux-x64-gnu/-/anydoc-linux-x64-gnu-0.2.4.tgz /tmp/anydoc-x64.tgz
+ADD --checksum=sha256:f803e84667178cf6806de8e238364a34d3e00e3e85683496f1ff16a06fb26713 https://registry.npmjs.org/@firecrawl/anydoc-linux-x64-gnu/-/anydoc-linux-x64-gnu-0.2.5.tgz /tmp/anydoc-x64.tgz
 
 FROM anydoc-${TARGETARCH} AS anydoc-install
 ARG TARGETARCH
-ADD --checksum=sha256:625bf6cdc24cc91eee8fbfe084c1fa56c71b17f034341d4a23bc8df0fdee31bd https://registry.npmjs.org/@firecrawl/anydoc/-/anydoc-0.2.4.tgz /tmp/anydoc.tgz
+ADD --checksum=sha256:1071051300db213cdd6a6e94ead79079b7e992d7480a27002e25ed66808cff9d https://registry.npmjs.org/@firecrawl/anydoc/-/anydoc-0.2.5.tgz /tmp/anydoc.tgz
 RUN set -eux; \
     case "${TARGETARCH}" in \
         arm64) native=anydoc-linux-arm64-gnu ;; \
