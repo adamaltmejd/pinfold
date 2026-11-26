@@ -115,7 +115,8 @@ pub(crate) fn spawn_error(program: &str, error: io::Error) -> io::Error {
 }
 
 /// Run `argv` with stdin closed and return its stdout. The inner `Err` is
-/// its stderr when the run fails; a failed spawn keeps its kind.
+/// its stderr when the run fails; a failed spawn keeps its kind, and an
+/// unreachable runtime is an outer error ([`unreachable`]).
 pub(crate) fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
     let (program, arguments) = argv.split_first().expect("argv is never empty");
     let output = std::process::Command::new(program)
@@ -124,11 +125,25 @@ pub(crate) fn captured(argv: &[&str]) -> io::Result<Result<Vec<u8>, String>> {
         .output_guarded()
         .map_err(|error| spawn_error(program, error))?;
     if !output.status.success() {
-        return Ok(Err(String::from_utf8_lossy(&output.stderr)
-            .trim()
-            .to_string()));
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        // The container CLI ends each error of a stopped service with this
+        // hint.
+        #[cfg(not(target_os = "linux"))]
+        if stderr.contains("`container system start`") {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "the container service is not running; run `container system start`",
+            ));
+        }
+        return Ok(Err(stderr));
     }
     Ok(Ok(output.stdout))
+}
+
+/// Whether `error` says the runtime cannot be reached at all, so every
+/// further runtime call fails the same way.
+pub fn unreachable(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotConnected
 }
 
 /// Run `argv` with stdin closed and return its stdout. A failed run's error

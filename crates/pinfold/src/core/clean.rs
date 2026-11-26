@@ -10,7 +10,7 @@ use nix::fcntl::Flock;
 
 use crate::core::image::{ImageInfo, service};
 use crate::core::runtime::sockets::Sockets;
-use crate::core::runtime::{BoxInfo, Runtime, runtime};
+use crate::core::runtime::{BoxInfo, Runtime, runtime, unreachable};
 use crate::core::{artifacts, ownership, runs};
 use crate::dirs;
 
@@ -36,6 +36,16 @@ pub fn maintain() {
     }
 }
 
+/// The daily pass before `clean`, which measures through the runtime next
+/// and reports an unreachable one itself: one line, not two.
+pub fn maintain_before_clean() {
+    if let Err(error) = maintain_due()
+        && !unreachable(&error)
+    {
+        eprintln!("pinfold: maintenance: {error}");
+    }
+}
+
 /// The stamp's mtime is the last pass.
 fn maintain_due() -> io::Result<()> {
     let state = dirs::state_dir()?;
@@ -52,25 +62,37 @@ fn maintain_due() -> io::Result<()> {
     // instead of running before every command.
     fs::create_dir_all(&state)?;
     fs::write(&stamp, [])?;
-    // Every step is attempted; a failure is reported and the rest continue.
-    // One box list serves the boxes step; retention lists the boxes again
-    // after pruning, so a box started meanwhile or a dead box a failed
+    // Every step is attempted; a failure is reported and the rest continue,
+    // except that an unreachable runtime ends the pass, after the local
+    // steps. One box list serves the boxes step; retention lists the boxes
+    // again after pruning, so a box started meanwhile or a dead box a failed
     // prune left behind still pins its image.
-    let runtime = runtime();
-    report(
-        "boxes",
-        boxes(runtime).map(|boxes| {
-            prune_boxes(runtime, &boxes);
-        }),
-    );
-    report("images", keep_two_images(None));
-    report("sockets", prune_leftover_states(runtime));
     report(
         "artifacts",
         artifacts::unpinned_versions().and_then(remove_paths),
     );
     report("runs", runs::retired().and_then(remove_paths));
-    Ok(())
+    let runtime = runtime();
+    runtime_step(
+        "boxes",
+        boxes(runtime).map(|boxes| {
+            prune_boxes(runtime, &boxes);
+        }),
+    )?;
+    runtime_step("images", keep_two_images(None))?;
+    runtime_step("sockets", prune_leftover_states(runtime))
+}
+
+/// Report a runtime step's failure, or return it when the runtime is
+/// unreachable.
+fn runtime_step(what: &str, result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(error) if unreachable(&error) => Err(error),
+        result => {
+            report(what, result);
+            Ok(())
+        }
+    }
 }
 
 fn report(what: &str, result: io::Result<()>) {

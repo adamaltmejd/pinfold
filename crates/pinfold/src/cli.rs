@@ -880,8 +880,31 @@ pub fn clean(args: &[String]) -> io::Result<i32> {
     println!("pinfold clean: {action}");
     plan.print();
     if !dry_run {
-        let (disk_count, idle) = (plan.disk_count, plan.idle);
-        let removed = plan.remove(runtime)?;
+        let (disk_count, before) = (plan.disk_count, plan.sizes());
+        let removal = plan.remove(runtime);
+        // A failed measurement leaves the removal's outcome as it was.
+        match CleanPlan::measure(runtime, idle) {
+            Ok(after) => {
+                // Saturating: run records and a box's disk may grow meanwhile.
+                let freed: Vec<_> = before
+                    .into_iter()
+                    .zip(after.sizes())
+                    .map(|((what, was), (_, now))| (what, was.saturating_sub(now)))
+                    .collect();
+                let total = freed.iter().map(|(_, bytes)| bytes).sum();
+                println!("pinfold clean: freed {}", human_size(total));
+                for (what, bytes) in freed {
+                    println!("  {what}: {}", human_size(bytes));
+                }
+            }
+            Err(error) => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "pinfold clean: measuring what was freed: {error}"
+                );
+            }
+        }
+        let removed = removal?;
         if disk_count > 0 {
             if idle.is_none() {
                 println!("pinfold clean: disks kept (pinfold disk list)");
@@ -996,11 +1019,18 @@ impl CleanPlan {
     /// Measured disk use. Build-cache backing storage includes filesystem
     /// overhead and active records, so pruning may reclaim less.
     fn total(&self) -> u64 {
-        self.automatic_bytes
-            + self.run_bytes
-            + self.project_state
-            + self.disk_bytes
-            + self.build_cache_bytes
+        self.sizes().iter().map(|(_, bytes)| bytes).sum()
+    }
+
+    /// Bytes per category, in listing order.
+    fn sizes(&self) -> [(&'static str, u64); 5] {
+        [
+            ("daily cleanup", self.automatic_bytes),
+            ("run records", self.run_bytes),
+            ("build cache", self.build_cache_bytes),
+            ("project state", self.project_state),
+            ("disks", self.disk_bytes),
+        ]
     }
 
     fn print(&self) {
@@ -1018,9 +1048,11 @@ impl CleanPlan {
         if self.disk_count == 0 {
             println!("  disks: {disks}");
         } else if self.idle.is_some() {
+            let idle: usize = self.project_disks.values().map(Vec::len).sum();
             println!(
-                "  disks: {disks} in {}; --idle AGE removes those of projects not run for AGE (pinfold disk list)",
-                disks_text(self.disk_count)
+                "  disks: {disks} in {}; removes {} of idle projects (pinfold disk list)",
+                disks_text(self.disk_count),
+                disks_text(idle)
             );
             println!("    remove others with `pinfold disk rm NAME|--all`");
         } else {

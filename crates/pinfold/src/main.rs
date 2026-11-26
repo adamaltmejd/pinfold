@@ -104,6 +104,7 @@ fn main() -> ExitCode {
         | ("box", Some("up" | "list" | "down" | "inspect" | "events" | "prune")) => {}
         // `--dry-run` only lists.
         ("clean", _) if args.iter().any(|arg| arg == "--dry-run") => {}
+        ("clean", _) => crate::core::clean::maintain_before_clean(),
         _ => crate::core::clean::maintain(),
     }
     let result = run(args);
