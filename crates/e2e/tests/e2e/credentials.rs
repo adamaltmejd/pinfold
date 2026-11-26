@@ -372,8 +372,8 @@ fn credentials_stay_on_the_host() {
     // The allowlist also names two routed hosts, one exactly and GitHub's by
     // `.suffix`: a routed host is terminated all the same.
     // Sabotage (run): in proxy.rs's `connect`, check the allowlist before
-    // the routed set. Git, the GitHub API and Claude then tunnel to the
-    // real hosts, and no request reaches their fixtures.
+    // the routed set. The GitHub API then tunnels to the real host: the
+    // credential query below gets the real host's 401, not 403.
     let configure = |claude_op: &str| {
         fs::write(
             &file,
@@ -562,8 +562,8 @@ fn credentials_stay_on_the_host() {
     // returned, sending its own credential again; each arrives with the
     // host's alone.
     // Sabotage (run): in core/plan.rs's `Login::served`, drop
-    // uploads.github.com. The upload then tunnels to the real host and
-    // never reaches the fixture.
+    // uploads.github.com. The upload then tunnels to the real host, which
+    // answers 401, not the fixture's 200.
     assert_eq!(
         ask("cd /tmp && h='AuTHorization: Bearer pfbox-l' && \
              curl -sS --max-time 20 -D head -o body -H \"$h\" https://api.github.com/user && \
@@ -576,8 +576,8 @@ fn credentials_stay_on_the_host() {
     );
     // A request whose Host names another site arrives with the fixture's
     // own authority.
-    // Sabotage (run): in proxy.rs's `forward`, write the box's Host. The
-    // fixture then receives `example.com`.
+    // Sabotage (run): in proxy.rs's `parse_request`, keep the box's Host
+    // field. The fixture then also receives `example.com`.
     assert_eq!(
         ask(&curl(
             "-H 'Host: example.com' https://api.github.com/e2e-host"
