@@ -37,18 +37,15 @@ fn fail<E>(_: E) -> io::Error {
 /// valid from a day before `now` for 397 days.
 pub fn issue(hosts: &[String], label: &str, now: u64) -> io::Result<Issued> {
     let rng = SystemRandom::new();
-    let generate = || -> io::Result<EcdsaKeyPair> {
+    let generate = || -> io::Result<_> {
         let pkcs8 =
             EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).map_err(fail)?;
-        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
-            .map_err(fail)
-    };
-    let ca_key = generate()?;
-    let leaf_pkcs8 =
-        EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).map_err(fail)?;
-    let leaf_key =
-        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, leaf_pkcs8.as_ref(), &rng)
+        let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng)
             .map_err(fail)?;
+        Ok((pkcs8, key))
+    };
+    let (_, ca_key) = generate()?;
+    let (leaf_pkcs8, leaf_key) = generate()?;
     let not_before = now.saturating_sub(BEFORE);
     let validity = seq(&[
         &time(not_before),
