@@ -435,7 +435,7 @@ pub(crate) fn config(plan: &Plan, drives: &[(PathBuf, bool)]) -> serde_json::Val
             !writable,
         ));
     }
-    let vcpus = plan.cpus.map_or(DEFAULT_VCPUS, |cpus| cpus.ceil() as u32);
+    let vcpus = plan.cpus.map_or(DEFAULT_VCPUS, |cpus| cpus as u32);
     let mib = memory_mib(plan.memory.as_deref());
     serde_json::json!({
         "boot-source": {

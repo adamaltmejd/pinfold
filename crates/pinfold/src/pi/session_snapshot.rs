@@ -400,9 +400,6 @@ impl Snapshot {
         }
         crate::core::r#box::validate_project(&checked, check.then_some(&values), &config.profile)
             .map_err(io::Error::other)?;
-        if !config.cpus.is_finite() {
-            return Err(io::Error::other("spec-invalid: CPUs must be finite"));
-        }
         let memory_mib = memory_mib(&config.memory)
             .ok_or_else(|| io::Error::other("spec-invalid: invalid memory"))?;
         let identity = service::resolve_image(&image)?.ok().map(|image| image.id);
