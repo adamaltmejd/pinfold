@@ -98,6 +98,9 @@ pub struct Boxes {
     pub dead: Vec<DeadBox>,
     /// The `dev.pinfold.project` ids of pinfold boxes whose owner is alive.
     pub live_projects: BTreeSet<String>,
+    /// Pinfold boxes the runtime reports running, with their memory limit,
+    /// for doctor.
+    pub running: Vec<(String, Option<u64>)>,
 }
 
 /// Whether `box_` is pinfold's: it carries the owner label. Another
@@ -111,9 +114,13 @@ pub fn pinfold_box(box_: &BoxInfo) -> bool {
 pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     let mut dead = Vec::new();
     let mut live_projects = BTreeSet::new();
+    let mut running = Vec::new();
     for box_ in runtime.list()? {
         if !pinfold_box(&box_) {
             continue;
+        }
+        if box_.running {
+            running.push((box_.id.clone(), box_.memory_limit));
         }
         let observed = (|| {
             let (owner, alive) = owner(&box_)?;
@@ -151,6 +158,7 @@ pub fn boxes(runtime: &dyn Runtime) -> io::Result<Boxes> {
     Ok(Boxes {
         dead,
         live_projects,
+        running,
     })
 }
 

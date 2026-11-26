@@ -157,6 +157,8 @@ pub struct BoxInfo {
     pub created: String,
     /// Whether the runtime reports the box `running`.
     pub running: bool,
+    /// The box's memory limit in bytes, as the runtime records it.
+    pub memory_limit: Option<u64>,
     /// Whether the runtime reports the box in its terminal stopped state. A
     /// box starting, stopping or `unknown` may still write its disks.
     pub stopped: bool,
