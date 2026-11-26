@@ -1537,11 +1537,10 @@ each writable drive, and init's trim at step 8 punches holes in that
 disk's own image, which the VMM already writes. Init opens each
 writable disk's root at mount, so a root the box makes private is still
 trimmed. The trim goes 128 MiB at a time and starts no range after the
-unmount's first 20 seconds; a range is at most 128 discards, measured
-under 0.1 seconds, so the unmounts keep nearly 10 of the 30. What it does
-not reach, like a failed trim, stays allocated and does not fail the
-stop. A box that ends otherwise
-returns nothing until a later requested stop.
+unmount's first 20 seconds; a range is at most 128 discards, so the
+unmounts keep nearly 10 of the 30. What it does not reach, like a failed
+trim, stays allocated and does not fail the stop. A box that ends
+otherwise returns nothing until a later requested stop.
 
 - **Attachment:** at `up`, after the claim. One box may attach a disk writable; while it does,
   another `up` naming that disk is refused as `disk-in-use`. Boxes may

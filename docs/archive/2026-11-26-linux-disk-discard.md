@@ -195,10 +195,14 @@ that stopped after its first range would reclaim at most 128 MiB, under
 the 240 MiB the check needs. The disk stays 1 GiB. On the VM the test
 passed (210 s, cold default image). With `trim` returning after its
 first range it failed at the reclaim check, `269467648 -> 269467648`.
-With the `discard` field removed it failed at the same check with the
-same numbers.
+With the `discard` field removed, in a separate build from the first
+sabotage's, it failed at the same check with the same numbers: neither
+trimmed any of the file's blocks.
 
 ## Cleanup
 
 `pinfold stop`, `disk rm --all` under the scratch roots, the scratch
-directory and the clone deleted, after each round. No Firecracker process remained.
+directory and the clone deleted, after each round. In the second round
+every box of the scratch roots had ended with `down` before the
+deletion; the one Firecracker process seen then belonged to another
+session's checkout on the same VM and was left alone.
