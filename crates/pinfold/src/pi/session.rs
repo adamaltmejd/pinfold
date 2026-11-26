@@ -413,7 +413,10 @@ async fn connect(
     let socket = control_work(signals, Some(deadline), move || {
         let socket = sockets::Sockets::open(&generation)?
             .connect_control_until(deadline.into_std())
-            .map_err(|_| unavailable_at("connect"))?;
+            .map_err(|error| match error.kind() {
+                io::ErrorKind::TimedOut => timed_out(),
+                _ => unavailable_at("connect"),
+            })?;
         wire::peer(&socket)?;
         socket.set_nonblocking(true)?;
         Ok(socket)
@@ -911,10 +914,15 @@ async fn resolve_spec(
     let (resolved, warnings) = control_work(signals, None, move || {
         let resolved = Snapshot::resolve(&root, expected_mount, None, startup)?;
         let warnings = if startup {
-            launch::image_warnings(
+            let mut warnings = launch::image_warnings(
                 &resolved.config,
                 resolved.plan.image.as_deref().ok_or_else(unavailable)?,
-            )?
+            )?;
+            warnings.extend(launch::disk_size_notices(
+                &resolved.plan,
+                &state::project_id(&root),
+            )?);
+            warnings
         } else {
             Vec::new()
         };

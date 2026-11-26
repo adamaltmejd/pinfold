@@ -154,6 +154,8 @@ struct Request {
     fills: Vec<(PathBuf, bool)>,
     /// Paths created as the box user before their read-only mount attaches.
     directories: Vec<(PathBuf, PathBuf)>,
+    /// The box CA, PEM, to append to the image's bundle; empty for none.
+    trust: Vec<u8>,
 }
 
 struct Attachment {
@@ -191,6 +193,7 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
         let relative = PathBuf::from(OsString::from_vec(fields.bytes()?.to_vec()));
         directories.push((disk, relative));
     }
+    let trust = fields.bytes()?.to_vec();
     fields.end()?;
     attachments.sort_by_key(|attachment| attachment.guest.components().count());
     Ok(Request {
@@ -201,6 +204,7 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
         attachments,
         fills,
         directories,
+        trust,
     })
 }
 
@@ -268,6 +272,10 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
     match fs::remove_file(etc.join("resolv.conf")) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
         _ => File::create(etc.join("resolv.conf")).map(drop)?,
+    }
+    if !request.trust.is_empty() {
+        write_bundle(root, &request.trust)
+            .map_err(|error| io::Error::other(format!("write {}: {error}", super::BUNDLE)))?;
     }
 
     let noexec = nodev | MsFlags::MS_NOEXEC;
@@ -458,6 +466,34 @@ fn mount_at(
 
 /// The child has no box work or threads and cannot regain root. An open
 /// disk descriptor avoids the private staging tree's root-only ancestors.
+/// Replace the image's CA bundle in the overlay with itself and `ca`
+/// appended, walking the path without following a link.
+fn write_bundle(root: &Path, ca: &[u8]) -> io::Result<()> {
+    use nix::fcntl::OFlag;
+    let root = super::open_directory(root)?;
+    let mut bundle = super::image_bundle(&root)?;
+    if !bundle.is_empty() && !bundle.ends_with(b"\n") {
+        bundle.push(b'\n');
+    }
+    bundle.extend_from_slice(ca);
+    let path = Path::new(super::BUNDLE)
+        .strip_prefix("/")
+        .expect("absolute");
+    let certs = super::make_directories(root, path.parent().expect("a directory"))?;
+    let name = path.file_name().expect("a file name");
+    match nix::unistd::unlinkat(&certs, name, nix::unistd::UnlinkatFlags::NoRemoveDir) {
+        Ok(()) | Err(nix::errno::Errno::ENOENT) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let file = nix::fcntl::openat(
+        &certs,
+        name,
+        OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        nix::sys::stat::Mode::from_bits_truncate(0o644),
+    )?;
+    File::from(file).write_all(&bundle)
+}
+
 fn prepare_directory(
     root: &Path,
     disk: &Path,
@@ -466,7 +502,10 @@ fn prepare_directory(
     gid: u32,
 ) -> io::Result<()> {
     let directory = super::open_directory(&root.join(disk.strip_prefix("/").unwrap()))?;
-    as_box_user(uid, gid, || super::make_directories(directory, relative)).map_err(|error| {
+    as_box_user(uid, gid, || {
+        super::make_directories(directory, relative).map(drop)
+    })
+    .map_err(|error| {
         io::Error::other(format!(
             "prepare {}: {error}",
             disk.join(relative).display()

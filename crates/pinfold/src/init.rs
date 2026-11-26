@@ -191,6 +191,7 @@ pub fn run(args: &[String]) -> ! {
         Some("receive") => exit_with("receive", receive(&args[1..])),
         Some("send") => exit_with("send", export::run(&args[1..])),
         Some("rex-dial") => exit_with("rex-dial", rex_dial()),
+        Some("bundle") => exit_with("bundle", bundle()),
         #[cfg(target_os = "linux")]
         Some("boot") => firecracker::boot(),
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -668,8 +669,70 @@ fn check_relative_directory(relative: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Descriptor-relative traversal keeps a reused disk's symlinks out of setup.
-fn make_directories(mut root: OwnedFd, relative: &Path) -> io::Result<()> {
+/// The guest path of the CA bundle a box with a routed host trusts: the
+/// image's own, with the box CA appended.
+pub const BUNDLE: &str = "/etc/ssl/certs/ca-certificates.crt";
+
+/// The most of an image's bundle pinfold copies; Debian's is about 220 KiB.
+pub const MAX_BUNDLE: usize = 4 * 1024 * 1024;
+
+/// The image's CA bundle below the open root `root`, walked without
+/// following a link. Box images are Debian-based, so an image without a
+/// regular file there fails the start.
+pub(crate) fn image_bundle(root: &OwnedFd) -> io::Result<Vec<u8>> {
+    use nix::fcntl::OFlag;
+    let missing = || {
+        io::Error::other(format!(
+            "the image has no regular file at {BUNDLE}; box images are Debian-based with the ca-certificates package installed"
+        ))
+    };
+    let path = Path::new(BUNDLE).strip_prefix("/").expect("absolute");
+    let mut parts: Vec<_> = path.components().map(|part| part.as_os_str()).collect();
+    let file = parts.pop().expect("a file name");
+    let mut directory = nix::unistd::dup(root)?;
+    for part in parts {
+        directory = match nix::fcntl::openat(
+            &directory,
+            part,
+            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            nix::sys::stat::Mode::empty(),
+        ) {
+            Ok(directory) => directory,
+            Err(_) => return Err(missing()),
+        };
+    }
+    // Non-blocking, so a FIFO there cannot stall the open.
+    let bundle = nix::fcntl::openat(
+        &directory,
+        file,
+        OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC,
+        nix::sys::stat::Mode::empty(),
+    )
+    .map(fs::File::from)
+    .map_err(|_| missing())?;
+    if !bundle.metadata()?.is_file() {
+        return Err(missing());
+    }
+    let mut bytes = Vec::new();
+    bundle.take(MAX_BUNDLE as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_BUNDLE {
+        return Err(io::Error::other(format!(
+            "the image's {BUNDLE} exceeds 4 MiB"
+        )));
+    }
+    Ok(bytes)
+}
+
+/// `init bundle`: write the image's CA bundle to stdout, for the host to
+/// append a box CA to.
+fn bundle() -> io::Result<()> {
+    let bytes = image_bundle(&open_directory(Path::new("/"))?)?;
+    io::stdout().lock().write_all(&bytes)
+}
+
+/// Descriptor-relative traversal keeps a reused disk's symlinks out of
+/// setup. Returns the last directory.
+fn make_directories(mut root: OwnedFd, relative: &Path) -> io::Result<OwnedFd> {
     use nix::fcntl::OFlag;
     use nix::sys::stat::Mode;
     check_relative_directory(relative)?;
@@ -686,7 +749,7 @@ fn make_directories(mut root: OwnedFd, relative: &Path) -> io::Result<()> {
             Mode::empty(),
         )?;
     }
-    Ok(())
+    Ok(root)
 }
 
 /// Give a fresh disk root to the box user. A nonempty recovery directory is

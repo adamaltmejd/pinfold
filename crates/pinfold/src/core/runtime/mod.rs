@@ -35,13 +35,15 @@ pub fn runtime() -> &'static dyn Runtime {
 #[cfg(target_os = "linux")]
 pub use firecracker::Prepared;
 
-/// What [`prepare`] made for one start. Apple needs nothing.
+/// What [`prepare`] made for one start: on Apple, the CA bundle file of a
+/// box with a routed host.
 #[cfg(not(target_os = "linux"))]
-pub struct Prepared;
+pub struct Prepared(Option<PathBuf>);
 
 /// The slow, cancellable part of a start, run on a blocking thread before
 /// [`start`]: on Linux the VMM's install, the root and init disks and the
-/// mounts' images. `image_id` is the image `up` resolved and leased.
+/// mounts' images; on Apple the CA bundle. `image_id` is the image `up`
+/// resolved and leased.
 pub fn prepare(
     plan: &Plan,
     state_dir: &Path,
@@ -49,13 +51,22 @@ pub fn prepare(
     image_id: &str,
     cancel: &AtomicBool,
     generated: &[PathBuf],
+    init: &Path,
 ) -> io::Result<Prepared> {
     #[cfg(target_os = "linux")]
-    return firecracker::prepare(plan, state_dir, sockets, image_id, cancel, generated);
+    {
+        let _ = init;
+        firecracker::prepare(plan, state_dir, sockets, image_id, cancel, generated)
+    }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (plan, state_dir, sockets, image_id, cancel, generated);
-        Ok(Prepared)
+        let _ = (sockets, generated);
+        let bundle = plan
+            .trust
+            .as_deref()
+            .map(|ca| apple::trust_bundle(plan, init, state_dir, image_id, ca, cancel))
+            .transpose()?;
+        Ok(Prepared(bundle))
     }
 }
 
@@ -88,8 +99,8 @@ pub fn start(
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let (Prepared, _, _, _) = (prepared, fills, seeding, directories);
-        apple::up(plan, values, init, proxy_socket)
+        let (Prepared(bundle), _, _, _) = (prepared, fills, seeding, directories);
+        apple::up(plan, values, init, proxy_socket, bundle.as_deref())
     }
 }
 

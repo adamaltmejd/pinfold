@@ -130,7 +130,9 @@ configuration path.
 
 Box work runs as your host uid; the built-in images name uids 501 and
 1000 `pinfold`. The project home, `/home/pinfold`, is a disk that persists.
-A disk project also retains its project disk. `pinfold disk list` shows
+A disk project also retains its project disk. Both are created at 64G
+unless `home_disk_size` or `project_disk_size` sets another size before
+the first start; a disk never grows. `pinfold disk list` shows
 sizes and originating folders. `disk rm --all` removes unattached disks in
 the current state root.
 
@@ -173,7 +175,13 @@ that starts the box asks 1Password; a session joining it does not.
 
 Login routes generate native configuration for the whole box. Claude and Codex
 use system configuration; Pi autoloads a read-only extension under its writable
-home. Agent configuration precedence still applies. Launch agents through PATH.
+home. Agents reach their real hosts; the proxy terminates TLS there and
+adds the host credential, so a key the box sends to that host is
+replaced. A box with a login route or an `https` injecting route starts
+only if its image has a regular file at
+`/etc/ssl/certs/ca-certificates.crt`, which Debian's `ca-certificates`
+package provides. Codex is set to use HTTP, not WebSockets, which the
+proxy does not carry. Agent configuration precedence still applies. Launch agents through PATH.
 An explicit project `routes` table replaces the profile's routes. An API
 key can also arrive through the environment.
 
@@ -470,17 +478,18 @@ login = "github"
 from = "op://…"   # or a host variable's name
 ```
 
-The box's `git` and `gh` then reach GitHub through the proxy, with
-`https://github.com/` and `git@github.com:` remotes rewritten to it. It
-needs no `allow` entry for `github.com` or `api.github.com`. The box can
-use the token but never read it. Prefer a fine-grained token scoped to
+The box's `git`, `gh` and `curl` then reach `github.com`,
+`api.github.com` and `uploads.github.com` by their real names, and
+`git@github.com:` remotes are rewritten to HTTPS. The proxy terminates
+TLS to these hosts with a per-box CA the box trusts, and replaces any
+credential the box sends there with the token. They need no `allow`
+entry. The box can use the token but never read it. Prefer a fine-grained token scoped to
 the one repository the box works on, with only the permissions it needs.
 
-Through the route, `gh release download` is not supported: it requests
-`https://api.github.com` directly. Nor is REST pagination past the first
-page (`gh api --paginate` on a REST path): it follows absolute
-`api.github.com` links, which are refused. GraphQL
-pagination works.
+Release download (public and private repositories), upload and
+`--archive`, and `gh api --paginate` work. `gh run download` does not: its artifacts redirect to varying
+Azure hosts. A Java client fails at these hosts, since Java does not
+read the CA bundle.
 
 ## Limits
 

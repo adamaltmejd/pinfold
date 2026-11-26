@@ -184,7 +184,9 @@ pub fn claim(
         check_cancel(cancel).map_err(Err)?;
         let others = attached.get(&disk.name).map(Vec::as_slice).unwrap_or(&[]);
         if existing_only {
-            if !disk.readonly || !others.is_empty() {
+            // Export reads a disk no other box holds; a writable disk's
+            // holders refuse below.
+            if disk.readonly && !others.is_empty() {
                 return Err(Ok((
                     RefusalReason::DiskInUse,
                     "export requires an unattached read-only disk".to_string(),

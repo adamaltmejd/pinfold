@@ -255,6 +255,10 @@ impl Vm {
             put(&mut request, directory.disk.as_os_str().as_bytes());
             put(&mut request, directory.relative.as_os_str().as_bytes());
         }
+        put(
+            &mut request,
+            plan.trust.as_deref().unwrap_or_default().as_bytes(),
+        );
 
         let root = state_dir.join("jail");
         fs::create_dir_all(&root)?;
@@ -352,7 +356,8 @@ impl Vm {
     /// the guest synced and unmounted them.
     pub async fn down(&mut self, _name: &str) -> io::Result<bool> {
         let worker = self.cancel_boot().await;
-        if !self.vmm.running() {
+        // A failed check takes the full path: unmount, then kill.
+        if matches!(self.vmm.exited(), Ok(true)) {
             self.vmm.wait().await?;
             return worker.map(|()| false);
         }

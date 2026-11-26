@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::runtime::Builder;
 
 use crate::config::{Config, ProjectMount};
-use crate::core::r#box::{Box, Shutdown, Signals, UpError};
+use crate::core::r#box::{Box, RefusalReason, Shutdown, Signals, UpError};
 use crate::core::clean;
 use crate::core::crossing::CrossingError;
 use crate::core::image::{ImageInfo, service};
@@ -102,6 +102,12 @@ where
             let guest = state::PROJECT.to_string();
             let box_runtime = crate::core::runtime::runtime();
             let init = artifacts::init_path()?;
+            let no_disk = || {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "this project has no project disk yet; start it with `pinfold -- CMD`",
+                )
+            };
             let (name, mut box_) = if let Some(name) = lease.name().map(str::to_string) {
                 lease.release_launch();
                 (name, None)
@@ -112,20 +118,19 @@ where
                     .any(|listed| listed.name == disk)
                     || disk::unfilled(&disk)?
                 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::NotFound,
-                        "this project has no project disk yet; start it with `pinfold -- CMD`",
-                    ));
+                    return Err(no_disk());
                 }
                 let image = resolve_image(&config, &id);
                 for warning in image_warnings(&config, &image)? {
                     eprintln!("{warning}");
                 }
                 let plan = Plan {
-                    disks: vec![empty_writable_disk(disk, Path::new(state::PROJECT))],
+                    disks: vec![empty_writable_disk(disk, Path::new(state::PROJECT), None)],
                     ..box_plan(&config, &id, &image)?
                 };
-                let box_ = match Box::up(&plan, &mut signals).await {
+                // A disk removed since the check above fails the claim
+                // instead of being created empty.
+                let box_ = match Box::up_existing(&plan, &mut signals).await {
                     Ok(box_) => box_,
                     Err(UpError::Control) => {
                         return Ok(Err(CrossingError::Failed(
@@ -138,6 +143,11 @@ where
                                 .last()
                                 .unwrap_or(nix::sys::signal::Signal::SIGTERM),
                         ));
+                    }
+                    Err(UpError::Refused(refusal))
+                        if refusal.reason == RefusalReason::DiskMissing =>
+                    {
+                        return Err(no_disk());
                     }
                     Err(UpError::Refused(refusal)) => {
                         return Ok(Err(CrossingError::Refused(refusal.reason, refusal.detail)));
@@ -398,10 +408,18 @@ pub(crate) fn build_plan(config: &Config, id: &str, root: &Path, image: &str) ->
     env.entry("PINFOLD_PROJECT".to_string())
         .or_insert(Env::Exact(utf8(guest, "project root")?.to_string()));
     let [home, project] = state::disk_names(id);
-    let mut disks = vec![empty_writable_disk(home, Path::new(state::HOME))];
+    let mut disks = vec![empty_writable_disk(
+        home,
+        Path::new(state::HOME),
+        config.home_disk_size.clone(),
+    )];
     let mut mounts = match config.mount {
         ProjectMount::Disk => {
-            disks.push(empty_writable_disk(project, guest));
+            disks.push(empty_writable_disk(
+                project,
+                guest,
+                config.project_disk_size.clone(),
+            ));
             Vec::new()
         }
         ProjectMount::Share => vec![Mount {
@@ -473,12 +491,49 @@ fn box_plan(config: &Config, id: &str, image: &str) -> io::Result<Plan> {
     })
 }
 
+/// A notice for each disk of `plan` whose configured size differs from the
+/// size it already has: a disk keeps the size it was created with. An
+/// unfilled disk is created again, at the configured size.
+pub(crate) fn disk_size_notices(plan: &Plan, id: &str) -> io::Result<Vec<String>> {
+    let sized: Vec<&Disk> = plan.disks.iter().filter(|d| d.size.is_some()).collect();
+    if sized.is_empty() {
+        return Ok(Vec::new());
+    }
+    let [home, _] = state::disk_names(id);
+    let listed = crate::core::runtime::runtime().list_disks()?;
+    let gib = |bytes: u64| match bytes % (1 << 30) {
+        0 => format!("{}G", bytes >> 30),
+        _ => format!("{bytes} bytes"),
+    };
+    let mut notices = Vec::new();
+    for want in sized {
+        let Some(have) = listed.iter().find(|disk| disk.name == want.name) else {
+            continue;
+        };
+        if have.size == want.bytes() || disk::unfilled(&want.name)? {
+            continue;
+        }
+        let key = if want.name == home {
+            "home_disk_size"
+        } else {
+            "project_disk_size"
+        };
+        notices.push(format!(
+            "pinfold: {key} is {}, but disk {} exists at {} and keeps that size",
+            gib(want.bytes()),
+            want.name,
+            gib(have.size)
+        ));
+    }
+    Ok(notices)
+}
+
 /// An empty writable disk; no host tree is copied into it.
-fn empty_writable_disk(name: String, guest: &Path) -> Disk {
+fn empty_writable_disk(name: String, guest: &Path, size: Option<String>) -> Disk {
     Disk {
         name,
         guest: guest.to_path_buf(),
-        size: None,
+        size,
         from: None,
         readonly: false,
     }
