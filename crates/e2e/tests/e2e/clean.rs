@@ -5,7 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use e2e::{COMMAND, Project, TestEnv, hold_maintenance, run, tree};
+use e2e::{
+    COMMAND, Client, Project, TestEnv, detached_children, hold_maintenance, run, tree, wait_exited,
+};
 
 #[test]
 fn cleanup_removes_only_pinfolds_garbage() {
@@ -52,10 +54,16 @@ fn cleanup_removes_only_pinfolds_garbage() {
         &box_mark,
     ])
     .ok("write");
-    // An idle project: one session, ended, its box stopped, and a host
-    // file in its checkout.
-    idle.pinfold(&["--", "true"]).ok("the idle session");
-    idle.pinfold(&["stop"]).ok("stop");
+    // An idle project: one session, ended, and a host file in its
+    // checkout. Its detached owner, the client's child while the session
+    // runs, has exited before `clean`.
+    let client =
+        Client::spawn(idle.command(&["--", "sh", "-c", "echo started; read line; exit 0"]));
+    assert_eq!(client.line(), "started");
+    let owners = detached_children(client.id());
+    assert_eq!(owners.len(), 1, "the idle client's children: {owners:?}");
+    assert_eq!(client.finish(), 0, "the idle session's exit");
+    wait_exited(owners[0]);
     fs::write(idle.root().join("host-file"), "host\n").unwrap();
 
     let (live, idle) = (Facts::of(&env, &live), Facts::of(&env, &idle));

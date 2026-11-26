@@ -1047,7 +1047,7 @@ impl Below {
     /// Every live process below `pid`, with its command name; at least one.
     pub fn of(pid: u32) -> Below {
         let parents: Vec<_> = live()
-            .map(|(child, _, parent, name)| (child, parent, name))
+            .map(|(child, _, parent, _, name)| (child, parent, name))
             .collect();
         let mut found = Vec::new();
         let mut frontier = vec![pid];
@@ -1079,23 +1079,35 @@ impl Below {
     }
 }
 
-/// `/proc/PID/stat`'s pid, state, parent pid and command name.
+/// `/proc/PID/stat`'s pid, state, parent pid, session id and command name.
 #[cfg(target_os = "linux")]
-fn stat(pid: u32) -> Option<(u32, String, u32, String)> {
+fn stat(pid: u32) -> Option<(u32, String, u32, u32, String)> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // `PID (COMM) STATE PPID ...`; COMM may hold spaces and
+    // `PID (COMM) STATE PPID PGRP SESSION ...`; COMM may hold spaces and
     // parentheses.
     let (head, tail) = stat.rsplit_once(')')?;
     let (_, name) = head.split_once('(')?;
     let mut fields = tail.split_whitespace();
     let state = fields.next()?.to_string();
     let parent = fields.next()?.parse().ok()?;
-    Some((pid, state, parent, name.to_string()))
+    let session = fields.nth(1)?.parse().ok()?;
+    Some((pid, state, parent, session, name.to_string()))
+}
+
+/// The live direct children of `pid` that lead a session of their own
+/// (`setsid`), from /proc: a client's detached owner, not the forks it
+/// has yet to exec.
+#[cfg(target_os = "linux")]
+pub fn detached_children(pid: u32) -> Vec<u32> {
+    live()
+        .filter(|(child, _, parent, session, _)| *parent == pid && session == child)
+        .map(|(child, ..)| child)
+        .collect()
 }
 
 /// Every process in /proc that is not a zombie, as [`stat`] reads it.
 #[cfg(target_os = "linux")]
-fn live() -> impl Iterator<Item = (u32, String, u32, String)> {
+fn live() -> impl Iterator<Item = (u32, String, u32, u32, String)> {
     fs::read_dir("/proc")
         .expect("read /proc")
         .flatten()
