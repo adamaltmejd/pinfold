@@ -31,15 +31,9 @@ pub(crate) fn write_frame(output: &mut impl Write, kind: u8, payload: &[u8]) -> 
 /// Read one frame exactly, never past it: the boot connection's next bytes
 /// belong to the exec service.
 pub(crate) fn read_frame(input: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
-    let mut head = [0; 5];
-    input.read_exact(&mut head)?;
-    let length = u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize;
-    if length > FRAME_MAX {
-        return Err(io::Error::other("frame too large"));
-    }
-    let mut payload = vec![0; length];
-    input.read_exact(&mut payload)?;
-    Ok((head[0], payload))
+    FrameReader::default()
+        .read(input)?
+        .ok_or_else(|| io::ErrorKind::WouldBlock.into())
 }
 
 pub const CREDIT: u8 = b'c';
