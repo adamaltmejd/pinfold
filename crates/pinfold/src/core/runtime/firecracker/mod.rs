@@ -94,12 +94,19 @@ impl Runtime for Firecracker {
     }
 
     // An orphan is not our child to reap. Confirm its VMM ended before
-    // removing the files it could still use.
+    // removing the files it could still use. A VMM killed with its owner
+    // keeps its image locks until the kernel has torn down its guest memory,
+    // which can take a moment after the owner is gone.
     fn down(&self, name: &str) -> io::Result<()> {
-        if let Some(record) = ownership::record(name)?
-            && Self::running(&record)? == Some(true)
-        {
-            return Err(io::Error::other("the orphan VMM is still running"));
+        let Some(record) = ownership::record(name)? else {
+            return Ok(());
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while Self::running(&record)? == Some(true) {
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::other("the orphan VMM is still running"));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
         Ok(())
     }
