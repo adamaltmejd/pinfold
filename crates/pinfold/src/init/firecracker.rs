@@ -741,9 +741,15 @@ fn unmount(request: &Request, trims: Vec<OwnedFd>) -> io::Result<()> {
     let started = Instant::now();
     stop_work(Some(started + Duration::from_secs(10)))?;
     // Not a global sync: that would also write back `/tmp`'s dirty pages,
-    // which can take the whole deadline.
+    // which can take the whole deadline. One disk's failure still leaves
+    // the others synced and unmounted, so the host keeps their writes.
+    let mut synced = Ok(());
     for disk in &trims {
-        nix::unistd::syncfs(disk)?;
+        if let Err(error) = nix::unistd::syncfs(disk)
+            && synced.is_ok()
+        {
+            synced = Err(io::Error::from(error));
+        }
     }
     for disk in &trims {
         trim(disk, started + Duration::from_secs(20));
@@ -755,7 +761,7 @@ fn unmount(request: &Request, trims: Vec<OwnedFd>) -> io::Result<()> {
             io::Error::other(format!("unmount {}: {error}", attachment.guest.display()))
         })?;
     }
-    Ok(())
+    synced
 }
 
 /// FITRIM the filesystem `disk` is on, 128 MiB at a time, starting no
