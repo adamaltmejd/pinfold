@@ -724,8 +724,8 @@ run ...` (or `events`); it may never have existed or have been removed
   or run record entry. It is `tmp.ext4` in the generation's state
   directory, formatted without a journal (Disks), readied by PID 1 at
   step 5, and removed with that directory; init does not unmount or trim
-  it at step 7, and pinfold does not sync it. Image preparation's builder and converter VMs keep a
-  tmpfs `/tmp`.
+  it at step 7, and pinfold does not sync it. Image preparation's builder, converter and formatter VMs keep
+  a tmpfs `/tmp`.
 - All box work runs as the host uid:gid with an empty capability bounding
   set and `no_new_privs`.
 - `NODE_USE_ENV_PROXY=1`.
@@ -780,7 +780,7 @@ Runtime command lines and VM configurations are built as data.
 the host. The return is best effort, not a limit: the guest may grow to
 `memory` at any time. Each box VM carries a virtio memory balloon at
 amount 0 that deflates when the guest would otherwise run out of memory.
-Builder and converter VMs carry none.
+Builder, converter and formatter VMs carry none.
 
 - **Linux:** Firecracker's balloon with free page reporting on. The
   guest reports pages it has freed and the VMM releases them. Page cache
