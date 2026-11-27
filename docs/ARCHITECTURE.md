@@ -1496,9 +1496,9 @@ with or without a TTY.
 - Built-ins package pi, Claude and Codex on PATH and seed missing-only home
   defaults and instructions (`.pi/agent/APPEND_SYSTEM.md`,
   `.claude/CLAUDE.md`, `.codex/AGENTS.md`); instructions are guidance and
-  enforce nothing. In the `default` image, `claude` on PATH is a launcher
-  that, in a project box, first sets Claude's onboarding, auto-mode nudge and
-  `$PINFOLD_PROJECT` trust flags in `~/.claude.json`. Supported updater
+  enforce nothing. `default` also seeds `~/.claude.json` with Claude's
+  onboarding and auto-mode nudge done and `/project` trusted, so a disk
+  project opens at the prompt; a share asks for trust once. Supported updater
   switches are recipe environment defaults; route-generated system files
   contain authentication configuration only.
 

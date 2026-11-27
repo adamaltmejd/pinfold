@@ -131,36 +131,11 @@ RUN set -eu; \
     chmod -R a+rX /opt/pinfold/agents; \
     printf 'installed agents: pi=%s claude=%s codex=%s\n' "$pi_version" "$claude_version" "$codex_version" | tee -a "$receipt"; \
     ln -s /opt/pinfold/agents/pi/pi /usr/local/bin/pi; \
+    ln -s /opt/pinfold/agents/claude/claude /usr/local/bin/claude; \
     ln -s /opt/pinfold/agents/codex/bin/codex /usr/local/bin/codex; \
     ln -s /opt/pinfold/agents/codex/bin/codex-code-mode-host /usr/local/bin/codex-code-mode-host
 ENV PI_TELEMETRY=0 PI_SKIP_VERSION_CHECK=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_UPDATES=1
-
-# `claude` on PATH is a launcher. In a project box it first records, in
-# ~/.claude.json, that onboarding is done, the auto-mode nudge seen and the
-# project trusted, since the VM is the trust boundary: no first-run screen
-# asks again, and none defaults away from the seeded permission mode. The
-# write is skipped when all three are set, so it can race a running Claude's
-# own rewrite only while one is missing.
-RUN printf '%s\n' \
-    '#!/bin/sh' \
-    'if [ -n "${PINFOLD_PROJECT-}" ] && [ -n "${HOME-}" ]; then' \
-    '    (' \
-    '        f="$HOME/.claude.json"' \
-    '        edit=".hasCompletedOnboarding = true | .hasSeenAutoDefaultNudge = true | .projects[\$p].hasTrustDialogAccepted = true"' \
-    '        [ -L "$f" ] && exit' \
-    '        jq -e --arg p "$PINFOLD_PROJECT" "($edit) == ." "$f" >/dev/null 2>&1 && exit' \
-    '        t=$(mktemp "$f.XXXXXX" 2>/dev/null) || exit' \
-    '        if [ -e "$f" ]; then' \
-    '            jq --arg p "$PINFOLD_PROJECT" "$edit" "$f"' \
-    '        else' \
-    '            jq -n --arg p "$PINFOLD_PROJECT" "{} | $edit"' \
-    '        fi >"$t" 2>/dev/null && [ -s "$t" ] && mv -f "$t" "$f" || rm -f "$t"' \
-    '    )' \
-    'fi' \
-    'exec /opt/pinfold/agents/claude/claude "$@"' \
-    > /usr/local/bin/claude; \
-    chmod 0755 /usr/local/bin/claude
 
 # Every built-in recipe ends here, so this link's own installs are stripped too.
 RUN find / -xdev -perm /6000 -type f -exec chmod a-s {} +
