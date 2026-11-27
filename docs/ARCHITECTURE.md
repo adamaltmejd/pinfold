@@ -502,7 +502,8 @@ The box spec `up` reads from stdin:
   the runtime's records or a file pinfold writes. A literal `HOME` is also
   the path that places generated mounts (login routes, below), so it appears in
   their mount arguments and the launch record, and a refusal of such a mount may name it;
-  multiline values remain intact.
+  multiline values remain intact. The host tools pinfold runs are found on the
+  host's `PATH`, never the spec's.
 - A `from` value starting with `op://` is a 1Password reference, wherever
   `from` names a secret: an env entry, an injecting header, a claude,
   github or pi login route. A reference holds no control character (below 0x20, or
@@ -717,7 +718,7 @@ run ...` (or `events`); it may never have existed or have been removed
   or run record entry. It is `tmp.ext4` in the generation's state
   directory, formatted without a journal (Disks), readied by PID 1 at
   step 5, and removed with that directory; init does not unmount or trim
-  it at step 7. Image preparation's builder and converter VMs keep a
+  it at step 7, and pinfold does not sync it. Image preparation's builder and converter VMs keep a
   tmpfs `/tmp`.
 - All box work runs as the host uid:gid with an empty capability bounding
   set and `no_new_privs`.
@@ -838,7 +839,7 @@ process. Getting further needs a host kernel bug.
   diagnostics stop at admission without waiting for EOF from descendants.
   The detached owner uses `/` as its working directory and retains only
   configuration roots/selectors, referenced static sources and PATH needed
-  by Git helpers.
+  by runtime and Git helpers.
   Commands use pinfold's vsock transport. Framed streams bound queued data with
   consumption credits. Command input cannot block window changes or status.
   Non-TTY execution preserves separate
@@ -906,7 +907,8 @@ process. Getting further needs a host kernel bug.
   the memory stream and the unmount request are connections the owner
   opens to guest listeners.
 - **Both:** no other host port has a listener once the box is ready, so a
-  guest connection to CID 2 on any other port is reset. pinfold's guest
+  guest connection to CID 2 on any other port is reset. The exception is
+  the boot port on macOS, whose listener stays to catch a restart. pinfold's guest
   kernel has no vsock loopback, so only the host can connect to a guest
   listener. The host never half-closes an exec connection; stdin's end
   travels as a frame.
@@ -1552,7 +1554,7 @@ trim, stays allocated and does not fail the stop. A box that ends
 otherwise returns nothing until a later requested stop.
 
 Every ext4 filesystem pinfold makes is formatted by `mkfs.ext4` with the
-same options. Linux formats on the host. macOS formats in a pinfold VM
+same options on both platforms. Linux formats on the host. macOS formats in a pinfold VM
 with no network device, on the builder root's pinned e2fsprogs: a new
 disk, whatever its `size`, when it is created; a populated image in a VM
 that receives the host tree; and `/tmp` by an APFS clone of a 64 GiB
@@ -2399,10 +2401,10 @@ cut rows.
 
 | # | Guarantee | Shown by |
 |---|---|---|
-| 1 | **No network but loopback.** The box has no interface but loopback. Its only way out is its own proxy; without `egress` it has none. | In a box with a route, only `lo` exists and the documentation address `192.0.2.1` is unreachable. A box without `egress` connects to the proxy's port and is refused. Vsock connections to CID 2 on every port from 1 to 4096 are reset at once, not timed out: all of them in the box without `egress`, all but 3128 in the box with a route. Control: the same image with a route reaches the host fixture through the proxy; in that box, CID 2 port 3128 reaches the proxy. |
+| 1 | **No network but loopback.** The box has no interface but loopback. Its only way out is its own proxy; without `egress` it has none. | In a box with a route, only `lo` exists and the documentation address `192.0.2.1` is unreachable. A box without `egress` connects to the proxy's port and is refused. Vsock connections to CID 2 on every port from 1 to 4096 are reset at once, not timed out: all of them in the box without `egress`, all but 3128 in the box with a route (on macOS, all but 3128 and the boot port). Control: the same image with a route reaches the host fixture through the proxy; in that box, CID 2 port 3128 reaches the proxy. |
 | 2 | **Only allowlisted hosts get through.** The proxy lets out only allowlisted names, never an IP literal or a name resolving to a refused address (Egress proxy). A route reaches exactly its one host service, and its log line names the method, the path without its query and the upstream status. The proxy answers `Expect: 100-continue` itself and refuses any other expectation. A refusal's response names the reason its log line records. | `localhost` and the host's own address are put on the allowlist and requested; each gets a 403, logged `loopback` and `ip literal`. A CONNECT to an allowlisted name whose ClientHello SNI names another host is accepted, then refused and logged `sni mismatch`. `example.com` gets a 403 logged `not allowlisted`, over CONNECT and plain HTTP. For each of these 403s, the `Proxy-Status` `details` curl shows in the box equals the logged reason. Control: in the same box, `api.github.com` answers, and a route reaches the host fixture with the Host header rewritten; its log line names the method, the path without its query and the upstream status. A POST to the route with `Expect: 100-continue`, from a curl that waits longer for `100 Continue` than its own bound, reaches a second host fixture that answers 200 only to the body the box sent, and that fixture receives no `Expect`; one with another expectation gets 417 logged `expectation unsupported`, whose `Proxy-Status` `details` equals that reason, and reaches no fixture. |
 | 5 | **Nothing can gain privileges.** Box work runs as the host uid with no capabilities and cannot regain privileges, in a VM with its own kernel. | In a box on the built-in `default` image, a grandchild of an exec'd command (fork then exec) has the host uid, `CapBnd` 0 and `NoNewPrivs` 1, and its `unshare -U` fails with `ENOSPC`. Box work can reach no image-provided setuid or setgid file: there is none in any directory it can enter, and each directory it cannot enter refuses it. The box's root is not writable. PID 1 keeps only `CAP_SYS_ADMIN`, and the exec service is the host uid with every capability set empty. Control: a plain child runs in the same box, and the grandchild's `unshare(0)` succeeds. Two boxes report different `/proc/sys/kernel/random/boot_id` values, and on Linux each differs from the host's, so each box boots its own kernel. |
-| 8 | **Losing the owner fails closed.** If the owner dies, the VM ends with it, so the box loses its way out, and the leftover can be removed. | SIGKILL of `box up`: within seconds no process holds the box's `/tmp` image. Another state root sees the owner dead, and `box prune` in a state root whose daily pass is due removes the leftover; the name is reusable. SIGKILL of a detached project owner while a session runs makes the client exit 125, and on Linux leaves no host process below the owner, the VMM included. Control: before the kill, another state root lists the owner alive and the box reads back a file it wrote in `/tmp`. |
+| 8 | **Losing the owner fails closed.** If the owner dies, the VM ends with it, so the box loses its way out, and the leftover can be removed. | SIGKILL of `box up`: within seconds no process holds the box's `/tmp` image. Another state root sees the owner dead, and `box prune` in a state root whose daily pass is due removes the leftover; the name is reusable. SIGKILL of a detached project owner while a session runs makes the client exit 125, and on Linux leaves no host process below the owner, the VMM included. Control: before the kill, another state root lists the owner alive and the box reads back a file it wrote in `/tmp`, and a process holds its `/tmp` image. |
 | 10 | **Disk-project branches and tags cross only through the Git remote.** A fetch writes box branches only under `refs/remotes/box/*` and adds only new tags; it never moves or deletes the host's own branches or tags, except as the threat model lists. A push lands only in the box's `refs/remotes/host/*` and its tags. Crossing carries no hook or configuration. | (a) A box that writes its own listing names a branch at a host-only commit. `git fetch box` fails naming that branch, no ref under `refs/remotes/box/` changes, and `.git/objects` is unchanged. So does a bundle whose pack also carries an unreachable tag of a tag of a missing commit, failing naming that commit; and, with the host a partial clone of a local promisor, a listing that names the branch at a commit only the promisor holds and a bundle naming it as a prerequisite. (b) Separately, a valid listing carries a tag named like a host tag at another object. After `git fetch --force --tags --prune --prune-tags box`, every host tag is where it was. The box then commits hooks under every client-side name, `core.hooksPath`, `.husky/` and `.githooks/`; the host fetches, merges and checks out twice, and nothing planted runs. With `push.followTags`, `git push box main` lands main only in the box's `refs/remotes/host/main` and its annotated tags as box tags, and changes no box working-tree file; after it and after a repeat, the host's `refs/remotes/box/main` is the box's own main. A fresh start leaves the project disk empty and the host's `.git/config` byte-identical; the first push creates the box repository. Control: a host hook runs, and a legitimate branch and new tag land under `refs/remotes/box/*` and `refs/tags/*`. |
 | 11 | **Disks persist and attach exclusively.** A disk outlives its box. One box at a time writes it, and a disk left unclean is not read until a writable run recovers it. On Linux, free extents of at least 1 MiB inside a disk are returned to the host by the next stop. | Two writable `up`s race for one new disk: exactly one runs, and the other is refused `disk-in-use`. After the writer's owner is SIGKILLed, a read-only attachment is refused `disk-in-use` while the dead box's claim stands; once `box prune` retires it, the same attachment is refused `disk-unclean` until a writable run ends. `disk rm` of an attached disk is refused `disk-in-use`. On Linux, the writable run that recovers the disk writes a 256 MiB file, deletes it and makes the disk's root mode 0700; the image's allocated bytes on the host are still at least 240 MiB above the start, and after the stop at least 240 MiB below that. Control: a file one box writes is read by the next box that attaches the disk and, on Linux after that trim, by the read-only box; the image grew by at least 240 MiB when the file was written. |
 | 15 | **Cleanup removes only what pinfold made, and never a live project.** `clean` never removes a live project's state or disks, or host files; `clean --idle` without `--all-projects` removes only the current folder's project; and `clean --dry-run` removes nothing. | A kept project with a live box and no clients, beside an idle project, and an artifact version no pin names. `clean --dry-run` from a state root whose daily pass is due keeps that version. `clean --idle 0s` from the live project's folder keeps the idle project's state and disks. Then `clean --idle 0s --all-projects` keeps the live project's: a write still reads back through its box. The idle project's checkout tree and configuration file are unchanged. Control: `clean --idle 0s` from the idle project's own folder removes its state and disks and the unpinned version. |
