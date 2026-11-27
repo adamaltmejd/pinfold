@@ -1,7 +1,7 @@
 # pinfold
 
-Run a coding agent in a disposable micro-VM: Apple `container` on macOS,
-Firecracker on Linux. By default a macOS project shares your folder with
+Run a coding agent in a disposable micro-VM: Virtualization.framework on
+macOS, Firecracker on Linux. By default a macOS project shares your folder with
 the box, `.git` included, so the agent commits with ordinary Git. A Linux
 project uses a private disk that starts empty (macOS can use one too).
 Network egress goes through an allowlisting proxy.
@@ -22,7 +22,7 @@ separate Git directories refuse.
 
 | Host | Runtime |
 |---|---|
-| macOS 26+ | Apple `container` 1.6.0+ (stable) |
+| macOS 26+, Apple silicon | none; the state root must be on APFS |
 | Linux x64, kernel 6.10+ | `/dev/kvm` for the user (the `kvm` group), unprivileged user namespaces, Landlock and e2fsprogs |
 
 A disk project's Git remote expects host Git 2.29 or later.
@@ -80,6 +80,14 @@ mkdir -p ~/.local/bin
 # macOS, with zig and cargo-zigbuild (cargo install cargo-zigbuild)
 rustup target add aarch64-unknown-linux-musl
 cargo build --release
+cat > /tmp/pinfold.entitlements <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>com.apple.security.virtualization</key><true/>
+</dict></plist>
+PLIST
+codesign --force --sign - --entitlements /tmp/pinfold.entitlements target/release/pinfold
 install -m 0755 target/release/pinfold ~/.local/bin/pinfold
 ln -sf pinfold ~/.local/bin/git-remote-pinfold
 
@@ -219,8 +227,8 @@ its code-mode host on PATH. Built-in profiles seed `.pi/agent/APPEND_SYSTEM.md`,
 edited files and older seeds stay. Home settings follow the same rule.
 Instructions do not enforce containment.
 
-Linux build egress has its own allowlist. Add exact hosts with
-`pinfold build --allow HOST`. Apple builds reject `--allow` additions.
+Build egress has its own allowlist. Add exact hosts with
+`pinfold build --allow HOST`.
 
 For a share, host edits are live and the box stages and commits in the
 host's `.git`; a box commit is the host's commit. Host and
@@ -381,7 +389,7 @@ disk; shares use host files directly. To start fresh:
    and `project.disks.project` (null for a share).
 3. Run `pinfold disk rm NAME` for each disk you want to clear. It refuses
    attached disks; the removals are separate operations, so serialize access
-   to the project. Never delete state or volume files directly.
+   to the project. Never delete state or disk files directly.
 4. Launch `pinfold -- pi` or `pinfold -- pi -p "TASK"` again. No image rebuild
    is needed; profiles, project configuration and the selected image remain intact.
 
