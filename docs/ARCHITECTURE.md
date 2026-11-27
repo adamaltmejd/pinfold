@@ -252,10 +252,11 @@ sysctl rather than the failing call.
 3. Runtime sockets use a checked private generation directory under the
    host ownership directory, independently of state-root length.
 4. Run the box with no network interface and the socket carried in
-   (Transport). PID 1 is `pinfold init`. Each read-only mount reaches the
-   guest as a read-only ext4 image written from the host directory at this
-   start (formatted per Disks), so a host change after it never appears in
-   the box; a macOS share is a virtio-fs device instead. The box's
+   (Transport). PID 1 is `pinfold init`. On Linux each read-only mount
+   reaches the guest as a read-only ext4 image written from the host
+   directory at this start, so a host change after it never appears in
+   the box. On macOS each mount, read-only or share, is a virtio-fs
+   device; VZ shares a read-only mount read-only. The box's
    `/tmp` scratch image (Always applied) is made new here.
 5. `pinfold init` mounts the disks, then relays `127.0.0.1:3128` to the
    socket and reports ready (its exec service does the relay, exec and
@@ -378,7 +379,7 @@ The caller keeps `up`'s stdin open for the life of the box; closing it is
 `box down` request), `audit-log` (an egress log append failed or would exceed
 its cap), or `exited` (the VM ended on its own; `detail`
 carries the VMM's exit status on Linux, and on macOS `stopped`, or
-`restarted` for a second boot connection (Always applied)). `up` exits 0 for `stdin-closed` and
+`restarted` when the memory stream ends without an unmount (Always applied)). `up` exits 0 for `stdin-closed` and
 `signal`, and 1 for `exited` or `audit-log`; `box` is null when a signal ended `up` before
 its spec parsed, and `run_id` is null when it ended `up` before `ready`.
 
@@ -743,8 +744,9 @@ run ...` (or `events`); it may never have existed or have been removed
   agent boxes disable nested user namespaces; workloads requiring them are
   unsupported.
 - On macOS, PID 1 ends the VM by powering it off rather than exiting,
-  since VZ restarts a VM whose guest resets; a second boot connection
-  from one VM ends the box as `exited`.
+  since VZ restarts a VM whose guest resets. The owner holds the memory
+  stream open for the VM's life; when it ends without an unmount, the
+  owner stops the VM and the box ends as `exited`.
 - pinfold puts no secret value in a kernel command line, a VM
   configuration, an image layer, a disk or a persisted request; what a
   guest process writes is its own. Explicit disk export may copy those
@@ -907,8 +909,7 @@ process. Getting further needs a host kernel bug.
   the memory stream and the unmount request are connections the owner
   opens to guest listeners.
 - **Both:** no other host port has a listener once the box is ready, so a
-  guest connection to CID 2 on any other port is reset. The exception is
-  the boot port on macOS, whose listener stays to catch a restart. pinfold's guest
+  guest connection to CID 2 on any other port is reset. pinfold's guest
   kernel has no vsock loopback, so only the host can connect to a guest
   listener. The host never half-closes an exec connection; stdin's end
   travels as a frame.
@@ -2191,8 +2192,8 @@ start. Other mount shapes refuse as `spec`. A change applies at the next
 box start; a different folder list refuses a joining client as
 `config-changed` (`mounts`). `build` and the Git remote attach no
 folders; a malformed `mounts` list still refuses as `spec`. Each
-start copies each read-only folder into an image in the box's state, taking
-time and host disk space in proportion to its size.
+Linux start copies each read-only folder into an image in the box's state,
+taking time and host disk space in proportion to its size.
 
 A project is refused as `host-path-in-project` when any of the protected
 paths listed below resolves inside it, or when a folder of it
@@ -2401,7 +2402,7 @@ cut rows.
 
 | # | Guarantee | Shown by |
 |---|---|---|
-| 1 | **No network but loopback.** The box has no interface but loopback. Its only way out is its own proxy; without `egress` it has none. | In a box with a route, only `lo` exists and the documentation address `192.0.2.1` is unreachable. A box without `egress` connects to the proxy's port and is refused. Vsock connections to CID 2 on every port from 1 to 4096 are reset at once, not timed out: all of them in the box without `egress`, all but 3128 in the box with a route (on macOS, all but 3128 and the boot port). Control: the same image with a route reaches the host fixture through the proxy; in that box, CID 2 port 3128 reaches the proxy. |
+| 1 | **No network but loopback.** The box has no interface but loopback. Its only way out is its own proxy; without `egress` it has none. | In a box with a route, only `lo` exists and the documentation address `192.0.2.1` is unreachable. A box without `egress` connects to the proxy's port and is refused. Vsock connections to CID 2 on every port from 1 to 4096 are reset at once, not timed out: all of them in the box without `egress`, all but 3128 in the box with a route. Control: the same image with a route reaches the host fixture through the proxy; in that box, CID 2 port 3128 reaches the proxy. |
 | 2 | **Only allowlisted hosts get through.** The proxy lets out only allowlisted names, never an IP literal or a name resolving to a refused address (Egress proxy). A route reaches exactly its one host service, and its log line names the method, the path without its query and the upstream status. The proxy answers `Expect: 100-continue` itself and refuses any other expectation. A refusal's response names the reason its log line records. | `localhost` and the host's own address are put on the allowlist and requested; each gets a 403, logged `loopback` and `ip literal`. A CONNECT to an allowlisted name whose ClientHello SNI names another host is accepted, then refused and logged `sni mismatch`. `example.com` gets a 403 logged `not allowlisted`, over CONNECT and plain HTTP. For each of these 403s, the `Proxy-Status` `details` curl shows in the box equals the logged reason. Control: in the same box, `api.github.com` answers, and a route reaches the host fixture with the Host header rewritten; its log line names the method, the path without its query and the upstream status. A POST to the route with `Expect: 100-continue`, from a curl that waits longer for `100 Continue` than its own bound, reaches a second host fixture that answers 200 only to the body the box sent, and that fixture receives no `Expect`; one with another expectation gets 417 logged `expectation unsupported`, whose `Proxy-Status` `details` equals that reason, and reaches no fixture. |
 | 5 | **Nothing can gain privileges.** Box work runs as the host uid with no capabilities and cannot regain privileges, in a VM with its own kernel. | In a box on the built-in `default` image, a grandchild of an exec'd command (fork then exec) has the host uid, `CapBnd` 0 and `NoNewPrivs` 1, and its `unshare -U` fails with `ENOSPC`. Box work can reach no image-provided setuid or setgid file: there is none in any directory it can enter, and each directory it cannot enter refuses it. The box's root is not writable. PID 1 keeps only `CAP_SYS_ADMIN`, and the exec service is the host uid with every capability set empty. Control: a plain child runs in the same box, and the grandchild's `unshare(0)` succeeds. Two boxes report different `/proc/sys/kernel/random/boot_id` values, and on Linux each differs from the host's, so each box boots its own kernel. |
 | 8 | **Losing the owner fails closed.** If the owner dies, the VM ends with it, so the box loses its way out, and the leftover can be removed. | SIGKILL of `box up`: within seconds no process holds the box's `/tmp` image. Another state root sees the owner dead, and `box prune` in a state root whose daily pass is due removes the leftover; the name is reusable. SIGKILL of a detached project owner while a session runs makes the client exit 125, and on Linux leaves no host process below the owner, the VMM included. Control: before the kill, another state root lists the owner alive and the box reads back a file it wrote in `/tmp`, and a process holds its `/tmp` image. |
