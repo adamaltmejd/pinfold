@@ -318,7 +318,14 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
         Some(device) => {
             // As for the disks below: the host image grows only with what
             // the box writes.
-            let tmp = mount_at(root, "/tmp", device, "ext4", nodev, Some("noinit_itable"))?;
+            let tmp = mount_at(
+                root,
+                "/tmp",
+                device,
+                "ext4",
+                MsFlags::MS_NODEV,
+                Some("noinit_itable"),
+            )?;
             fs::remove_dir(tmp.join("lost+found"))?;
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&tmp, fs::Permissions::from_mode(0o1777))?;
