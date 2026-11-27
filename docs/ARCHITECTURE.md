@@ -1373,7 +1373,9 @@ fresh work disk and never attaches that cache. A job stops and reaps its VMM
 before releasing ownership. On macOS, where the VM process is not the
 owner's child, the owner stops the VM through VZ once it has the job's
 final output frame, without waiting for the guest to close the
-connection, and waits for VZ's stopped state instead of reaping. Unclean work discards the derivable cache, and
+connection, and waits for VZ's stopped state instead of reaping. A job VM
+keeps its boot listener for its life: a second boot connection is a guest
+restart, and the owner stops the VM and fails the job. Unclean work discards the derivable cache, and
 completed images survive its removal. A failed recipe keeps the cache only
 after clean teardown, sync and VMM reaping (on macOS, VZ's stopped
 state).
