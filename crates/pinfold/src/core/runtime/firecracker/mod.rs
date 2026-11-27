@@ -7,13 +7,13 @@ pub(crate) mod vm;
 mod vsock;
 
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
-use nix::unistd::Pid;
+use nix::fcntl::FlockArg;
 
 pub use vm::{Prepared, Vm, prepare};
 
@@ -39,32 +39,20 @@ impl Firecracker {
         })
     }
 
-    fn state(record: &ownership::Record) -> io::Result<Option<VmmState>> {
+    /// Whether the claim's VMM runs; `None` once its retirement is published.
+    fn running(record: &ownership::Record) -> io::Result<Option<bool>> {
         if record.retiring {
             return Ok(None);
         }
-        match vmm_state(&record.state_dir) {
-            Ok(state) => Ok(Some(state)),
-            Err(error) => {
-                // Retirement is published before the identity file is removed.
-                let current = ownership::record(&record.name)?;
-                if current.is_none_or(|current| {
-                    current.generation != record.generation || current.retiring
-                }) {
-                    Ok(None)
-                } else {
-                    Err(error)
-                }
-            }
-        }
+        vmm_alive(record).map(Some)
     }
 
-    fn info(record: ownership::Record, running: Option<bool>) -> Option<BoxInfo> {
+    fn info(record: ownership::Record, running: bool) -> Option<BoxInfo> {
         let described = record.described?;
         Some(BoxInfo {
             memory_limit: Some(vm::memory_mib(described.memory.as_deref()) << 20),
-            running: running == Some(true),
-            stopped: running == Some(false),
+            running,
+            stopped: !running,
             id: record.name,
             labels: described.labels,
             image_id: described.image_id,
@@ -74,12 +62,7 @@ impl Firecracker {
     }
 
     fn known_info(record: ownership::Record) -> io::Result<Option<BoxInfo>> {
-        let running = match Self::state(&record)? {
-            Some(VmmState::Alive) => true,
-            Some(VmmState::Dead) => false,
-            Some(VmmState::NotStarted) | None => return Ok(None),
-        };
-        Ok(Self::info(record, Some(running)))
+        Ok(Self::running(&record)?.and_then(|running| Self::info(record, running)))
     }
 }
 
@@ -101,23 +84,22 @@ impl Runtime for Firecracker {
         _cancel: &std::sync::atomic::AtomicBool,
     ) -> io::Result<BoxInfo> {
         // The owner holds this name. Other boxes cannot decide its readiness.
-        Self::known_info(Self::record(name)?)?.ok_or_else(|| {
-            io::Error::other(format!(
-                "the runtime does not list box {name:?} after ready"
-            ))
-        })
+        Self::known_info(Self::record(name)?)?
+            .filter(|box_| box_.running)
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "the runtime does not list box {name:?} running after ready"
+                ))
+            })
     }
 
-    // An orphan is not our child to reap. Confirm its recorded VMM ended
-    // before removing the files it could still use.
+    // An orphan is not our child to reap. Confirm its VMM ended before
+    // removing the files it could still use.
     fn down(&self, name: &str) -> io::Result<()> {
-        if let Some(record) = ownership::record(name)? {
-            match Self::state(&record)? {
-                Some(VmmState::NotStarted | VmmState::Dead) | None => {}
-                Some(VmmState::Alive) => {
-                    return Err(io::Error::other("the orphan VMM is still running"));
-                }
-            }
+        if let Some(record) = ownership::record(name)?
+            && Self::running(&record)? == Some(true)
+        {
+            return Err(io::Error::other("the orphan VMM is still running"));
         }
         Ok(())
     }
@@ -164,7 +146,7 @@ impl Runtime for Firecracker {
         })
     }
 
-    /// pinfold's own claims whose VMM started, running while it lives. No
+    /// pinfold's own described claims, running while their VMM lives. No
     /// runtime is asked, so nothing can stall it.
     fn list(&self) -> io::Result<Vec<BoxInfo>> {
         let mut boxes = Vec::new();
@@ -179,14 +161,13 @@ impl Runtime for Firecracker {
             if record.described.is_none() {
                 continue;
             }
-            let running = match Self::state(&record) {
-                Ok(Some(VmmState::NotStarted) | None) => continue,
-                Ok(Some(VmmState::Alive)) => Some(true),
-                Ok(Some(VmmState::Dead)) => Some(false),
+            let running = match Self::running(&record) {
+                Ok(None) => continue,
+                Ok(Some(running)) => running,
                 Err(error) => {
                     eprintln!("pinfold: box inventory {:?}: {error}", record.name);
-                    // Unknown liveness must retain this generation's disk claims.
-                    None
+                    // A VMM that cannot be probed may still write its disks.
+                    true
                 }
             };
             if let Some(box_) = Self::info(record, running) {
@@ -299,96 +280,32 @@ fn disk_path(name: &str) -> io::Result<PathBuf> {
     Ok(disks_dir()?.join(format!("{name}.ext4")))
 }
 
-/// The file that names a box's VMM: its pid and start time, so a reused
-/// pid is never taken for it.
-fn vmm_file(state_dir: &Path) -> PathBuf {
-    state_dir.join("vmm")
-}
-
-pub(crate) fn prepare_vmm(state_dir: &Path) -> io::Result<()> {
-    write_identity(state_dir, b"not-started\n")
-}
-
-fn record_vmm(state_dir: &Path, pid: Pid) -> io::Result<()> {
-    let started = start_time(pid)?.ok_or_else(|| io::Error::other("the VMM ended at once"))?;
-    write_identity(
-        state_dir,
-        format!("{} {started}\n", pid.as_raw()).as_bytes(),
-    )
-}
-
-fn write_identity(state_dir: &Path, bytes: &[u8]) -> io::Result<()> {
-    let temporary = state_dir.join("vmm.tmp");
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::rename(&temporary, vmm_file(state_dir))?;
-    fs::File::open(state_dir)?.sync_all()
-}
-
-enum VmmState {
-    NotStarted,
-    Alive,
-    Dead,
-}
-
-/// An unreadable or incomplete identity never proves resource release.
-fn vmm_state(state_dir: &Path) -> io::Result<VmmState> {
-    fn unknown(error: impl std::fmt::Display) -> io::Error {
-        io::Error::other(format!("unknown VMM liveness: {error}"))
+/// Whether the claim's VMM runs. Each VMM holds every image it writes
+/// exclusively locked for its life (`jail::spawn`): a box's VMM its
+/// writable disks and `/tmp` image, a build job's its work disk. A missing
+/// image is held by none.
+fn vmm_alive(record: &ownership::Record) -> io::Result<bool> {
+    // Records are host-wide: a box's disks are in its own state root,
+    // `ROOT/boxes/KEY`'s `ROOT/disks`, not the caller's.
+    let root = record.state_dir.parent().and_then(Path::parent);
+    let disks = record
+        .disks
+        .iter()
+        .filter(|disk| !disk.readonly)
+        .filter_map(|disk| Some(root?.join("disks").join(format!("{}.ext4", disk.name))));
+    for image in disks
+        .chain([vm::tmp_image(&record.state_dir)])
+        .chain(crate::core::image::linux::work_images(&record.state_dir))
+    {
+        let file = match fs::File::open(&image) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        // A shared probe never refuses another probe.
+        if ownership::try_flock(file, FlockArg::LockSharedNonblock)?.is_none() {
+            return Ok(true);
+        }
     }
-    let text = fs::read_to_string(vmm_file(state_dir)).map_err(unknown)?;
-    if text == "not-started\n" {
-        return Ok(VmmState::NotStarted);
-    }
-    let mut fields = text.split_whitespace();
-    let (Some(Ok(pid)), Some(Ok(started)), None) = (
-        fields.next().map(str::parse::<i32>),
-        fields.next().map(str::parse::<u64>),
-        fields.next(),
-    ) else {
-        return Err(unknown("invalid identity"));
-    };
-    if pid <= 0 || started == 0 || text != format!("{pid} {started}\n") {
-        return Err(unknown("invalid identity"));
-    }
-    Ok(
-        if start_time(Pid::from_raw(pid)).map_err(unknown)? == Some(started) {
-            VmmState::Alive
-        } else {
-            VmmState::Dead
-        },
-    )
-}
-
-/// A live process's start time from `/proc/PID/stat`; None for a zombie or
-/// no process.
-fn start_time(pid: Pid) -> io::Result<Option<u64>> {
-    let stat = match fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(stat) => stat,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
-    let invalid = || io::Error::other("invalid VMM process identity");
-    // Fields after the command, which may hold spaces, start at the state.
-    let mut fields = stat
-        .rsplit_once(')')
-        .ok_or_else(invalid)?
-        .1
-        .split_whitespace();
-    let state = fields.next().ok_or_else(invalid)?;
-    if state == "Z" || state == "X" {
-        return Ok(None);
-    }
-    // starttime is field 22; the state is field 3.
-    fields
-        .nth(18)
-        .ok_or_else(invalid)?
-        .parse()
-        .map(Some)
-        .map_err(|_| invalid())
+    Ok(false)
 }

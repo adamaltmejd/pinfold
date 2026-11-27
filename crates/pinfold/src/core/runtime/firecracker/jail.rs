@@ -7,7 +7,7 @@
 use std::ffi::{CStr, CString, c_char};
 use std::fs::File;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -124,18 +124,18 @@ fn kill(pidfd: &OwnedFd) -> io::Result<()> {
 
 /// Build the jail and exec Firecracker in it, with `--no-api` and its own
 /// seccomp filters. The VMM gets `/dev/null` as stdin, stdout and stderr,
-/// no other descriptor, default signal handling and an empty environment:
-/// Firecracker's serial console is its stdio, and `box up`'s stdio is the
-/// caller's.
+/// from descriptor 3 a read-write descriptor of each image it writes, holding
+/// that image's exclusive lock for the VMM's life, no other descriptor,
+/// default signal handling and an empty environment: Firecracker's serial
+/// console is its stdio, and `box up`'s stdio is the caller's.
 ///
 /// `PR_SET_PDEATHSIG` fires when the thread that created the child exits,
 /// not the process (#126). The child is created from a thread that lives
 /// exactly as long as the VMM, so the VM ends with its owner process.
-pub fn spawn(jail: &Jail, state_dir: &Path) -> io::Result<Vmm> {
+pub fn spawn(jail: &Jail) -> io::Result<Vmm> {
     let plan = Plan::jail(jail)?;
     // Retained through child mounting.
     let vsock = jail.vsock.try_clone()?;
-    let state_dir = state_dir.to_path_buf();
     let (started_tx, started_rx) = mpsc::channel();
     let (status_tx, status_rx) = oneshot::channel();
     std::thread::Builder::new()
@@ -150,7 +150,7 @@ pub fn spawn(jail: &Jail, state_dir: &Path) -> io::Result<Vmm> {
                 nix::unistd::fchdir(&vsock).map_err(|error| {
                     io::Error::other(format!("VMM jail: enter socket directory: {error}"))
                 })?;
-                start(&plan, Some(&state_dir))
+                start(&plan)
             })();
             let (pid, _alive, pidfd) = match started {
                 Ok(started) => started,
@@ -182,7 +182,7 @@ pub fn spawn(jail: &Jail, state_dir: &Path) -> io::Result<Vmm> {
 /// Preflight's `userns` check.
 pub fn probe() -> io::Result<()> {
     let plan = Plan::probe()?;
-    let (pid, _alive, pidfd) = start(&plan, None)?;
+    let (pid, _alive, pidfd) = start(&plan)?;
     loop {
         match crate::core::pipe::wait_ready(
             Some(pidfd.as_fd()),
@@ -217,6 +217,8 @@ struct Plan {
     /// The tmpfs root, on the host's side of `pivot_root`.
     root: CString,
     binds: Vec<Bind>,
+    /// The images the VMM writes, which it holds locked.
+    locks: Vec<CString>,
     /// `None` for the probe, which exits after mounting its tmpfs.
     exec: Option<Exec>,
 }
@@ -246,6 +248,7 @@ impl Plan {
             // In the probe's own mount namespace, over the host's root.
             root: c"/".to_owned(),
             binds: Vec::new(),
+            locks: Vec::new(),
             exec: None,
         })
     }
@@ -302,9 +305,11 @@ impl Plan {
                     | landlock::READ_DIR,
             ),
         ];
+        let mut locks = Vec::new();
         for (index, (source, write)) in jail.disks.iter().enumerate() {
             let name = disk(index);
             if *write {
+                locks.push(cstring(source)?);
                 binds.push(writable(source, &name, false)?);
                 rules.push((inside(&name)?, landlock::READ_FILE | landlock::WRITE_FILE));
             } else {
@@ -321,6 +326,7 @@ impl Plan {
             gid_map,
             root: cstring(jail.root)?,
             binds,
+            locks,
             exec: Some(Exec {
                 dev: target("/dev")?,
                 rules,
@@ -395,6 +401,7 @@ const STEPS: &[&str] = &[
     "redirect stdio to /dev/null",
     "reset the signal mask",
     "mark descriptors close-on-exec",
+    "keep the image locks",
     "exec Firecracker",
 ];
 
@@ -416,9 +423,19 @@ fn fail(name: &'static str, index: usize) -> impl Fn(Errno) -> Failure {
 /// `clone` the child with the jail's namespaces and return once it has
 /// exec'd (or, for the probe, before it exits). The returned pipe end keeps
 /// the child's parent-alive check passing; drop it only after `wait`.
-fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, OwnedFd)> {
+fn start(plan: &Plan) -> io::Result<(Pid, OwnedFd, OwnedFd)> {
+    // Every descriptor the child uses sits above the slots the locks move to.
+    let floor = 3 + plan.locks.len() as RawFd;
+    let locks = plan
+        .locks
+        .iter()
+        .map(|image| lock(image, floor))
+        .collect::<io::Result<Vec<_>>>()?;
+    let lock_fds: Vec<RawFd> = locks.iter().map(AsRawFd::as_raw_fd).collect();
     let (alive_read, alive_write) = nix::unistd::pipe2(OFlag::O_CLOEXEC)?;
     let (report_read, report_write) = nix::unistd::pipe2(OFlag::O_CLOEXEC)?;
+    let alive_read = above(alive_read, floor)?;
+    let report_write = above(report_write, floor)?;
     let exec = plan.exec.as_ref().map(|exec| {
         let argv: Vec<*const c_char> = exec
             .argv
@@ -430,10 +447,13 @@ fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, Own
     });
     let envp: [*const c_char; 1] = [std::ptr::null()];
     // The VMM's stdin, stdout and stderr.
-    let null_fd = open(
-        c"/dev/null",
-        OFlag::O_RDWR | OFlag::O_CLOEXEC,
-        Mode::empty(),
+    let null_fd = above(
+        open(
+            c"/dev/null",
+            OFlag::O_RDWR | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )?,
+        floor,
     )?;
     let null = null_fd.as_raw_fd();
     let probe = plan.exec.is_none();
@@ -481,7 +501,7 @@ fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, Own
                 None => unsafe { libc::_exit(0) },
                 Some((exec, argv)) => match restrict(exec) {
                     Err(failure) => failure,
-                    Ok(()) => match exec_ready(null) {
+                    Ok(()) => match exec_ready(null, &lock_fds) {
                         Err(failure) => failure,
                         Ok(()) => {
                             // SAFETY: argv and envp are NUL-terminated arrays
@@ -519,24 +539,15 @@ fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, Own
     let pid = {
         let _guard = crate::core::process::fork_guard();
         unsafe { nix::sched::clone(child, &mut stack, flags, Some(libc::SIGCHLD)) }
-    }
-    .map_err(|error| io::Error::other(format!("VMM jail: clone: {error}")))?;
+    };
+    // The child's copies are then the only ones, so the locks end with it.
+    drop(locks);
+    let pid = pid.map_err(|error| io::Error::other(format!("VMM jail: clone: {error}")))?;
     drop(report_write);
     drop(alive_read);
     let mut report_read = File::from(report_read);
     let result = (|| {
         let pidfd = pidfd_open(pid.as_raw())?;
-        if let Some(state_dir) = state_dir {
-            super::record_vmm(state_dir, pid)?;
-            loop {
-                match nix::unistd::write(&alive_write, &[1]) {
-                    Ok(1) => break,
-                    Err(Errno::EINTR) => {}
-                    Ok(_) => return Err(io::Error::other("VMM jail: startup gate closed")),
-                    Err(error) => return Err(error.into()),
-                }
-            }
-        }
         if probe {
             crate::core::pipe::nonblocking(&report_read, "namespace probe")?;
         }
@@ -615,6 +626,47 @@ fn start(plan: &Plan, state_dir: Option<&Path>) -> io::Result<(Pid, OwnedFd, Own
     }
 }
 
+/// A copy of `fd` at `floor` or above, close-on-exec.
+fn above(fd: OwnedFd, floor: RawFd) -> io::Result<OwnedFd> {
+    if fd.as_raw_fd() >= floor {
+        return Ok(fd);
+    }
+    // SAFETY: F_DUPFD_CLOEXEC on an open descriptor.
+    let raised = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, floor) };
+    // SAFETY: a new descriptor the kernel just returned.
+    Ok(unsafe { OwnedFd::from_raw_fd(Errno::result(raised)?) })
+}
+
+/// Open `image` and take its exclusive lock, which the VMM keeps for its
+/// life (VMM jail). The descriptor is read-write because NFS grants
+/// `LOCK_EX` only on one; it is opened outside the jail, so Landlock does
+/// not govern it. A liveness probe holds a shared lock for an instant, so a
+/// held lock is retried for up to a second; one held longer refuses the
+/// start rather than block it.
+fn lock(image: &CStr, floor: RawFd) -> io::Result<OwnedFd> {
+    let path = image.to_string_lossy();
+    let fd = open(image, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())
+        .map_err(|error| io::Error::other(format!("VMM jail: open {path}: {error}")))?;
+    let fd = above(fd, floor)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        // SAFETY: flock on an owned descriptor.
+        match Errno::result(unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }) {
+            Ok(_) => return Ok(fd),
+            Err(Errno::EINTR) => {}
+            Err(Errno::EWOULDBLOCK) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(Errno::EWOULDBLOCK) => {
+                return Err(io::Error::other(format!("disk-in-use: {path} is locked")));
+            }
+            Err(error) => {
+                return Err(io::Error::other(format!("VMM jail: lock {path}: {error}")));
+            }
+        }
+    }
+}
+
 /// Reap the child: its exit code, or `128+n` for signal `n`.
 fn wait(pid: Pid) -> io::Result<i32> {
     loop {
@@ -632,21 +684,6 @@ fn wait(pid: Pid) -> io::Result<i32> {
 fn enter(plan: &Plan, alive: RawFd) -> Result<(), Failure> {
     nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGKILL)
         .map_err(fail("set the parent-death signal", 0))?;
-    if plan.exec.is_some() {
-        // The only token is written after the parent durably records identity.
-        // EOF means the owner died before releasing this child.
-        let mut token = 0u8;
-        loop {
-            let received = unsafe { libc::read(alive, (&mut token as *mut u8).cast(), 1) };
-            if received == 1 && token == 1 {
-                break;
-            }
-            if received < 0 && Errno::last() == Errno::EINTR {
-                continue;
-            }
-            unsafe { libc::_exit(127) };
-        }
-    }
     // The owner may have died before the signal was set: then the pipe's
     // only write end is gone.
     let mut poll = libc::pollfd {
@@ -728,19 +765,14 @@ fn enter(plan: &Plan, alive: RawFd) -> Result<(), Failure> {
 
 /// In the child, last before `execve`: `/dev/null` as stdio, an empty
 /// signal mask and default dispositions (Rust's runtime ignores SIGPIPE),
-/// and every descriptor above stderr close-on-exec, the inherited ones
-/// included. The report pipe stays open until the exec succeeds.
-fn exec_ready(null: RawFd) -> Result<(), Failure> {
+/// every descriptor above stderr close-on-exec, the inherited ones
+/// included, then the image locks at 3, 4, … without it. The report pipe
+/// stays open until the exec succeeds.
+fn exec_ready(null: RawFd, locks: &[RawFd]) -> Result<(), Failure> {
+    // `/dev/null` is above stderr (`start`), so dup2 never lands on itself.
     for target in 0..=2 {
-        // `/dev/null` opened as 0, 1 or 2 when pinfold's own was closed: dup2
-        // onto itself would keep close-on-exec.
-        // SAFETY: fcntl and dup2 on open descriptors.
-        let result = if null == target {
-            unsafe { libc::fcntl(target, libc::F_SETFD, 0) }
-        } else {
-            unsafe { libc::dup2(null, target) }
-        };
-        if result < 0 {
+        // SAFETY: dup2 of an open descriptor.
+        if unsafe { libc::dup2(null, target) } < 0 {
             return Err(fail("redirect stdio to /dev/null", 0)(Errno::last()));
         }
     }
@@ -770,6 +802,15 @@ fn exec_ready(null: RawFd) -> Result<(), Failure> {
     } != 0
     {
         return Err(fail("mark descriptors close-on-exec", 0)(Errno::last()));
+    }
+    // Each lock is above its slot, so dup2 never lands on itself, which
+    // would keep close-on-exec. Firecracker's own dup2 near the descriptor
+    // limit stays clear of these low slots.
+    for (slot, &fd) in locks.iter().enumerate() {
+        // SAFETY: dup2 of an open descriptor.
+        if unsafe { libc::dup2(fd, 3 + slot as RawFd) } < 0 {
+            return Err(fail("keep the image locks", slot)(Errno::last()));
+        }
     }
     Ok(())
 }

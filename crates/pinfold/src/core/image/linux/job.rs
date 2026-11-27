@@ -35,6 +35,10 @@ use crate::init::exec_wire::{FAILED, write_frame};
 use crate::init::firecracker::{BOOT, BOOT_PORT, READY};
 
 const CACHE_BYTES: u64 = 8 << 30;
+/// The build phase's work disk, in the cache directory.
+const CACHE_DISK: &str = "cache.ext4";
+/// The conversion's work disk, in the job's state directory.
+const CONVERTER_DISK: &str = "converter.ext4";
 const WORK_BYTES: u64 = 7 << 30;
 const JOB_TIME: Duration = Duration::from_secs(300);
 const INPUT_BYTES: u64 = 512 << 20;
@@ -207,6 +211,13 @@ impl InputBudget {
     }
 }
 
+/// The images a build job's VMM may write, from the job's state directory:
+/// its claim's liveness (`firecracker::vmm_alive`).
+pub(crate) fn work_images(state: &Path) -> [PathBuf; 2] {
+    let cache = state.parent().unwrap_or(state);
+    [cache.join(CACHE_DISK), state.join(CONVERTER_DISK)]
+}
+
 pub fn build(request: BuildRequest) -> io::Result<Result<(), String>> {
     crate::core::runtime::runtime().preflight()?;
     tokio::runtime::Builder::new_current_thread()
@@ -264,7 +275,8 @@ async fn transaction(request: BuildRequest) -> io::Result<Result<(), String>> {
     };
     // Proxy workers end before retirement can authorize resource deletion.
     let stopped_proxy = proxy.as_mut().map_or(Ok(()), proxy::Server::stop);
-    // A wait error is not proof of death. Recheck identity before deleting state.
+    // A wait error is not proof of death. Recheck the VMM's image locks
+    // before deleting state.
     let cleanup = async {
         stopped_proxy?;
         claim.retire_previous()?;
@@ -411,7 +423,7 @@ async fn run_transaction(
         match run_job(
             &state.join("convert"),
             &prepared,
-            &state.join("converter.ext4"),
+            &state.join(CONVERTER_DISK),
             &state.join("conversion-input"),
             Phase::Convert,
             &request.labels,
@@ -463,7 +475,7 @@ fn prepare(request: &BuildRequest, state: &Path, cancel: &AtomicBool) -> io::Res
     input_disk(&init_tree, &init, cancel)?;
     fs::remove_dir_all(init_tree)?;
     let cache = super::cache_dir()?;
-    let cache_disk = cache.join("cache.ext4");
+    let cache_disk = cache.join(CACHE_DISK);
     let dirty = cache.join("unclean");
     if dirty.exists() {
         crate::core::absent_ok(fs::remove_file(&cache_disk))?;
@@ -740,7 +752,7 @@ fn prepare_conversion(verified: &Verified, state: &Path, cancel: &AtomicBool) ->
         &mut budget,
     )?;
     source_policy(&input, "docker-image://*", &BTreeMap::new(), &mut budget)?;
-    empty_disk(&state.join("converter.ext4"), WORK_BYTES, cancel)
+    empty_disk(&state.join(CONVERTER_DISK), WORK_BYTES, cancel)
 }
 
 fn conversion_base(
@@ -866,21 +878,16 @@ async fn run_job(
     fs::write(&config_path, config.to_string())?;
     let jail_root = state.join("jail");
     catalog::directory(&jail_root)?;
-    let mut child = jail::spawn(
-        &jail::Jail {
-            root: &jail_root,
-            firecracker: &prepared.vmm.firecracker,
-            kernel: &prepared.vmm.kernel,
-            root_disk: &prepared.root,
-            init_disk: &prepared.init,
-            disks: &drives,
-            vsock: &vsock_directory,
-            config: &config_path,
-        },
-        state
-            .parent()
-            .expect("builder phase directory has a parent"),
-    )?;
+    let mut child = jail::spawn(&jail::Jail {
+        root: &jail_root,
+        firecracker: &prepared.vmm.firecracker,
+        kernel: &prepared.vmm.kernel,
+        root_disk: &prepared.root,
+        init_disk: &prepared.init,
+        disks: &drives,
+        vsock: &vsock_directory,
+        config: &config_path,
+    })?;
     let deadline = Instant::now() + JOB_TIME;
     // All fallible work after spawn is inside this future. Every result flows
     // through kill/wait below before the caller can release ownership.

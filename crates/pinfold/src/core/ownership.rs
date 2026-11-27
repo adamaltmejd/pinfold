@@ -343,8 +343,6 @@ impl Claim {
             reading: None,
             generation: self.generation().to_string(),
         });
-        #[cfg(target_os = "linux")]
-        crate::core::runtime::firecracker::prepare_vmm(state_dir)?;
         self.publish()?;
         self.startup_gate.take();
         self.sockets = Some(Sockets::create(self.generation())?);

@@ -78,7 +78,7 @@ pub fn prepare(
     cancelled(Some(cancel))?;
     let init_disk = state_dir.join("init.ext4");
     write_init_disk(&init_disk)?;
-    let tmp = state_dir.join("tmp.ext4");
+    let tmp = tmp_image(state_dir);
     scratch_image(&tmp)?;
     let mut mounts = Vec::new();
     for (index, mount) in plan.mounts.iter().enumerate() {
@@ -120,6 +120,11 @@ pub(crate) fn write_init_disk(disk: &Path) -> io::Result<()> {
     })();
     let _ = fs::remove_dir_all(&tree);
     made
+}
+
+/// The box's `/tmp` scratch image in its state directory.
+pub(crate) fn tmp_image(state_dir: &Path) -> PathBuf {
+    state_dir.join("tmp.ext4")
 }
 
 /// Make a new, empty, sparse ext4 image at `disk`, mode 0600. No journal:
@@ -298,19 +303,16 @@ impl Vm {
 
         let root = state_dir.join("jail");
         fs::create_dir_all(&root)?;
-        let vmm = jail::spawn(
-            &jail::Jail {
-                root: &root,
-                firecracker: &prepared.vmm.firecracker,
-                kernel: &prepared.vmm.kernel,
-                root_disk: &prepared.root_disk,
-                init_disk: &prepared.init_disk,
-                disks: &drives,
-                vsock: vsock_directory,
-                config: &config_path,
-            },
-            &state_dir,
-        )?;
+        let vmm = jail::spawn(&jail::Jail {
+            root: &root,
+            firecracker: &prepared.vmm.firecracker,
+            kernel: &prepared.vmm.kernel,
+            root_disk: &prepared.root_disk,
+            init_disk: &prepared.init_disk,
+            disks: &drives,
+            vsock: vsock_directory,
+            config: &config_path,
+        })?;
         Ok(Vm {
             vmm,
             boot: Some((
