@@ -33,7 +33,7 @@ const PRINT_STATUS: &str = "open(my $f, '<', \"/proc/$pid/status\") or die \"sta
 
 /// Walk the tree under `$ARGV[0]` without following links, skipping the
 /// mounts that are not the image: the kernel's `/proc`, `/sys` and `/dev`,
-/// and the tmpfs `/tmp` (Always applied). Device numbers are not compared:
+/// and the scratch `/tmp` (Always applied). Device numbers are not compared:
 /// an overlay root reports several. Print `setid PATH` for each setuid or
 /// setgid file and `closed DIR ERRNO` for each directory it cannot list,
 /// with chdir's result there (`0` if it can still be searched), then `done`.
@@ -132,7 +132,7 @@ fn nothing_can_gain_privileges() {
     assert_eq!(planted.code, 0, "{planted:?}");
     assert_eq!(scan("/tmp"), "setid /tmp/setid\ndone\n");
 
-    // The root refuses a write as read-only; the tmpfs `/tmp` takes it.
+    // The root refuses a write as read-only; the scratch `/tmp` takes it.
     // Sabotage: on Apple, drop `--read-only` from `container run`; on Linux,
     // drop `MS_RDONLY` from the root's remount in init/firecracker.rs. The
     // first write then fails with EACCES, not EROFS.

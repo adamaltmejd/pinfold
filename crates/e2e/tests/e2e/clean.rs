@@ -41,7 +41,7 @@ fn cleanup_removes_only_pinfolds_garbage() {
     }
 
     // A kept project with a live box and no clients: its one session wrote
-    // a file to its disk and one to the box's own tmpfs /tmp, which a
+    // a file to its disk and one to the box's own /tmp, which a
     // replacement box would not have, and ended.
     let box_mark = format!("box-{}", std::process::id());
     live.pinfold(&["start"]).ok("start");

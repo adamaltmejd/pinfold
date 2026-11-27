@@ -16,13 +16,13 @@
 //! so the host never does; stdin's end is the STDIN_END frame.
 //!
 //! - Boot (guest dials host port [`BOOT_PORT`]): host sends BOOT (uid u32,
-//!   gid u32, relay u8 for a box with a proxy, root device, attachment
-//!   count u32, then device, guest path, writable u8, fresh u8, deferred u8 each; fill count
-//!   u32, then each fill's guest path and a missing u8; directory count u32,
-//!   then each directory's disk guest root and relative path; the box CA,
-//!   empty for none), then each fill's
-//!   copy stream: a new disk's `from`, or
-//!   with missing, the profile's seeds, each written only when absent. The
+//!   gid u32, relay u8 for a box with a proxy, root device, `/tmp` device
+//!   (empty for a tmpfs `/tmp`), attachment count u32, then device, guest
+//!   path, writable u8, fresh u8, deferred u8 each; fill count u32, then
+//!   each fill's guest path and a missing u8; directory count u32, then
+//!   each directory's disk guest root and relative path; the box CA, empty
+//!   for none), then each fill's copy stream: a new disk's `from`, or with
+//!   missing, the profile's seeds, each written only when absent. The
 //!   guest answers READY or FAILED (text).
 //! - Exec (host dials guest [`EXEC_PORT`]): one request per connection.
 //!   ENV (count u32, name and value each) sets the box's environment once,
@@ -36,8 +36,8 @@
 //!   work cgroup's memory current and peak, pids current and max, and OOM
 //!   kills, each a present u8 and a u64.
 //! - Control (host dials guest [`CONTROL_PORT`], PID 1): UNMOUNT kills the
-//!   work cgroup, syncs, trims each writable attachment and unmounts every
-//!   attachment, answered CLEAN or FAILED (text).
+//!   work cgroup, syncs and trims each writable attachment and unmounts
+//!   every attachment, answered CLEAN or FAILED (text).
 
 use super::exec_wire::{ENV, EXEC, FAILED, STDERR, read_frame, write_frame};
 
@@ -147,6 +147,8 @@ struct Request {
     /// Whether the box has a proxy for `127.0.0.1:3128` to reach.
     relay: bool,
     root: String,
+    /// The scratch disk for `/tmp`; `None` for a tmpfs.
+    tmp: Option<String>,
     /// In mount order: a parent before anything nested in it.
     attachments: Vec<Attachment>,
     /// Each fill's guest path and whether it writes only what is missing.
@@ -170,11 +172,15 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
     let uid = fields.u32()?;
     let gid = fields.u32()?;
     let relay = fields.u8()? != 0;
-    let root = device(&mut fields)?;
+    let root = device(fields.bytes()?)?;
+    let tmp = match fields.bytes()? {
+        [] => None,
+        name => Some(device(name)?),
+    };
     let mut attachments = Vec::new();
     for _ in 0..fields.u32()? {
         attachments.push(Attachment {
-            device: device(&mut fields)?,
+            device: device(fields.bytes()?)?,
             guest: guest_path(&mut fields)?,
             writable: fields.u8()? != 0,
             fresh: fields.u8()? != 0,
@@ -200,6 +206,7 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
         gid,
         relay,
         root,
+        tmp,
         attachments,
         fills,
         directories,
@@ -207,8 +214,8 @@ fn parse_request(payload: &[u8]) -> io::Result<Request> {
     })
 }
 
-fn device(fields: &mut Fields) -> io::Result<String> {
-    let name = String::from_utf8(fields.bytes()?.to_vec())
+fn device(name: &[u8]) -> io::Result<String> {
+    let name = String::from_utf8(name.to_vec())
         .ok()
         .filter(|name| !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_lowercase()))
         .ok_or_else(|| io::Error::other("a device name is not a block device's"))?;
@@ -306,7 +313,24 @@ fn prepare(host: &mut UnixStream, builder: bool) -> io::Result<(Request, OwnedFd
         Some("newinstance,ptmxmode=0666,mode=0620"),
     )?;
     mount_at(root, "/dev/shm", "tmpfs", "tmpfs", nodev, Some("mode=1777"))?;
-    mount_at(root, "/tmp", "tmpfs", "tmpfs", nodev, Some("mode=1777"))?;
+    match &request.tmp {
+        None => mount_at(root, "/tmp", "tmpfs", "tmpfs", nodev, Some("mode=1777")).map(drop)?,
+        Some(device) => {
+            // As for the disks below: the host image grows only with what
+            // the box writes.
+            let tmp = mount_at(
+                root,
+                "/tmp",
+                device,
+                "ext4",
+                MsFlags::MS_NODEV,
+                Some("noinit_itable"),
+            )?;
+            fs::remove_dir(tmp.join("lost+found"))?;
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o1777))?;
+        }
+    }
     let mut trims = Vec::new();
     for deferred in [false, true] {
         for attachment in request
@@ -707,15 +731,26 @@ fn serve_control(
     }
 }
 
-/// End box work, so nothing keeps a disk busy, then sync and unmount every
-/// attachment, the nested ones first. Trimming each writable disk first
-/// returns its freed blocks to the host as holes in the image.
+/// End box work, so nothing keeps a disk busy, then sync each writable
+/// disk and unmount every attachment, the nested ones first. Trimming each
+/// writable disk first returns its freed blocks to the host as holes in
+/// the image.
 fn unmount(request: &Request, trims: Vec<OwnedFd>) -> io::Result<()> {
     // The host waits 30 s for the answer. Trims start only in the first
     // 20, so the unmounts keep the rest.
     let started = Instant::now();
     stop_work(Some(started + Duration::from_secs(10)))?;
-    nix::unistd::sync();
+    // Not a global sync: that would also write back `/tmp`'s dirty pages,
+    // which can take the whole deadline. One disk's failure still leaves
+    // the others synced and unmounted, so the host keeps their writes.
+    let mut synced = Ok(());
+    for disk in &trims {
+        if let Err(error) = nix::unistd::syncfs(disk)
+            && synced.is_ok()
+        {
+            synced = Err(io::Error::from(error));
+        }
+    }
     for disk in &trims {
         trim(disk, started + Duration::from_secs(20));
     }
@@ -726,7 +761,7 @@ fn unmount(request: &Request, trims: Vec<OwnedFd>) -> io::Result<()> {
             io::Error::other(format!("unmount {}: {error}", attachment.guest.display()))
         })?;
     }
-    Ok(())
+    synced
 }
 
 /// FITRIM the filesystem `disk` is on, 128 MiB at a time, starting no
