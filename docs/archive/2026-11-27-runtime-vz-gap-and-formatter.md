@@ -2,8 +2,8 @@
 
 This follows 2026-11-27-runtime-spikes.md. It does two things:
 - explains spike 2's reclaim gap, from a probe run the same day;
-- records the formatter decision that replaces spike 3's
-  recommendation.
+- records the Mac formatter decision, which takes neither of spike 3's
+  crates.
 
 The raw material is in `~/code/pinfold-runtime-study-2026-11-27/vzgap/`.
 Marks follow the study.
@@ -41,9 +41,9 @@ and a guest tool that reads `/proc/kpageflags` and `/proc/vmstat`.
 - **Shrink 5, 20 or 60 s after the free:** by then the host had
   compressed nearly all of it (67, 33 and 12 MiB still in RAM), and no
   gap was left.
-- **Stepwise inflation** still left 1107 MiB, so inflation rate is not a
-  factor.
-- **Deflate-on-OOM** is not a separate mechanism:
+- **Stepwise inflation** still left 1107 MiB in one run, so inflation
+  rate does not explain it there.
+- **Deflate-on-OOM** showed no separate effect:
   - after three OOM cycles on already-compressed memory, no gap was
     left;
   - a re-shrink seconds after each burst left about 1.0 GiB every
@@ -94,18 +94,23 @@ Spike 3 compared two pure-Rust formatters; its agent favoured
 `ferrosys`. Neither is taken. A formatter writes the on-disk format of
 the persistent home and project disks, so its bug would silently lose
 data. `ferrosys` is four months old and has one maintainer, according to
-the spike agent's report.
+the spike agent's report [S, unverified here].
 
 Under A′, pinfold boots Linux VMs on the Mac anyway. So the real
 `mkfs.ext4` runs inside a pinfold VM [I]:
-- **Empty disks** (home, project, `/tmp`): a VM formats one template
-  image per kind, once. Each new disk is an APFS clone of its template,
-  which the gap probe already did for its scratch disks. `/tmp`, made
-  new at every start, then costs a clone rather than a VM boot.
-- **Populated images:** the converter VM formats them. Spike 5 formatted
-  one output root this way; its other disks came from a container.
+- **`/tmp`:** fixed at 64 GiB, so one template is formatted by a VM
+  once. Each start takes an APFS clone of it, which the gap probe
+  already did for its scratch disks.
+- **Home and project disks:** their sizes are configurable, so a clone
+  of a fixed template does not fit. A VM formats each one when it is
+  created, which is rare.
+- **Populated images** (the converter's input and work disks, and other
+  images pinfold fills from a host tree): a VM must get the tree from
+  the host, by vsock stream or a read-only share. Not spiked. Spike 5
+  made these in a container and formatted only the output root in the
+  converter.
 - **Linux** keeps host `mkfs.ext4`, which it already has.
-- **Cost:** e2fsprogs in the builder root, and a template cache.
+- **Cost:** e2fsprogs in the builder root [I], and the `/tmp` template.
 
 The filesystem stays ext4. btrfs is off in the guest kernel config
 [S]. CoW gains
