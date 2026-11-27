@@ -24,10 +24,13 @@ use std::time::Duration;
 use nix::sys::signal::{SigHandler, SigSet, Signal};
 
 use super::{
-    BUNDLE, Deadline, EXEC_METADATA, ExecMetadata, MAX_BUNDLE, REX_SOCKET, STREAM_DIR, STREAM_END,
+    BUNDLE, Deadline, EXEC_METADATA, ExecMetadata, MAX_BUNDLE, STREAM_DIR, STREAM_END,
     STREAM_EXECUTABLE, STREAM_FILE, STREAM_SYMLINK, decode_hex, exec_wire, export, firecracker,
     formatting,
 };
+
+/// The guest Rex server's socket. pinfold fixes it; guest output never names it.
+const REX_SOCKET: &str = "/home/pinfold/.local/state/rex/run/server.sock";
 
 /// The exec service hands box values to `init exec` under these names, so a
 /// box name equal to [`EXEC_METADATA`] still arrives. Hex keeps every byte.
@@ -113,6 +116,7 @@ pub fn run(args: &[String]) -> ! {
         Some("receive") => exit_with("receive", receive(&args[1..])),
         Some("send") => exit_with("send", export::run(&args[1..])),
         Some("rex-dial") => exit_with("rex-dial", rex_dial()),
+        Some("rex-server") => exit_with("rex-server", Err(rex_server())),
         Some("bundle") => exit_with("bundle", bundle()),
         Some("boot") => firecracker::boot(),
         #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -391,6 +395,17 @@ fn rex_dial() -> io::Result<()> {
     })?;
     let mut stdout = File::from(io::stdout().as_fd().try_clone_to_owned()?);
     exec_wire::copy_stream(&mut &server, &mut stdout)
+}
+
+/// `init rex-server`: become the guest Rex server. Its panes inherit
+/// REX_SERVER, so `rex` there reaches this server instead of autostarting
+/// one on its default socket.
+fn rex_server() -> io::Error {
+    let listen = format!("unix://{REX_SOCKET}");
+    process::Command::new("rex")
+        .args(["server", "run", "--listen", &listen])
+        .env("REX_SERVER", &listen)
+        .exec()
 }
 
 fn exit_with(verb: &str, result: io::Result<()>) -> ! {
