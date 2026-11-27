@@ -5,8 +5,8 @@ for it after #506.
 
 The problem:
 - A box never returns freed memory to macOS.
-- The registry-research-toolkit release build was OOM-killed at its box's
-  14 GB limit. That build peaked at 12–22 GB when run on the host (its
+- [R] The registry-research-toolkit release build was OOM-killed at its
+  box's 14 GB limit. That build peaked at 12–22 GB when run on the host (its
   agent's report).
 - A larger limit then holds that memory until the box restarts.
 
@@ -19,7 +19,7 @@ Marks:
 - [S] read from source or documentation;
 - [I] inferred.
 
-Mac numbers come from one Mac (24 GiB, macOS 27.2.1). It was running a
+Mac numbers come from one Mac (24 GiB, macOS 27.2.1). [R] It was running a
 14 GB project box with swap nearly full. Linux numbers come from the dev
 VM (Debian 13, 6 vCPU, 7 GiB, KVM). Single runs unless stated.
 
@@ -65,23 +65,24 @@ Raw material lives outside the repository, in
 | Goal / property | 0 | A | A′ | B |
 |---|---|---|---|---|
 | Mac memory returns | no [R] | only when a balloon target is set; a controller is [I] | as A | yes, without a controller, in REPLACE mode [M] |
-| Linux memory returns | no (no balloon configured) | yes, by free page reporting [M] | Firecracker reporting: [S] in 1.14+, unmeasured with pinfold's kernel | [S] only, not run on Linux |
+| Linux memory returns | no (no balloon configured) | yes, by free page reporting [M] | Firecracker lists reporting from v1.14.0 ([S] its CHANGELOG, through a research agent); unmeasured | [R] source reading (`MADV_DONTNEED`); not run on Linux |
 | Shared code | today's split | init, transport, disks and images; two VMM backends [I] | as A | one VMM backend; host confinement stays per OS [I] |
 | Linux shares | no | possible, through virtiofsd [M], untested in pinfold's jail | no | built in [S] |
-| Mac VMM process | Apple XPC service, sandboxed [M] | the same service [M]; same confinement [I] | as A | pinfold's own process under Seatbelt [M]; `sandbox-exec` is marked deprecated [S] |
-| Linux VMM controls | Firecracker seccomp and pinfold jail | CH seccomp and `--landlock` [M]; inside pinfold's jail [I] | as 0 | pinfold jail; seccomp [S] none found in the 1.19.8 tree |
-| New dependencies | none | `objc2`, `objc2-virtualization`, `block2`; CH; virtiofsd for shares; an ext4 formatter | Mac part of A | libkrun (about 107 crates [R]); an ext4 formatter |
+| Mac VMM process | Apple XPC service, sandboxed [R] | the same service [M]; same confinement [I] | as A | pinfold's own process under Seatbelt [M]; `sandbox-exec` is marked deprecated [S] |
+| Linux VMM controls | Firecracker seccomp and pinfold jail | CH seccomp and `--landlock` [M]; inside pinfold's jail [I] | as 0 | pinfold jail; no seccomp filter found in the 1.19.8 tree [S] |
+| New dependencies | none | `objc2`, `objc2-foundation`, `objc2-virtualization`, `block2`; CH; virtiofsd for shares; an ext4 formatter | Mac part of A | libkrun (about 107 crates [R]); an ext4 formatter |
 
 Share behaviour depends on the operation:
-- **Rename and replace** appear about 1 s late on Apple shares (October
-  probe).
+- **Rename and replace** appear about 1 s after the guest's last lookup
+  on Apple shares (the 2026-11-11 Apple share probe).
 - **Ownership** in the guest follows the last uid to look a path up, on
   VZ [M].
 - **libkrun:** rename and replace appear about 5 s late [M], and
   in-place edits and `chmod` at the first sample, about 0.3–0.4 s [M]. A
   zero-timeout patch exists, but its result has no log.
-- **Spec:** the spec promises no visibility delay. Staleness matters only
-  if a proposal needs a bound on it.
+- **Spec:** the spec promises no fixed delay. It documents silent Git
+  loss from concurrent host and box commits, so staleness matters even
+  without a latency bound.
 
 ## Measurements
 
@@ -89,8 +90,9 @@ Share behaviour depends on the operation:
 
 | Measure | Result |
 |---|---|
-| VZ start | 107 ms; 171 ms with the host process sandboxed [M] |
-| First guest command over vsock | 235 ms [M] |
+| VZ start | 107 ms [M] |
+| Boot with the host process sandboxed | 171 ms [M] |
+| vsock connected / first guest command | 235 ms / 234 ms (separate runs) [M] |
 | vsock 64 B round trip p50 / p99 | 21.4 / 44.1 µs and 31.3 / 77.7 µs (two runs) [M] |
 | Balloon features offered | MUST_TELL_HOST, DEFLATE_ON_OOM; no stats queue, hinting or reporting [M] |
 | 4 GiB touched then freed, plus `compact_memory` | footprint stays 4332–4336 MB [M] |
@@ -103,7 +105,10 @@ Share behaviour depends on the operation:
 Run 3 bears on any controller:
 - The guest can grow past the target (deflate on OOM).
 - The balloon then stays deflated until the target is set again.
-- The result is bounded by the target, not by guest use.
+- The reissued target gave 1026 MB, against 164 MB at the same target
+  before the allocation.
+- Host pressure may not change when the guest deflates, so detecting a
+  deflation needs the guest's own statistics.
 
 Whether a controller keeps reclaim reliable under a real workload is
 untested.
@@ -139,8 +144,8 @@ run per row.
 | REPLACE, libkrunfw kernel | 270 | 4372 | 3868 | 1531 | 286 [M] |
 | REPLACE, Apple's 6.18 kernel | 266 | 4373 | 3851 | 1528 | 286 [M] |
 
-- [M] Process start to exit took 0.109–0.124 s with the libkrunfw kernel
-  (10 runs).
+- [M] Process start to exit took 0.109–0.124 s over 10 runs. The log
+  does not name the kernel; the agent reports libkrunfw's.
 - [R] Network:
   - with TSI on, the default, the guest reached 1.1.1.1;
   - with TSI off, connect returned ENETUNREACH;
@@ -164,8 +169,8 @@ run per row.
 - Mac builds would move onto pinfold's builder. They need a Mac
   counterpart to row 44: direct egress refused, the proxy used, and the
   egress log kept. They also need host confinement for the builder VM.
-- Existing Apple volumes and project homes need a path across, or a
-  documented manual reset. Under the no-users rule a reset is acceptable.
+- Existing Apple volumes and project homes need a path across. A reset
+  would be an explicit decision against the Disks persistence contract.
 
 **A, Linux**
 - CH has its own seccomp and Landlock [M].
@@ -181,8 +186,10 @@ Each of these is a threat-model change:
   weaker than Apple's is [I].
 - No seccomp filter was found in libkrun [S]. The spec's "Firecracker's
   own seccomp filters" would need pinfold's own filters, or a spec change.
-- FUSE names are not validated [R]. A compromised guest kernel would then
-  reach all the VMM's jail allows, without needing a VMM bug [I].
+- FUSE names are checked only for a trailing NUL, not for `/` or `..`
+  ([S] libkrun v1.19.8 `virtio/fs/server.rs`, `bytes_to_cstr`). A
+  compromised guest kernel would then reach all the VMM's jail allows,
+  without needing a VMM bug [I].
 - TSI is on by default. Its absence needs a positive-control test.
 
 ## Shared costs (any option that leaves `container`)
@@ -191,12 +198,13 @@ Each of these is a threat-model change:
 - Port the Linux image service to arm64: about 260–490 changed lines and
   about 75 regenerated package rows.
 - It deletes about 400 lines of Apple build code.
-- These pins double: the builder root, the kernel, BuildKit, Go, and the
-  Debian package list. These stay shared: Firecracker, Debian snapshot
+- These pins double: the builder root, the kernel, BuildKit, the Debian
+  package list, and Go if the build runs on an arm64 runner. These stay shared: Firecracker, Debian snapshot
   metadata, and BuildKit's source and vendor pins.
 - One alternative clones the ext4 snapshot Apple already unpacked, in
-  about 60–80 lines. It keeps Apple's unproxied builds and depends on an
-  unverified private store layout.
+  about 60–80 lines. It keeps Apple's unproxied builds. Its private store
+  layout was observed for a pulled image, and is unverified for an image
+  that was only built.
 
 **ext4 on the Mac**
 - pinfold calls `mkfs.ext4` in five places.
@@ -227,12 +235,14 @@ Each of these is a threat-model change:
 - The 14-attachment limit is 17 virtio devices less init, root and vsock
   (`plan.rs`), with `/tmp` counted in. Another VMM's device limits must be
   checked.
+- Behaviour with no code behind it must be measured again: flush
+  semantics, vsock reset versus timeout, drive order, discard.
 
 ## Size
 
 | Piece | Lines |
 |---|---|
-| VZ backend | about 800–900 itemized, plus init changes of about 80 |
+| VZ backend | about 800–900 itemized, plus init changes of about 80 and an initramfs writer of about 60 |
 | Balloon controller | about 150–250 [I], no breakdown yet |
 | Firecracker to CH, parity | about 250–350 changed Rust lines; kernel config, pins, CI and docs extra |
 | Linux shares through virtiofsd | about 200–300 [I] |
@@ -254,18 +264,17 @@ separate decision.
    - The reclaim it showed was manual. A controller has to make it
      automatic and dependable.
 2. **Linux: keep Firecracker.** Measure its balloon and free page
-   reporting with pinfold's kernel first. If that holds, Linux gets
-   goal 1 without a VMM change.
+   reporting with pinfold's kernel first. If that holds, Linux boxes
+   return memory too, without a VMM change.
 3. **Linux shares (goal 3).** Adam decides. If yes, CH is the measured
    route here, and other routes were not studied. Without shares, CH's
-   only measured gain over Firecracker is reporting, which Firecracker
-   claims too.
+   gain over Firecracker is reporting. Firecracker lists that too, but it
+   has not been measured.
 4. **B is not the next prototype.** Each reason carries its own evidence
    mark above:
    - it moves the Mac VMM out of Apple's service;
-   - it lacks seccomp;
-   - unvalidated FUSE names widen what a guest-kernel compromise reaches;
-   - its share timeouts are fixed in 1.19.
+   - no seccomp filter was found in it;
+   - unvalidated FUSE names widen what a guest-kernel compromise reaches.
 
    Goal 4 alone does not outweigh these.
 
