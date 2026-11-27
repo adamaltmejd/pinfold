@@ -436,7 +436,7 @@ directory is `/private/tmp/pinfold-<uid>` on macOS and
 `/tmp/pinfold-<uid>` on Linux. Persistent lock files are never unlinked.
 
 `list` prints one JSON line per pinfold box whose labels match every `--label`.
-A box is a claim whose VM has started; `list`
+A box is a claim that has claimed its disks (Lifecycle step 2); `list`
 reads pinfold's own claims and whether each VM still runs, and asks no
 runtime.
 `--label KEY=VALUE` matches that value; `--label KEY` matches any value of
@@ -444,7 +444,7 @@ runtime.
 lists them all. Each line carries the box's labels and its
 image, then its `dev.pinfold.owner` pid (or null), whether its
 generation owns the lifetime lock, its claim's RFC 3339 `created` time,
-and `state` (`running`, `stopped` or `unknown`), whether its VM process
+and `state` (`running` or `stopped`), whether its VM process
 still runs (Transport):
 
 ```json
@@ -635,15 +635,12 @@ The launch record is written once, atomically, after startup completes
 cleanup removes the run's directory:
 
 ```json
-{"run_id":ID,"box":NAME,"time":RFC3339,"pinfold":VERSION,"runtime":{"name":"vz"|"firecracker","version":V,"pid":PID|null,"start":RFC3339|null},"image":{"id":ID,"ref":REF},"profile":NAME|null,"labels":{…},"mounts":[{"host":PATH,"guest":PATH,"kind":"readonly"|"share"}],"disks":[{"name":NAME,"guest":PATH,"readonly":BOOL}],"env":[NAME,…],"egress":{"allow":[…],"routes":{NAME:{"kind":"host-service"|"injecting"|"login","to":TARGET}}}|null,"cpus":N,"memory":M}
+{"run_id":ID,"box":NAME,"time":RFC3339,"pinfold":VERSION,"runtime":{"name":"vz"|"firecracker","version":V},"image":{"id":ID,"ref":REF},"profile":NAME|null,"labels":{…},"mounts":[{"host":PATH,"guest":PATH,"kind":"readonly"|"share"}],"disks":[{"name":NAME,"guest":PATH,"readonly":BOOL}],"env":[NAME,…],"egress":{"allow":[…],"routes":{NAME:{"kind":"host-service"|"injecting"|"login","to":TARGET}}}|null,"cpus":N,"memory":M}
 ```
 
 `runtime.version` is the pinned VMM artifacts' version (Pinned
 artifacts) on Linux and the macOS version on macOS, where VZ ships with
-the OS. `runtime.pid` and `runtime.start` are the host pid and start time
-of the box's VM process: the VMM on Linux, the Virtualization service
-process on macOS (Transport). A record written before these fields
-existed lacks them, and `inspect` returns both as null.
+the OS.
 
 The record never holds an env value, a header name,
 value or prefix, a login token, argv or command output. `env` lists the
@@ -835,7 +832,9 @@ before it execs Firecracker:
   and connecting to sockets (ABI 9's `RESOLVE_UNIX`), removing files and
   reading the directory in the vsock socket directory.
 
-The VMM's standard descriptors are `/dev/null`.
+The VMM's standard descriptors are `/dev/null`. Its only other
+descriptors from the owner are read-only ones on the images it writes,
+which hold their locks (Transport).
 
 A compromised VMM reaches only that tree, as the user: no home, no other
 box's disks or socket, no host network or abstract socket, no host
@@ -966,32 +965,28 @@ name is preserved unchanged. Once the runtime is removed and reaped, its
 name-locked dead claim is retired. Pruning reports each failure and continues.
 Cleanup inventories generation socket directories and sweeps inactive
 generation-authorized directories without records under the same checks.
-Before publishing a Linux box claim, the owner durably records that no VMM has
-started. A VMM child waits on a pipe before entering its jail. The owner
-atomically replaces and syncs its identity before releasing that child;
-EOF exits without exec. Retirement requires a known pre-start state, a
-complete identity proving the VMM ended, or successful owned reaping.
-Unknown liveness preserves the generation's resources: it pins the claim's
-generation state, retains disk ownership and is reported as `unknown`.
-On macOS the VM runs in its own process of Apple's Virtualization
-service, not the owner's child. Before publishing the claim the owner
-durably records that no VM has started, as on Linux. Before calling VZ
-it durably replaces that with a pending start. Once VZ has started the
-VM, it atomically replaces and syncs the identity with that process's
-pid and start time. The VM ends with its owner, but not at once: neither
-retirement of a dead owner's claim, `box prune`'s included, nor a
-writable attachment of its disks proceeds while a live process matches
-the recorded pid and start time. A pending start whose owner is dead has
-unknown liveness, as above.
+A VM process holds an exclusive `flock` on each image it writes, the
+box's `/tmp` image included, for its whole life. On Linux the owner
+takes these locks on read-only descriptors before it creates the VMM,
+which inherits them, and closes its own copies right after; a start
+whose image another VM process holds fails, naming `disk-in-use`. On
+macOS the VM runs in its own process of Apple's Virtualization service,
+not the owner's child, and that process takes the same locks itself.
+A VM process is alive while its box's `/tmp` image, or its build job's
+work disk, refuses a nonblocking shared lock. The VM ends with its
+owner, but not at once: neither retirement of a dead owner's claim,
+`box prune`'s included, nor a writable attachment of its disks proceeds
+while that lock is held. Liveness that cannot be probed retires nothing.
 Private socket staging may be removed after a pre-start publication failure
 without retiring the claim. Before deleting other generation resources,
 confirmed runtime removal under the name lock is recorded by atomically
 marking the full-generation owner record retiring and syncing its directory.
-Box and builder cleanup resume from that record even after the identity tree
-is gone. The owner record and its retirement evidence are unlinked last and
-the directory is synced.
-Readiness inspects only its own claim. Inventory reports per-box errors and
-rechecks retirement before treating a missing identity as unknown.
+Box and builder cleanup resume from that record even after the state
+directory is gone. The owner record and its retirement evidence are
+unlinked last and the directory is synced.
+Readiness inspects only its own claim and requires its VM alive.
+Inventory reports per-box errors and lists a box it cannot probe as
+running.
 Inventory and measurement report bad records and continue. A resource decision
 consults only claims that can reference that resource; a claim pins disks as
 Disks (Attachment) states, and recovery of other verified-dead claims
@@ -2061,8 +2056,8 @@ its project.
   and generation, and the helper fails. Stop accepted during startup reports
   `stopped`. CMD owns stdout; diagnostics use stderr.
   A share has no disk attachment, unfilled marker or clean/unclean
-  state. Its home retains managed-disk claims and recovery rules. Owner discovery requires no project disk; unknown
-  runtime liveness preserves ownership and prevents replacement.
+  state. Its home retains managed-disk claims and recovery rules. Owner discovery requires no project disk; liveness
+  that cannot be probed preserves ownership and prevents replacement.
 
 ### Git
 
@@ -2462,9 +2457,9 @@ cut rows.
 | 1 | **No network but loopback.** The box has no interface but loopback. Its only way out is its own proxy; without `egress` it has none. | In a box with a route, only `lo` exists and the documentation address `192.0.2.1` is unreachable. A box without `egress` connects to the proxy's port and is refused. Vsock connections to CID 2 on every port from 1 to 4096 are reset at once, not timed out: all of them in the box without `egress`, all but 3128 in the box with a route. Control: the same image with a route reaches the host fixture through the proxy; in that box, CID 2 port 3128 reaches the proxy. |
 | 2 | **Only allowlisted hosts get through.** The proxy lets out only allowlisted names, never an IP literal or a name resolving to a refused address (Egress proxy). A route reaches exactly its one host service, and its log line names the method, the path without its query and the upstream status. The proxy answers `Expect: 100-continue` itself and refuses any other expectation. A refusal's response names the reason its log line records. | `localhost` and the host's own address are put on the allowlist and requested; each gets a 403, logged `loopback` and `ip literal`. A CONNECT to an allowlisted name whose ClientHello SNI names another host is accepted, then refused and logged `sni mismatch`. `example.com` gets a 403 logged `not allowlisted`, over CONNECT and plain HTTP. For each of these 403s, the `Proxy-Status` `details` curl shows in the box equals the logged reason. Control: in the same box, `api.github.com` answers, and a route reaches the host fixture with the Host header rewritten; its log line names the method, the path without its query and the upstream status. A POST to the route with `Expect: 100-continue`, from a curl that waits longer for `100 Continue` than its own bound, reaches a second host fixture that answers 200 only to the body the box sent, and that fixture receives no `Expect`; one with another expectation gets 417 logged `expectation unsupported`, whose `Proxy-Status` `details` equals that reason, and reaches no fixture. |
 | 5 | **Nothing can gain privileges.** Box work runs as the host uid with no capabilities and cannot regain privileges, in a VM with its own kernel. | In a box on the built-in `default` image, a grandchild of an exec'd command (fork then exec) has the host uid, `CapBnd` 0 and `NoNewPrivs` 1, and its `unshare -U` fails with `ENOSPC`. Box work can reach no image-provided setuid or setgid file: there is none in any directory it can enter, and each directory it cannot enter refuses it. The box's root is not writable. PID 1 keeps only `CAP_SYS_ADMIN` and has `NoNewPrivs` 1 in `/proc/1/status`, read through `box exec`, and the exec service is the host uid with every capability set empty. Control: a plain child runs in the same box, and the grandchild's `unshare(0)` succeeds. Two boxes report different `/proc/sys/kernel/random/boot_id` values, and on Linux each differs from the host's, so each box boots its own kernel. |
-| 8 | **Losing the owner fails closed.** If the owner dies, the VM ends with it, so the box loses its way out, and the leftover can be removed once the VM is gone. | SIGKILL of `box up`; within seconds the process the launch record names (`runtime.pid`, `runtime.start`) ends, and `box prune` from another state root whose daily pass is due retires the claim; the name is reusable. On macOS the test first SIGSTOPs that process, so it outlives the owner: `box prune` then leaves the claim, and after SIGCONT the process ends and a second `box prune` retires it. On Linux the VMM receives SIGKILL with its owner, so no live orphan exists to observe. SIGKILL of a detached project owner while a session runs makes the client exit 125, and its launch record's VM process ends; on Linux no host process is left below the owner. Control: before the kill, another state root lists the owner alive, the box reads back a file it wrote in `/tmp`, and the recorded pid, with the recorded start time, is the process holding this box's own `/tmp` image file open. |
+| 8 | **Losing the owner fails closed.** If the owner dies, the VM ends with it, so the box loses its way out, and the leftover can be removed once the VM is gone. | SIGKILL of `box up`; another state root sees the owner dead, `box prune` from a state root whose daily pass is due retires the claim, and the name is reusable. SIGKILL of a detached project owner while a session runs makes the client exit 125; on Linux no host process is left below the owner, the VMM included. Control: before the kill, another state root lists the owner alive, and the box reads back a file it wrote in `/tmp`. |
 | 10 | **Disk-project branches and tags cross only through the Git remote.** A fetch writes box branches only under `refs/remotes/box/*` and adds only new tags; it never moves or deletes the host's own branches or tags, except as the threat model lists. A push lands only in the box's `refs/remotes/host/*` and its tags. Crossing carries no hook or configuration. | (a) A box that writes its own listing names a branch at a host-only commit. `git fetch box` fails naming that branch, no ref under `refs/remotes/box/` changes, and `.git/objects` is unchanged. So does a bundle whose pack also carries an unreachable tag of a tag of a missing commit, failing naming that commit; and, with the host a partial clone of a local promisor, a listing that names the branch at a commit only the promisor holds and a bundle naming it as a prerequisite. (b) Separately, a valid listing carries a tag named like a host tag at another object. After `git fetch --force --tags --prune --prune-tags box`, every host tag is where it was. The box then commits hooks under every client-side name, `core.hooksPath`, `.husky/` and `.githooks/`; the host fetches, merges and checks out twice, and nothing planted runs. With `push.followTags`, `git push box main` lands main only in the box's `refs/remotes/host/main` and its annotated tags as box tags, and changes no box working-tree file; after it and after a repeat, the host's `refs/remotes/box/main` is the box's own main. A fresh start leaves the project disk empty and the host's `.git/config` byte-identical; the first push creates the box repository. Control: a host hook runs, and a legitimate branch and new tag land under `refs/remotes/box/*` and `refs/tags/*`. |
-| 11 | **Disks persist and attach exclusively.** A disk outlives its box. One box at a time writes it, and a disk left unclean is not read until a writable run recovers it. On Linux, free extents of at least 1 MiB inside a disk are returned to the host by the next stop. | Two writable `up`s race for one new disk: exactly one runs, and the other is refused `disk-in-use`. After the writer's owner is SIGKILLed, a read-only attachment is refused `disk-in-use` while the dead box's claim stands; on macOS, while the launch record's VM process is held stopped by SIGSTOP, `box prune` leaves the claim and a writable `up` of the disk is refused `disk-in-use`; after that process ends, `box prune` retires the claim, and the same attachment is refused `disk-unclean` until a writable run ends. `disk rm` of an attached disk is refused `disk-in-use`. On Linux, the writable run that recovers the disk writes a 256 MiB file, deletes it and makes the disk's root mode 0700; the image's allocated bytes on the host are still at least 240 MiB above the start, and after the stop at least 240 MiB below that. Control: a file one box writes is read by the next box that attaches the disk and, on Linux after that trim, by the read-only box; the image grew by at least 240 MiB when the file was written. |
+| 11 | **Disks persist and attach exclusively.** A disk outlives its box. One box at a time writes it, and a disk left unclean is not read until a writable run recovers it. On Linux, free extents of at least 1 MiB inside a disk are returned to the host by the next stop. | Two writable `up`s race for one new disk: exactly one runs, and the other is refused `disk-in-use`. After the writer's owner is SIGKILLed, a read-only attachment is refused `disk-in-use` while the dead box's claim stands; once `box prune` retires it, the same attachment is refused `disk-unclean` until a writable run ends. `disk rm` of an attached disk is refused `disk-in-use`. On Linux, the writable run that recovers the disk writes a 256 MiB file, deletes it and makes the disk's root mode 0700; the image's allocated bytes on the host are still at least 240 MiB above the start, and after the stop at least 240 MiB below that. Control: a file one box writes is read by the next box that attaches the disk and, on Linux after that trim, by the read-only box; the image grew by at least 240 MiB when the file was written. |
 | 15 | **Cleanup removes only what pinfold made, and never a live project.** `clean` never removes a live project's state or disks, or host files; `clean --idle` without `--all-projects` removes only the current folder's project; and `clean --dry-run` removes nothing. | A kept project with a live box and no clients, beside an idle project, and an artifact version no pin names. `clean --dry-run` from a state root whose daily pass is due keeps that version. `clean --idle 0s` from the live project's folder keeps the idle project's state and disks. Then `clean --idle 0s --all-projects` keeps the live project's: a write still reads back through its box. The idle project's checkout tree and configuration file are unchanged. Control: `clean --idle 0s` from the idle project's own folder removes its state and disks and the unpinned version. |
 | 26 | **Credentials stay on the host.** pinfold adds a route's credential at the proxy, on every request to a routed host, followed URLs included, and never puts it in the box; an upstream that returns it can still hand it back (threat model). A `from` variable's, 1Password reference's or `PINFOLD_ENV_` value reaches the box's environment, never host argv, the runtime's records or a file pinfold writes. | One box with an injecting route and Claude, GitHub and Pi login routes at host fixtures, plus a `from` variable, a 1Password reference (a stand-in `op`) and a `PINFOLD_ENV_` value. A launch whose reference the stand-in refuses exits 125 naming the reference, with none of `op`'s output, and starts no box. The guest sends its own credential fields, in other letter cases and under a `Connection` nomination, through each route, a followed `upload_url` included: each fixture receives only the host's credential, and a credential query gets 403 `login credential query` with no upstream request. No route credential, plain, hex or as the GitHub Basic value, is in the box's environment, any file it can read, its home disk or the egress log. On the host no secret, plain, hex or as that Basic value, is in any file under the state, config or cache roots or in any process argv. A configuration literal is in its own file and no other. Control: the same request without the query succeeds; the `from`, reference and `PINFOLD_ENV_` values arrive in the box's environment; the box search finds a canary on the home disk and `ps` one in the session's argv; the session differing only in the refused reference starts; Claude and Pi each complete a fixture exchange through their generated configuration. |
 | 38 | **Every egress decision is recorded, or the box stops.** Each run has its own egress log and launch record. The launch record is the policy applied at start. | The live egress log is padded to one byte below its 128 MiB cap. The next route request stops the owner with `audit-log` and exit 1, and the log's length is unchanged. Control: in a second run of the same name under another allowlist and memory, an allowed and a refused request each appear once in that run's log, and the first run's log still holds only its own; `inspect` answers with no runtime on PATH. Each run's launch record names the allowlist, routes, cpus and memory it applied, and env names without values. |

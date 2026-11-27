@@ -13,6 +13,7 @@ use crate::dirs;
 
 pub use catalog::{list as list_images, remove as remove_image, resolve as resolve_image};
 pub use job::build;
+pub(crate) use job::work_images;
 
 pub(crate) use crate::image_limits::{OCI_BYTES, ROOT_BYTES};
 pub(crate) const LOCAL_BASE_BYTES: u64 = 1 << 30;
