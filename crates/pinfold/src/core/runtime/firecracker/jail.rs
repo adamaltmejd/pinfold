@@ -640,18 +640,23 @@ fn above(fd: OwnedFd, floor: RawFd) -> io::Result<OwnedFd> {
 /// Open `image` and take its exclusive lock, which the VMM keeps for its
 /// life (VMM jail). The descriptor is read-write because NFS grants
 /// `LOCK_EX` only on one; it is opened outside the jail, so Landlock does
-/// not govern it. A held lock, even an instant's liveness probe, refuses
-/// the start rather than block it.
+/// not govern it. A liveness probe holds a shared lock for an instant, so a
+/// held lock is retried for up to a second; one held longer refuses the
+/// start rather than block it.
 fn lock(image: &CStr, floor: RawFd) -> io::Result<OwnedFd> {
     let path = image.to_string_lossy();
     let fd = open(image, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())
         .map_err(|error| io::Error::other(format!("VMM jail: open {path}: {error}")))?;
     let fd = above(fd, floor)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
     loop {
         // SAFETY: flock on an owned descriptor.
         match Errno::result(unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }) {
             Ok(_) => return Ok(fd),
             Err(Errno::EINTR) => {}
+            Err(Errno::EWOULDBLOCK) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             Err(Errno::EWOULDBLOCK) => {
                 return Err(io::Error::other(format!("disk-in-use: {path} is locked")));
             }
