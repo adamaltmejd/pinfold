@@ -122,10 +122,17 @@ pub(crate) fn write_init_disk(disk: &Path) -> io::Result<()> {
     made
 }
 
-/// Make a new, empty, sparse ext4 image at `disk`. No journal: the
-/// contents go with the box, and one would allocate on every start.
+/// Make a new, empty, sparse ext4 image at `disk`, mode 0600. No journal:
+/// the contents go with the box, and one would allocate on every start.
 fn scratch_image(disk: &Path) -> io::Result<()> {
-    fs::File::create(disk)?.set_len(TMP_BYTES)?;
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(disk)?
+        .set_len(TMP_BYTES)?;
     output(&[
         &super::preflight::mkfs_ext4()?.to_string_lossy(),
         "-q",
