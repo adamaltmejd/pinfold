@@ -341,8 +341,9 @@ command until startup completes. Agent executables come from the image and launc
 {"box":NAME,"oom_kills":N|null,"memory":{"current":BYTES|null,"peak":BYTES|null,"limit":BYTES|null},"pids":{"current":N|null,"limit":N|null}}
 ```
 
-Every field comes from the guest kernel, through init; the memory limit
-is `memory`. A field the guest cannot answer is null. `oom_kills` is
+Every field but `memory.limit` comes from the guest kernel, through init,
+and is null only when init cannot read that counter. `memory.limit` is
+`memory` and is never null. `oom_kills` is
 monotonic for the box's life; the caller keeps its own baseline. A
 command the guest kernel OOM-kills exits 137 itself, and `oom_kills`
 then rises. On an
@@ -580,8 +581,9 @@ The box spec `up` reads from stdin:
   trailing `/*`, refuses as `spec`.
 - Mount hosts must resolve to existing directories (read-only mounts accept
   symlinks to directories); a host path that cannot be read or is not a directory is
-  refused as `spec`, naming it. A mount or disk nested in another applies
-  inside it whatever the spec's order; two at one lexical guest path, with
+  refused as `spec`, naming it. A mount or disk nested in another, other
+  than below a share (refused above), applies inside it whatever the
+  spec's order; two at one lexical guest path, with
   `.` and `..` resolved, are refused as `spec` before preparation.
 - A box attaches at most 13 disks and mounts, pinfold's own
   (`/tmp`, the profile's `share/` and each generated configuration directory) included;
@@ -633,13 +635,15 @@ The launch record is written once, atomically, after startup completes
 cleanup removes the run's directory:
 
 ```json
-{"run_id":ID,"box":NAME,"time":RFC3339,"pinfold":VERSION,"runtime":{"name":"vz"|"firecracker","version":V,"pid":PID},"image":{"id":ID,"ref":REF},"profile":NAME|null,"labels":{…},"mounts":[{"host":PATH,"guest":PATH,"kind":"readonly"|"share"}],"disks":[{"name":NAME,"guest":PATH,"readonly":BOOL}],"env":[NAME,…],"egress":{"allow":[…],"routes":{NAME:{"kind":"host-service"|"injecting"|"login","to":TARGET}}}|null,"cpus":N,"memory":M}
+{"run_id":ID,"box":NAME,"time":RFC3339,"pinfold":VERSION,"runtime":{"name":"vz"|"firecracker","version":V,"pid":PID|null,"start":RFC3339|null},"image":{"id":ID,"ref":REF},"profile":NAME|null,"labels":{…},"mounts":[{"host":PATH,"guest":PATH,"kind":"readonly"|"share"}],"disks":[{"name":NAME,"guest":PATH,"readonly":BOOL}],"env":[NAME,…],"egress":{"allow":[…],"routes":{NAME:{"kind":"host-service"|"injecting"|"login","to":TARGET}}}|null,"cpus":N,"memory":M}
 ```
 
 `runtime.version` is the pinned VMM artifacts' version (Pinned
 artifacts) on Linux and the macOS version on macOS, where VZ ships with
-the OS. `runtime.pid` is the host pid of the box's VM process: the VMM on
-Linux, the Virtualization service process on macOS (Transport).
+the OS. `runtime.pid` and `runtime.start` are the host pid and start time
+of the box's VM process: the VMM on Linux, the Virtualization service
+process on macOS (Transport). Both are null in records written before
+these fields existed.
 
 The record never holds an env value, a header name,
 value or prefix, a login token, argv or command output. `env` lists the
@@ -923,12 +927,13 @@ process. Getting further needs a host kernel bug.
   the memory stream (Memory) and the unmount request are connections the
   owner opens to guest listeners. The owner opens the memory stream
   before `ready`, and a start without it fails; it then holds the stream
-  for the VM's life. The unmount is complete when the owner has received
-  init's answer to it. A stream that ends before that is a guest restart:
-  the owner stops the VM and the box ends as `exited`, detail
+  for the VM's life. The owner handles VZ's state callbacks and the
+  stream's end on one serial queue, and the first event in queue order
+  decides. A stream end before a successful unmount reply is a guest
+  restart: the owner stops the VM and the box ends as `exited`, detail
   `restarted`. A stop VZ reports that the owner did not request ends it
-  as `exited`, detail `stopped`; a stream end seen together with such a
-  stop counts as the stop.
+  as `exited`, detail `stopped`. Either event before `ready` follows the
+  `failed` contract (Process interface).
 - **Both:** the host listens for init's boot connection only until the
   box is ready, and closes that listener then. No other host port has a
   listener once the box is ready, so a guest connection to CID 2 on any
@@ -964,13 +969,15 @@ complete identity proving the VMM ended, or successful owned reaping.
 Unknown liveness preserves the generation's resources: it pins the claim's
 generation state, retains disk ownership and is reported as `unknown`.
 On macOS the VM runs in its own process of Apple's Virtualization
-service, not the owner's child. Before starting the VM the owner durably
-records that none has started; once VZ has started it, the owner records
-that process's pid and start time as the claim's identity. The VM ends
-with its owner, but not at once: neither retirement of a dead owner's
-claim, `box prune`'s included, nor a writable attachment of its disks
-proceeds while the recorded process lives. A claim whose VM started
-before its identity was recorded has unknown liveness.
+service, not the owner's child. Before publishing the claim the owner
+durably records that no VM has started, as on Linux. Before calling VZ
+it durably replaces that with a pending start. Once VZ has started the
+VM, it atomically replaces and syncs the identity with that process's
+pid and start time. The VM ends with its owner, but not at once: neither
+retirement of a dead owner's claim, `box prune`'s included, nor a
+writable attachment of its disks proceeds while a live process matches
+the recorded pid and start time. A pending start whose owner is dead has
+unknown liveness, as above.
 Private socket staging may be removed after a pre-start publication failure
 without retiring the claim. Before deleting other generation resources,
 confirmed runtime removal under the name lock is recorded by atomically
@@ -1346,10 +1353,11 @@ entitlements are disabled. There is no NIC or direct route.
 Only the pinned immutable bootstrap, this binary's read-only init, host-written
 read-only inputs and owned writable storage attach. No host bind, agent home,
 host auth, registry credential, agent disk or unrelated device enters any
-role. A builder exclusively owns one version-keyed cache. A converter gets a
+role, except as the formatter's rules below state. A builder exclusively owns one version-keyed cache. A converter gets a
 fresh work disk and never attaches that cache. A job stops and reaps its VMM
-before releasing ownership; on macOS the owner stops the VM through VZ
-after the job's last reply. Unclean work discards the derivable cache, and
+before releasing ownership. On macOS, where the VM process is not the
+owner's child, the owner stops the VM through VZ after the job's last
+reply and waits for VZ's stopped state instead of reaping. Unclean work discards the derivable cache, and
 completed images survive its removal. A failed recipe keeps the cache only
 after clean teardown, sync and VMM reaping.
 
@@ -1367,13 +1375,18 @@ it fails the build before the catalog commit and
 leaves the outcome after it. No credential value enters argv or a file.
 
 On macOS a third role, the formatter, makes the ext4 images Disks
-lists. It has the converter's controls: no
-network device, no proxy and no egress; exactly its attachments, which
-are this binary's read-only init disk, the builder root read-only, the
-image it formats and, for a populated image, its host input read-only;
-and the same teardown. A host tree reaches it only as an image
-preparation input: the builder's context and selected bases, and the
-converter's OCI layout.
+lists. It runs only pinfold's init and the builder root's `mkfs.ext4`,
+with no workload. It has no network device, no proxy and no egress, and
+the converter's teardown. Its attachments are exactly this binary's
+read-only init disk, the builder root read-only, and one new empty disk,
+its only writable attachment, which it formats; that disk may be an
+agent disk. A host tree reaches it only as an image preparation input
+(the builder's context and selected bases, the converter's OCI layout),
+and only as a tar stream over a vsock connection the owner opens; no
+host bind or virtio-fs input attaches. With no workload, its output is
+trusted as if the host had formatted it. On both platforms only the host
+writes the builder's selected-bases backing; on macOS it copies the
+formatter's image into it.
 
 Caller context and local image metadata are frozen. The builder guest uses
 pinned BuildKit's native Dockerfile frontend; `#syntax` cannot select another.
@@ -1391,7 +1404,7 @@ provenance. The base profile dependency is frozen to the identity recorded in
 `dev.pinfold.base`; a changed or missing dependency is `image-base-changed`.
 
 Guest output is untrusted. The host never extracts a guest archive or reads or
-mounts a guest-writable disk, ignores all guest path, owner and link metadata,
+mounts a guest-writable disk (the formatter's output aside, above), ignores all guest path, owner and link metadata,
 and validates sizes, hashes, media, `linux/amd64` (Linux) or `linux/arm64` (macOS) config, expected labels and
 the complete local descriptor graph. No external descriptor URL or unreferenced
 object is admitted. Exactly one direct runnable manifest is admitted;
@@ -1577,8 +1590,8 @@ A disk is an ext4 image at
 pinfold. The next `up` naming a disk pinfold created whose box never came
 ready treats it as absent: it removes it and creates it again. Before
 `ready` the guest syncs each new disk's copy. pinfold then fsyncs the
-disk's image (on macOS with `F_FULLFSYNC`), so a disk whose box came
-ready holds its whole `from` after a host power loss. A disk has no
+disk's image, so a disk whose box came ready holds its whole `from` after
+a host power loss. A disk has no
 labels and no owner beyond its attachments. A disk, its file, its
 attachments and its records belong to one state root; another root
 naming the same disk gets its own. On Linux, free extents of at least
@@ -1614,7 +1627,8 @@ and kept in the state root, into the generation's state directory.
   latest 64 KiB in memory and is escaped when reported.
 - **Clean:** a writable attachment records the disk unclean. A stop
   pinfold requests of a running box (step 7) records each disk clean once
-  the runtime confirms it. A
+  init's unmount reply reports success, not failure, and the VM's exit is
+  confirmed (on macOS, VZ's stopped state). A
   disk whose writable box ended on its own, or whose owner died, stays
   unclean: a read-only attachment is refused as `disk-unclean` until a
   writable one, which recovers the disk, ends with `down`.
@@ -2441,9 +2455,9 @@ cut rows.
 | 1 | **No network but loopback.** The box has no interface but loopback. Its only way out is its own proxy; without `egress` it has none. | In a box with a route, only `lo` exists and the documentation address `192.0.2.1` is unreachable. A box without `egress` connects to the proxy's port and is refused. Vsock connections to CID 2 on every port from 1 to 4096 are reset at once, not timed out: all of them in the box without `egress`, all but 3128 in the box with a route. Control: the same image with a route reaches the host fixture through the proxy; in that box, CID 2 port 3128 reaches the proxy. |
 | 2 | **Only allowlisted hosts get through.** The proxy lets out only allowlisted names, never an IP literal or a name resolving to a refused address (Egress proxy). A route reaches exactly its one host service, and its log line names the method, the path without its query and the upstream status. The proxy answers `Expect: 100-continue` itself and refuses any other expectation. A refusal's response names the reason its log line records. | `localhost` and the host's own address are put on the allowlist and requested; each gets a 403, logged `loopback` and `ip literal`. A CONNECT to an allowlisted name whose ClientHello SNI names another host is accepted, then refused and logged `sni mismatch`. `example.com` gets a 403 logged `not allowlisted`, over CONNECT and plain HTTP. For each of these 403s, the `Proxy-Status` `details` curl shows in the box equals the logged reason. Control: in the same box, `api.github.com` answers, and a route reaches the host fixture with the Host header rewritten; its log line names the method, the path without its query and the upstream status. A POST to the route with `Expect: 100-continue`, from a curl that waits longer for `100 Continue` than its own bound, reaches a second host fixture that answers 200 only to the body the box sent, and that fixture receives no `Expect`; one with another expectation gets 417 logged `expectation unsupported`, whose `Proxy-Status` `details` equals that reason, and reaches no fixture. |
 | 5 | **Nothing can gain privileges.** Box work runs as the host uid with no capabilities and cannot regain privileges, in a VM with its own kernel. | In a box on the built-in `default` image, a grandchild of an exec'd command (fork then exec) has the host uid, `CapBnd` 0 and `NoNewPrivs` 1, and its `unshare -U` fails with `ENOSPC`. Box work can reach no image-provided setuid or setgid file: there is none in any directory it can enter, and each directory it cannot enter refuses it. The box's root is not writable. PID 1 keeps only `CAP_SYS_ADMIN`, and the exec service is the host uid with every capability set empty. Control: a plain child runs in the same box, and the grandchild's `unshare(0)` succeeds. Two boxes report different `/proc/sys/kernel/random/boot_id` values, and on Linux each differs from the host's, so each box boots its own kernel. |
-| 8 | **Losing the owner fails closed.** If the owner dies, the VM ends with it, so the box loses its way out, and the leftover can be removed once the VM is gone. | SIGKILL of `box up`: within seconds the VM process its launch record names (`runtime.pid`) has ended. Once it has, another state root sees the owner dead, and `box prune` in a state root whose daily pass is due removes the leftover; the name is reusable. SIGKILL of a detached project owner while a session runs makes the client exit 125, and its launch record's VM process ends; on Linux no host process is left below the owner. Control: before the kill, another state root lists the owner alive, the box reads back a file it wrote in `/tmp`, and the named process runs the platform's VMM executable (Firecracker, or Apple's Virtualization service). |
+| 8 | **Losing the owner fails closed.** If the owner dies, the VM ends with it, so the box loses its way out, and the leftover can be removed once the VM is gone. | SIGKILL of `box up`, then at once `box prune` from another state root whose daily pass is due: while a live process still matches the launch record's `runtime.pid` and `runtime.start`, the claim stands; prune removes it only once no such process lives, and within seconds none does. The name is then reusable. SIGKILL of a detached project owner while a session runs makes the client exit 125, and its launch record's VM process ends; on Linux no host process is left below the owner. Control: before the kill, another state root lists the owner alive, the box reads back a file it wrote in `/tmp`, and `ps` shows a live process with the recorded pid and start time running the platform's VMM executable (Firecracker, or Apple's Virtualization service). |
 | 10 | **Disk-project branches and tags cross only through the Git remote.** A fetch writes box branches only under `refs/remotes/box/*` and adds only new tags; it never moves or deletes the host's own branches or tags, except as the threat model lists. A push lands only in the box's `refs/remotes/host/*` and its tags. Crossing carries no hook or configuration. | (a) A box that writes its own listing names a branch at a host-only commit. `git fetch box` fails naming that branch, no ref under `refs/remotes/box/` changes, and `.git/objects` is unchanged. So does a bundle whose pack also carries an unreachable tag of a tag of a missing commit, failing naming that commit; and, with the host a partial clone of a local promisor, a listing that names the branch at a commit only the promisor holds and a bundle naming it as a prerequisite. (b) Separately, a valid listing carries a tag named like a host tag at another object. After `git fetch --force --tags --prune --prune-tags box`, every host tag is where it was. The box then commits hooks under every client-side name, `core.hooksPath`, `.husky/` and `.githooks/`; the host fetches, merges and checks out twice, and nothing planted runs. With `push.followTags`, `git push box main` lands main only in the box's `refs/remotes/host/main` and its annotated tags as box tags, and changes no box working-tree file; after it and after a repeat, the host's `refs/remotes/box/main` is the box's own main. A fresh start leaves the project disk empty and the host's `.git/config` byte-identical; the first push creates the box repository. Control: a host hook runs, and a legitimate branch and new tag land under `refs/remotes/box/*` and `refs/tags/*`. |
-| 11 | **Disks persist and attach exclusively.** A disk outlives its box. One box at a time writes it, and a disk left unclean is not read until a writable run recovers it. On Linux, free extents of at least 1 MiB inside a disk are returned to the host by the next stop. | Two writable `up`s race for one new disk: exactly one runs, and the other is refused `disk-in-use`. After the writer's owner is SIGKILLed, a read-only attachment is refused `disk-in-use` while the dead box's claim stands; once `box prune` retires it, the same attachment is refused `disk-unclean` until a writable run ends. `disk rm` of an attached disk is refused `disk-in-use`. On Linux, the writable run that recovers the disk writes a 256 MiB file, deletes it and makes the disk's root mode 0700; the image's allocated bytes on the host are still at least 240 MiB above the start, and after the stop at least 240 MiB below that. Control: a file one box writes is read by the next box that attaches the disk and, on Linux after that trim, by the read-only box; the image grew by at least 240 MiB when the file was written. |
+| 11 | **Disks persist and attach exclusively.** A disk outlives its box. One box at a time writes it, and a disk left unclean is not read until a writable run recovers it. On Linux, free extents of at least 1 MiB inside a disk are returned to the host by the next stop. | Two writable `up`s race for one new disk: exactly one runs, and the other is refused `disk-in-use`. After the writer's owner is SIGKILLed, a read-only attachment is refused `disk-in-use` while the dead box's claim stands; `box prune` run at once retires the claim only after no live process matches the launch record's VM pid and start time, and a writable `up` of the disk before then is refused `disk-in-use`; once `box prune` retires it, the same attachment is refused `disk-unclean` until a writable run ends. `disk rm` of an attached disk is refused `disk-in-use`. On Linux, the writable run that recovers the disk writes a 256 MiB file, deletes it and makes the disk's root mode 0700; the image's allocated bytes on the host are still at least 240 MiB above the start, and after the stop at least 240 MiB below that. Control: a file one box writes is read by the next box that attaches the disk and, on Linux after that trim, by the read-only box; the image grew by at least 240 MiB when the file was written. |
 | 15 | **Cleanup removes only what pinfold made, and never a live project.** `clean` never removes a live project's state or disks, or host files; `clean --idle` without `--all-projects` removes only the current folder's project; and `clean --dry-run` removes nothing. | A kept project with a live box and no clients, beside an idle project, and an artifact version no pin names. `clean --dry-run` from a state root whose daily pass is due keeps that version. `clean --idle 0s` from the live project's folder keeps the idle project's state and disks. Then `clean --idle 0s --all-projects` keeps the live project's: a write still reads back through its box. The idle project's checkout tree and configuration file are unchanged. Control: `clean --idle 0s` from the idle project's own folder removes its state and disks and the unpinned version. |
 | 26 | **Credentials stay on the host.** pinfold adds a route's credential at the proxy, on every request to a routed host, followed URLs included, and never puts it in the box; an upstream that returns it can still hand it back (threat model). A `from` variable's, 1Password reference's or `PINFOLD_ENV_` value reaches the box's environment, never host argv, the runtime's records or a file pinfold writes. | One box with an injecting route and Claude, GitHub and Pi login routes at host fixtures, plus a `from` variable, a 1Password reference (a stand-in `op`) and a `PINFOLD_ENV_` value. A launch whose reference the stand-in refuses exits 125 naming the reference, with none of `op`'s output, and starts no box. The guest sends its own credential fields, in other letter cases and under a `Connection` nomination, through each route, a followed `upload_url` included: each fixture receives only the host's credential, and a credential query gets 403 `login credential query` with no upstream request. No route credential, plain, hex or as the GitHub Basic value, is in the box's environment, any file it can read, its home disk or the egress log. On the host no secret, plain, hex or as that Basic value, is in any file under the state, config or cache roots or in any process argv. A configuration literal is in its own file and no other. Control: the same request without the query succeeds; the `from`, reference and `PINFOLD_ENV_` values arrive in the box's environment; the box search finds a canary on the home disk and `ps` one in the session's argv; the session differing only in the refused reference starts; Claude and Pi each complete a fixture exchange through their generated configuration. |
 | 38 | **Every egress decision is recorded, or the box stops.** Each run has its own egress log and launch record. The launch record is the policy applied at start. | The live egress log is padded to one byte below its 128 MiB cap. The next route request stops the owner with `audit-log` and exit 1, and the log's length is unchanged. Control: in a second run of the same name under another allowlist and memory, an allowed and a refused request each appear once in that run's log, and the first run's log still holds only its own; `inspect` answers with no runtime on PATH. Each run's launch record names the allowlist, routes, cpus and memory it applied, and env names without values. |
@@ -2451,7 +2465,7 @@ cut rows.
 | 44 | **Image work stays in its own VM.** A build's RUN steps have no network but the production proxy, which lets out only allowed hosts and audits each decision. | In one build, a RUN step's direct connection to a public address, bypassing the proxy, fails; through the proxy `api.github.com` answers while `example.com` gets a 403, with the denial in the build's egress log. Control: the same build with `--allow example.com` reaches it. |
 | 45 | **Disk export writes only a new destination.** Export copies a stopped disk's files into a new directory, never over an existing one, and follows no box-planted link. | A stopped disk holding a symlink to a host path and an executable file is exported. The link is copied as a link and its target is untouched; the file stays executable. Export to an existing destination, a dangling symlink, is refused `destination-exists` and leaves the link unchanged. Control: export into a new destination succeeds. |
 | 47 | **A project's sessions share one box.** All of a project's sessions use one box under its startup configuration. One session ending does not end another, and a client with different configuration is refused. Only the launch that starts the box runs `op`. | Two simultaneous first launches, each with a stand-in `op` first on PATH that gives the reference's value, share one owner and generation, and that stand-in is asked once; the box has its value. Killing one client ends its command group while the other keeps working, and SIGKILL of a fetch's Git alone ends the box command it hung, even one that ignores TERM. A client whose `from` variable holds another value is refused `config-changed` naming `env.values`, and one whose 1Password reference differs naming `env.names`. Every later client of the project (the same-value join, the two refused ones, and the exit-code and executable-lookup runs) has instead a stand-in `op` that refuses every read first on PATH, and none asks it. After the configuration file's allowlist changes mid-run, the started allowlist still decides. Commands get literal argv, empty arguments and `--help` included; exits 0, 23, 126 and 127 pass through, and a setup failure exits 125. With no configuration and no terminal, `-- CMD` is refused `no-config` and creates no project state, and `git fetch box` from an unused state root is refused `no-config` and leaves that root empty. Control: the same `from` value joins, after `config edit` the refused invocation runs, and a configured disk project's `git fetch box` from that root passes admission and runs the daily pass. |
-| 48 | **A share reaches only its folder by path, a read-only folder is read-only, and a project holding a protected path is refused.** Through a share the box reaches no host path outside its declared directory; a hard link inside the share to an outside file is not covered (threat model). A project's read-only folder is readable in the box and not writable through it. A project holding a protected path, or with a read-only folder overlapping one, is refused. On Linux, which has no shares, the refusal runs for a disk project. | With the project's configuration directory symlinked into the checkout, `-- CMD` and `config edit` are refused `host-path-in-project` and create no state. Separately, with only the selected profile's directory symlinked in, and on macOS with only the supplied init's own directory under `artifacts/init` symlinked into a project with no configuration, the same two commands are refused the same way. A project whose read-only folder is a real directory inside the state root is refused `host-path-in-project` by `-- CMD` at the box start, with the state tree unchanged; with that folder replaced by a host fixture folder at a fresh guest path, the box reads the fixture's unique file there, a write of bytes to it fails `EROFS` and the host file is unchanged. In a running share, the box follows an outward symlink and cannot read an unmounted host fixture. Control: with each symlink removed the same project runs, and on macOS shared edits and a box `git commit` land on the host's branch. |
+| 48 | **A share reaches only its folder by path, a read-only folder is read-only, and a project holding a protected path is refused.** Through a share the box reaches no host path outside its declared directory; a hard link inside the share to an outside file is not covered (threat model). A project's read-only folder is readable in the box and not writable through it. On macOS no mount or disk lies below a share's destination. A project holding a protected path, or with a read-only folder overlapping one, is refused. On Linux, which has no shares, the refusal runs for a disk project. | With the project's configuration directory symlinked into the checkout, `-- CMD` and `config edit` are refused `host-path-in-project` and create no state. Separately, with only the selected profile's directory symlinked in, and on macOS with only the supplied init's own directory under `artifacts/init` symlinked into a project with no configuration, the same two commands are refused the same way. A project whose read-only folder is a real directory inside the state root is refused `host-path-in-project` by `-- CMD` at the box start, with the state tree unchanged; with that folder replaced by a host fixture folder at a fresh guest path, the box reads the fixture's unique file there, a write of bytes to it fails `EROFS` and the host file is unchanged. In a running share, the box follows an outward symlink and cannot read an unmounted host fixture. On macOS a `box up` whose read-only mount's destination lies below its share's destination is refused `spec`. Control: with each symlink removed the same project runs, the same `box up` with that mount outside the share starts, and on macOS shared edits and a box `git commit` land on the host's branch. |
 | 50 | **A profile with a base applies the base beneath it and is outdated when the base changes.** | A three-link user chain of tiny recipes, none with `base = "default"`: the root is on a public base on Linux and on the already-built default image on macOS. After a change to the root's recipe, a launch names `image-outdated` for the root and every image above it; after rebuilding only the root, for the two above it; after the chain's rebuild, none. Control: a box from the top link has every link's file and seed and a top-level replacement seed. |
 
 ## Code
