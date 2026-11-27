@@ -1930,7 +1930,8 @@ its project.
   set up only when `rex` runs in the box (`rex --autostart=false version`
   succeeds) and the Rex app's Remote Control preference (`defaults read
   com.superlogical.rex rex.client.remoteControl`) reads `0`, both before and
-  after the owner starts `rex server run` in the box on a fixed guest socket.
+  after the owner starts `rex server run` in the box on a fixed guest socket,
+  with `REX_SERVER` naming that socket so `rex` in its panes reaches it.
   The owner then binds `<host directory>/<project id>.rex`, a host-only 0600
   socket outside the generation directory, and carries each connection to the
   guest server through its own exec of `pinfold init rex-dial`. `start` waits up

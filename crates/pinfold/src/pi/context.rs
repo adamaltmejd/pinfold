@@ -98,9 +98,6 @@ impl Context {
         let Some(worktree) = self.worktree.as_deref() else {
             return Ok(());
         };
-        if mount != ProjectMount::Share {
-            return Err(worktree_error());
-        }
         let root = &self.root;
         let relative_worktree = worktree.strip_prefix(root).map_err(|_| worktree_error())?;
         let marker = read_pointer(root, &relative_worktree.join(".git"))?;
@@ -124,6 +121,12 @@ impl Context {
         let backlink = read_pointer(root, &Path::new(".git").join(relative).join("gitdir"))?;
         if pointer_path(&directory, &backlink) != worktree.join(".git") {
             return Err(worktree_error());
+        }
+        if mount != ProjectMount::Share {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "worktree: a disk project's box has no copy of this worktree; run pinfold from the main checkout",
+            ));
         }
         Ok(())
     }

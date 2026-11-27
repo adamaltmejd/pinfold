@@ -37,9 +37,6 @@ mod session_io;
 #[cfg(target_os = "linux")]
 pub use pid1::run;
 
-/// The guest Rex server's socket. pinfold fixes it; guest output never names it.
-pub const REX_SOCKET: &str = "/home/pinfold/.local/state/rex/run/server.sock";
-
 /// Private exec metadata is removed before restoring caller-named variables.
 pub const EXEC_METADATA: &str = "PINFOLD_EXEC_METADATA";
 
