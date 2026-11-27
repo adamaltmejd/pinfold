@@ -88,9 +88,11 @@ fn volume(name: &str) -> io::Result<String> {
 }
 
 /// The volume behind box `name`'s `/tmp` (Always applied). Box names are
-/// host-wide, so no state root key: prune can run from any root.
+/// host-wide, so no state root key: prune can run from any root. Hashed,
+/// as the name lock is: on case-insensitive APFS, boxes `job` and `JOB`
+/// would otherwise share one volume image.
 fn tmp_volume(name: &str) -> String {
-    format!("pinfold-tmp.{name}")
+    format!("pinfold-tmp.{}", &crate::core::sha256_hex(name)[..32])
 }
 
 /// Make box `name`'s `/tmp` volume new, carrying the box's labels.

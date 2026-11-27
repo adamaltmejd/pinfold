@@ -273,9 +273,9 @@ fn is_box_disk(path: &Path, roots: &[PathBuf]) -> bool {
         && roots.iter().any(|root| path.starts_with(root))
 }
 
-/// Apple's volumes, by name, with their image file.
+/// Apple's volumes, by name, with their image file and labels.
 #[cfg(target_os = "macos")]
-fn volumes() -> std::collections::BTreeMap<String, PathBuf> {
+fn volumes() -> std::collections::BTreeMap<String, (PathBuf, serde_json::Value)> {
     let out = run(
         Command::new("container").args(["volume", "list", "--format", "json"]),
         COMMAND,
@@ -289,7 +289,10 @@ fn volumes() -> std::collections::BTreeMap<String, PathBuf> {
         .filter_map(|volume| {
             Some((
                 volume["id"].as_str()?.to_string(),
-                PathBuf::from(volume["configuration"]["source"].as_str()?),
+                (
+                    PathBuf::from(volume["configuration"]["source"].as_str()?),
+                    volume["configuration"]["labels"].clone(),
+                ),
             ))
         })
         .collect()
@@ -843,21 +846,29 @@ fn credentials_stay_on_the_host() {
             .join(&name);
         assert!(dir.is_dir(), "{} is missing", dir.display());
         let mut roots = vec![dir];
-        // Its disks' volumes and its `/tmp` volume (Always applied).
-        let tmp = format!("pinfold-tmp.{name}");
-        let own: Vec<(String, PathBuf)> = volumes()
+        // Its disks' volumes and its `/tmp` volume, which carries the box's
+        // generation label as the runtime records it (Always applied).
+        let inspected: serde_json::Value =
+            serde_json::from_str(&inspect.stdout).expect("container inspect JSON");
+        let generation = inspected[0]["configuration"]["labels"]["dev.pinfold.generation"]
+            .as_str()
+            .expect("a generation label")
+            .to_string();
+        let tmp = |labels: &serde_json::Value| labels["dev.pinfold.generation"] == generation;
+        let own: Vec<(String, PathBuf, serde_json::Value)> = volumes()
             .into_iter()
-            .filter(|(volume, _)| {
+            .filter(|(volume, (_, labels))| {
                 !volumes_before.contains_key(volume)
-                    && (volume.contains(&format!("-pin-{id}-")) || *volume == tmp)
+                    && (volume.contains(&format!("-pin-{id}-")) || tmp(labels))
             })
+            .map(|(volume, (source, labels))| (volume, source, labels))
             .collect();
         assert!(
-            own.iter().any(|(volume, _)| volume.ends_with("-home"))
-                && own.iter().any(|(volume, _)| *volume == tmp),
+            own.iter().any(|(volume, ..)| volume.ends_with("-home"))
+                && own.iter().filter(|(.., labels)| tmp(labels)).count() == 1,
             "the box's new volumes: {own:?}"
         );
-        roots.extend(own.into_iter().map(|(_, source)| source));
+        roots.extend(own.into_iter().map(|(_, source, _)| source));
         roots
     };
     #[cfg(target_os = "macos")]

@@ -735,8 +735,8 @@ run ...` (or `events`); it may never have existed or have been removed
   generation's state directory, made by `mkfs.ext4` without a journal,
   readied by PID 1 at step 5, and removed with that directory; init does
   not unmount or trim it at step 8. On Apple it is the volume
-  `pinfold-tmp.<box name>`, carrying the box's labels; no disk's volume
-  has that prefix. Step 4 removes a leftover of that name before creating
+  `pinfold-tmp.HASH`, HASH the first 32 hex digits of the sha256 of the
+  box name, carrying the box's labels; no disk's volume has that prefix. Step 4 removes a leftover of that name before creating
   it, and step 6 readies it. Removing the box (step 8, a failed `up`,
   `box prune`) removes the volume, and that removal is part of confirmed
   runtime removal. pinfold does not sync it. Image preparation's builder
