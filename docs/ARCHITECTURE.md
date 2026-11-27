@@ -463,8 +463,8 @@ retire a claim of unknown liveness (Transport), so it is a flag on `prune`
 rather than a verb: same lock, same recheck, same `pruned` line. A box
 whose owner is gone and whose liveness is known is retired as plain
 `prune` retires it. One of unknown liveness is retired once no process
-holds any of its disk images or its `/tmp` image open, matched by device
-and inode. On Linux that is every process under `/proc` whose descriptors
+holds any of its disk images (in the claim's own state root) or its
+`/tmp` image open, matched by device and inode. On Linux that is every process under `/proc` whose descriptors
 the user can read; one it cannot read is no VMM of this user's, since the
 user owns each VMM's user namespace. On macOS it is every process of the
 user's uid, and one whose descriptors cannot be read refuses as `runtime`.

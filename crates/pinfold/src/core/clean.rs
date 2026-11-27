@@ -267,6 +267,12 @@ pub fn prune_unknown(runtime: &dyn Runtime, name: &str) -> io::Result<Unknown> {
         .and_then(|described| described.labels.get(OWNER_LABEL))
         .and_then(|pid| pid.parse().ok());
     remove_orphan(runtime, name, Some(&record.generation), &lock)?;
+    // Apple's inspection can name another generation, which removes nothing.
+    if ownership::record(name)?.is_some_and(|current| current.generation == record.generation) {
+        return Err(io::Error::other(format!(
+            "box {name:?}: the runtime lists another generation"
+        )));
+    }
     Ok(Unknown::Pruned(owner))
 }
 

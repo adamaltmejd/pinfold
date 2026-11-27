@@ -315,10 +315,16 @@ pub(crate) fn release_unknown(record: &ownership::Record) -> io::Result<Result<(
     if Firecracker::state(record).is_ok() {
         return Ok(Ok(()));
     }
-    let mut images = Vec::new();
-    for name in record.disks.iter().map(|disk| disk.name.as_str()) {
-        images.push(disk_path(name)?);
-    }
+    // The claim's disks are in its own state root, which may not be the
+    // caller's: `<root>/boxes/<key>` is its state dir, `<root>/disks` its disks.
+    let Some(root) = record.state_dir.parent().and_then(Path::parent) else {
+        return Ok(Err(("runtime", "the claim has no state root".to_string())));
+    };
+    let mut images: Vec<PathBuf> = record
+        .disks
+        .iter()
+        .map(|disk| root.join("disks").join(format!("{}.ext4", disk.name)))
+        .collect();
     images.push(tmp_image(&record.state_dir));
     let mut files = Vec::new();
     for image in &images {
