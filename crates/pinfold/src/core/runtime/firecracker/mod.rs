@@ -285,14 +285,15 @@ fn disk_path(name: &str) -> io::Result<PathBuf> {
 /// writable disks and `/tmp` image, a build job's its work disk. A missing
 /// image is held by none.
 fn vmm_alive(record: &ownership::Record) -> io::Result<bool> {
+    // Records are host-wide: a box's disks are in its own state root,
+    // `ROOT/boxes/KEY`'s `ROOT/disks`, not the caller's.
+    let root = record.state_dir.parent().and_then(Path::parent);
     let disks = record
         .disks
         .iter()
         .filter(|disk| !disk.readonly)
-        .map(|disk| disk_path(&disk.name))
-        .collect::<io::Result<Vec<_>>>()?;
+        .filter_map(|disk| Some(root?.join("disks").join(format!("{}.ext4", disk.name))));
     for image in disks
-        .into_iter()
         .chain([vm::tmp_image(&record.state_dir)])
         .chain(crate::core::image::linux::work_images(&record.state_dir))
     {
