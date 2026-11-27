@@ -19,7 +19,6 @@ use crate::core::ownership;
 use crate::core::process::{AsyncCommandGuard, Listener};
 use crate::core::runtime::runtime;
 use crate::core::runtime::sockets::HostSocket;
-use crate::init::REX_SOCKET;
 use crate::pi::session::forward_diagnostics;
 use crate::pi::session_wire as wire;
 
@@ -217,11 +216,8 @@ impl State {
     /// Start the guest server, wait until it accepts, read Remote Control
     /// again, and only then bind the host socket.
     async fn open(&mut self) -> Status {
-        let listen = format!("unix://{REX_SOCKET}");
-        let Ok(mut server) = self
-            .command(&["rex", "server", "run", "--listen", &listen])
-            .spawn_guarded()
-        else {
+        let init = self.init.to_string_lossy().into_owned();
+        let Ok(mut server) = self.command(&[&init, "init", "rex-server"]).spawn_guarded() else {
             return Status::Failed;
         };
         let (socket, listener, dial) = match self.bind().await {
