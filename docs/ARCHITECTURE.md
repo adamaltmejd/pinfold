@@ -935,9 +935,9 @@ process. Getting further needs a host kernel bug.
   the memory stream (Memory) and the unmount request are connections the
   owner opens to guest listeners. The owner opens the memory stream
   before `ready`, and a start without it fails; it then holds the stream
-  for the VM's life and writes a heartbeat on it at least every 100 ms.
-  A guest restart raises no VZ callback; the stream ends at the next
-  heartbeat. The owner handles VZ's state callbacks and the
+  for the VM's life and writes a heartbeat on it at least every 100 ms,
+  without blocking; init reads and discards each heartbeat. A guest
+  restart raises no VZ callback; the stream ends at the next heartbeat. The owner handles VZ's state callbacks and the
   stream's end on one serial queue. A stop VZ reports that the owner did
   not request ends the box as `exited`, detail `stopped`. On a stream end
   before a successful unmount reply, the owner reads the VM's VZ state
@@ -1375,7 +1375,10 @@ owner's child, the owner stops the VM through VZ once it has the job's
 final output frame, without waiting for the guest to close the
 connection, and waits for VZ's stopped state instead of reaping. A job VM
 keeps its boot listener for its life: a second boot connection is a guest
-restart, and the owner stops the VM and fails the job. Unclean work discards the derivable cache, and
+restart, and the owner stops the VM and fails the job. Job init on
+macOS sends its terminal frame only after a successful sync and unmount
+of every writable disk, then waits for the owner to stop the VM rather
+than exiting. Unclean work discards the derivable cache, and
 completed images survive its removal. A failed recipe keeps the cache only
 after clean teardown, sync and VMM reaping (on macOS, VZ's stopped
 state).
@@ -1404,7 +1407,7 @@ preparation input (the builder's context and selected bases, the
 converter's OCI layout), and only as a tar stream over a vsock
 connection the owner opens; no host bind or virtio-fs input attaches.
 For such an input init formats the disk, mounts it and unpacks the
-stream onto it. With no workload, its output is
+stream onto it, then syncs and unmounts it before its terminal frame. With no workload, its output is
 exempt from the ban on reading a guest-writable disk, and from nothing
 else: the host never mounts it. On both platforms only the host writes
 the builder's selected-bases backing; on macOS it copies the formatter's
