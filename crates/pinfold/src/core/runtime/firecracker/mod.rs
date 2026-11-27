@@ -44,7 +44,7 @@ impl Firecracker {
         if record.retiring {
             return Ok(None);
         }
-        vmm_alive(&record.state_dir).map(Some)
+        vmm_alive(record).map(Some)
     }
 
     fn info(record: ownership::Record, running: bool) -> Option<BoxInfo> {
@@ -280,13 +280,21 @@ fn disk_path(name: &str) -> io::Result<PathBuf> {
     Ok(disks_dir()?.join(format!("{name}.ext4")))
 }
 
-/// Whether a VMM of the claim whose state directory is `state_dir` runs.
-/// Each VMM holds every image it writes exclusively locked for its life
-/// (`jail::spawn`): a box's VMM its `/tmp` image, a build job's its work
-/// disk. A missing image is held by none.
-fn vmm_alive(state_dir: &Path) -> io::Result<bool> {
-    for image in std::iter::once(vm::tmp_image(state_dir))
-        .chain(crate::core::image::linux::work_images(state_dir))
+/// Whether the claim's VMM runs. Each VMM holds every image it writes
+/// exclusively locked for its life (`jail::spawn`): a box's VMM its
+/// writable disks and `/tmp` image, a build job's its work disk. A missing
+/// image is held by none.
+fn vmm_alive(record: &ownership::Record) -> io::Result<bool> {
+    let disks = record
+        .disks
+        .iter()
+        .filter(|disk| !disk.readonly)
+        .map(|disk| disk_path(&disk.name))
+        .collect::<io::Result<Vec<_>>>()?;
+    for image in disks
+        .into_iter()
+        .chain([vm::tmp_image(&record.state_dir)])
+        .chain(crate::core::image::linux::work_images(&record.state_dir))
     {
         let file = match fs::File::open(&image) {
             Ok(file) => file,

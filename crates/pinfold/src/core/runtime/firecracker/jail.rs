@@ -124,7 +124,7 @@ fn kill(pidfd: &OwnedFd) -> io::Result<()> {
 
 /// Build the jail and exec Firecracker in it, with `--no-api` and its own
 /// seccomp filters. The VMM gets `/dev/null` as stdin, stdout and stderr,
-/// from descriptor 3 a read-only descriptor of each image it writes, holding
+/// from descriptor 3 a read-write descriptor of each image it writes, holding
 /// that image's exclusive lock for the VMM's life, no other descriptor,
 /// default signal handling and an empty environment: Firecracker's serial
 /// console is its stdio, and `box up`'s stdio is the caller's.
@@ -637,35 +637,29 @@ fn above(fd: OwnedFd, floor: RawFd) -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(Errno::result(raised)?) })
 }
 
-/// Open `image` read-only and take its exclusive lock, which the VMM keeps
-/// for its life (VMM jail). A refused shared lock means a VMM holds it.
-/// Otherwise only a liveness probe can, for an instant, so the exclusive
-/// lock waits for that.
+/// Open `image` and take its exclusive lock, which the VMM keeps for its
+/// life (VMM jail). The descriptor is read-write because NFS grants
+/// `LOCK_EX` only on one; it is opened outside the jail, so Landlock does
+/// not govern it. A held lock, even an instant's liveness probe, refuses
+/// the start rather than block it.
 fn lock(image: &CStr, floor: RawFd) -> io::Result<OwnedFd> {
     let path = image.to_string_lossy();
-    let fd = open(image, OFlag::O_RDONLY | OFlag::O_CLOEXEC, Mode::empty())
+    let fd = open(image, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())
         .map_err(|error| io::Error::other(format!("VMM jail: open {path}: {error}")))?;
     let fd = above(fd, floor)?;
-    let flock = |operation| loop {
+    loop {
         // SAFETY: flock on an owned descriptor.
-        match Errno::result(unsafe { libc::flock(fd.as_raw_fd(), operation) }) {
+        match Errno::result(unsafe { libc::flock(fd.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }) {
+            Ok(_) => return Ok(fd),
             Err(Errno::EINTR) => {}
-            result => break result,
+            Err(Errno::EWOULDBLOCK) => {
+                return Err(io::Error::other(format!("disk-in-use: {path} is locked")));
+            }
+            Err(error) => {
+                return Err(io::Error::other(format!("VMM jail: lock {path}: {error}")));
+            }
         }
-    };
-    match flock(libc::LOCK_SH | libc::LOCK_NB) {
-        Err(Errno::EWOULDBLOCK) => {
-            return Err(io::Error::other(format!(
-                "disk-in-use: another VMM holds {path}"
-            )));
-        }
-        result => {
-            result.map_err(|error| io::Error::other(format!("VMM jail: lock {path}: {error}")))?
-        }
-    };
-    flock(libc::LOCK_EX)
-        .map_err(|error| io::Error::other(format!("VMM jail: lock {path}: {error}")))?;
-    Ok(fd)
+    }
 }
 
 /// Reap the child: its exit code, or `128+n` for signal `n`.

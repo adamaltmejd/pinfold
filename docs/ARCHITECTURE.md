@@ -833,8 +833,9 @@ before it execs Firecracker:
   reading the directory in the vsock socket directory.
 
 The VMM's standard descriptors are `/dev/null`. Its only other
-descriptors from the owner are read-only ones on the images it writes,
-which hold their locks (Transport).
+descriptors from the owner are read-write ones on the images it
+writes, which hold their locks (Transport). The owner opens them outside
+the jail, so Landlock does not govern them.
 
 A compromised VMM reaches only that tree, as the user: no home, no other
 box's disks or socket, no host network or abstract socket, no host
@@ -967,16 +968,21 @@ Cleanup inventories generation socket directories and sweeps inactive
 generation-authorized directories without records under the same checks.
 A VM process holds an exclusive `flock` on each image it writes, the
 box's `/tmp` image included, for its whole life. On Linux the owner
-takes these locks on read-only descriptors before it creates the VMM,
-which inherits them, and closes its own copies right after; a start
-whose image another VM process holds fails, naming `disk-in-use`. On
-macOS the VM runs in its own process of Apple's Virtualization service,
-not the owner's child, and that process takes the same locks itself.
-A VM process is alive while its box's `/tmp` image, or its build job's
-work disk, refuses a nonblocking shared lock. The VM ends with its
-owner, but not at once: neither retirement of a dead owner's claim,
-`box prune`'s included, nor a writable attachment of its disks proceeds
-while that lock is held. Liveness that cannot be probed retires nothing.
+opens each image read-write and locks it, never waiting, before it
+creates the VMM, which inherits the locks; the owner closes its own
+copies right after. A start whose image is locked fails, naming
+`disk-in-use`. On macOS the VM runs in its own process of Apple's
+Virtualization service, not the owner's child, and that process takes
+the same locks itself. A VM process is alive while any read-write image
+its claim records refuses a nonblocking shared lock: a box's disks and
+`/tmp` image, a build job's work disk, the formatter's target disk. The
+VM ends with its owner, but not at once: neither retirement of a dead
+owner's claim, `box prune`'s included, nor a writable attachment of its
+disks proceeds while such a lock is held. On macOS, retiring a dead
+owner's claim first waits until 5 s have passed since the pruner first
+saw the owner dead, then tests the locks. launchd ends the service by
+then, so it has either taken its locks or is gone. Liveness that cannot
+be probed retires nothing.
 Private socket staging may be removed after a pre-start publication failure
 without retiring the claim. Before deleting other generation resources,
 confirmed runtime removal under the name lock is recorded by atomically
