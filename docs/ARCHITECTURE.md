@@ -578,6 +578,9 @@ The box spec `up` reads from stdin:
   `spec`, including targets of externally linked directories. Selected
   profile files are protected too. These share checks add no refusal for
   readonly mounts or disks.
+- In the guest a share's top is owned by 0:0, and each file below it by
+  the uid that asks. A guest `chown` changes nothing on the host; every
+  file the box creates there is the host user's.
 - macOS supplies Git an exact-path `safe.directory` exception for each
   share's guest root, never `safe.directory=*`. A share destination that Git
   would interpret as a pattern or otherwise not literally, including a
@@ -590,7 +593,8 @@ The box spec `up` reads from stdin:
   `.` and `..` resolved, are refused as `spec` before preparation.
 - A box attaches at most 13 disks and mounts, pinfold's own
   (`/tmp`, the profile's `share/` and each generated configuration directory) included;
-  more are refused as `spec`.
+  more are refused as `spec`. pinfold also counts a VM's devices itself
+  before it starts the VM, on both platforms.
 - A disk `name` is validated like a profile name and is named once per
   spec. `size` is a whole number
   followed by `G`, at least `1G`, default `64G`; it caps a disk pinfold
@@ -736,8 +740,9 @@ run ...` (or `events`); it may never have existed or have been removed
 - On macOS, shares add `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and
   `GIT_CONFIG_VALUE_n` for exact guest-root `safe.directory` entries,
   appended to the box's declared Git configuration.
-- Both VMs have: no network device; the root disk and init disk
-  read-only; `vcpu_count` and memory from `cpus` and `memory`, or 4 and
+- Both VMs have: no network device; the root disk read-only, and init
+  on a read-only disk (Linux) or in an initramfs (macOS, Pinned
+  artifacts); `vcpu_count` and memory from `cpus` and `memory`, or 4 and
   1G when the box spec omits them (a project box's spec always names
   both, from Configuration); no swap; the image's `Env` as defaults under
   the spec's `env`; an empty `/etc/resolv.conf`; a memory balloon
@@ -757,8 +762,9 @@ run ...` (or `events`); it may never have existed or have been removed
   unsupported.
 - PID 1 never powers the VM off. On macOS, after init answers the
   unmount, the owner stops the VM through VZ. An unexpected PID 1 exit
-  panics the guest kernel, VZ restarts the guest, and the memory stream
-  ends; the owner then stops the VM (`exited`, `restarted`; Transport).
+  panics the guest kernel and VZ restarts the guest with no callback; the
+  memory stream ends at the owner's next heartbeat, and the owner then
+  stops the VM (`exited`, `restarted`; Transport).
 - pinfold puts no secret value in a kernel command line, a VM
   configuration, an image layer, a disk or a persisted request; what a
   guest process writes is its own. Explicit disk export may copy those
@@ -798,8 +804,8 @@ Builder, converter and formatter VMs carry none.
     `kern.memorystatus_vm_pressure_level` each second; the dispatch
     memory-pressure source only wakes it.
   - Init streams MemAvailable and PSI to the owner over the box's vsock,
-    on a connection the owner opens (Transport). The guest boots with
-    `psi=1`.
+    on a connection the owner opens (Transport). The owner's heartbeat
+    on it carries nothing init uses. The guest boots with `psi=1`.
   - On warn or critical, the target becomes the guest's use plus a
     margin, applied only after the memory the guest freed has been idle
     for a few seconds.
@@ -929,7 +935,9 @@ process. Getting further needs a host kernel bug.
   the memory stream (Memory) and the unmount request are connections the
   owner opens to guest listeners. The owner opens the memory stream
   before `ready`, and a start without it fails; it then holds the stream
-  for the VM's life. The owner handles VZ's state callbacks and the
+  for the VM's life and writes a heartbeat on it at least every 100 ms,
+  without blocking; init reads and discards each heartbeat. A guest
+  restart raises no VZ callback; the stream ends at the next heartbeat. The owner handles VZ's state callbacks and the
   stream's end on one serial queue. A stop VZ reports that the owner did
   not request ends the box as `exited`, detail `stopped`. On a stream end
   before a successful unmount reply, the owner reads the VM's VZ state
@@ -1356,14 +1364,21 @@ sandboxed service on macOS), parent lifetime and vsock controls stay exact. The 
 ordinary OCI capabilities without SYS_ADMIN; user namespaces and insecure
 entitlements are disabled. There is no NIC or direct route.
 
-Only the pinned immutable bootstrap, this binary's read-only init, host-written
+Only the pinned immutable bootstrap, this binary's init (a read-only disk on
+Linux, an initramfs on macOS), host-written
 read-only inputs and owned writable storage attach. No host bind, agent home,
 host auth, registry credential, agent disk or unrelated device enters any
 role, except as the formatter's rules below state. A builder exclusively owns one version-keyed cache. A converter gets a
 fresh work disk and never attaches that cache. A job stops and reaps its VMM
 before releasing ownership. On macOS, where the VM process is not the
-owner's child, the owner stops the VM through VZ after the job's last
-reply and waits for VZ's stopped state instead of reaping. Unclean work discards the derivable cache, and
+owner's child, the owner stops the VM through VZ once it has the job's
+final output frame, without waiting for the guest to close the
+connection, and waits for VZ's stopped state instead of reaping. A job VM
+keeps its boot listener for its life: a second boot connection is a guest
+restart, and the owner stops the VM and fails the job. Job init on
+macOS sends its terminal frame only after a successful sync and unmount
+of every writable disk, then waits for the owner to stop the VM rather
+than exiting. Unclean work discards the derivable cache, and
 completed images survive its removal. A failed recipe keeps the cache only
 after clean teardown, sync and VMM reaping (on macOS, VZ's stopped
 state).
@@ -1384,13 +1399,15 @@ leaves the outcome after it. No credential value enters argv or a file.
 On macOS a third role, the formatter, makes the ext4 images Disks
 lists. It runs only pinfold's init and the builder root's `mkfs.ext4`,
 with no workload. It has no network device, no proxy and no egress, and
-the converter's teardown. Its attachments are exactly this binary's
-read-only init disk, the builder root read-only, and one new empty disk,
-its only writable attachment, which it formats; that disk may be an
-agent disk. A host tree reaches it only as an image preparation input
-(the builder's context and selected bases, the converter's OCI layout),
-and only as a tar stream over a vsock connection the owner opens; no
-host bind or virtio-fs input attaches. With no workload, its output is
+the converter's teardown. It boots this binary's init as an initramfs.
+Its attachments are exactly the builder root read-only and one new
+empty disk, its only writable attachment, which it formats; that disk
+may be an agent disk. A host tree reaches it only as an image
+preparation input (the builder's context and selected bases, the
+converter's OCI layout), and only as a tar stream over a vsock
+connection the owner opens; no host bind or virtio-fs input attaches.
+For such an input init formats the disk, mounts it and unpacks the
+stream onto it, then syncs and unmounts it before its terminal frame. With no workload, its output is
 exempt from the ban on reading a guest-writable disk, and from nothing
 else: the host never mounts it. On both platforms only the host writes
 the builder's selected-bases backing; on macOS it copies the formatter's
@@ -1521,9 +1538,13 @@ before publication and on every use; a mismatch fails with
 the builder URL, archive pin/size, recipe SHA-256 and verified cache state.
 
 The init is not an artifact: it always comes from the CLI's own build
-(Code). The macOS CLI writes its embedded aarch64 init to the cache once and
-attaches it as a read-only init disk; a Linux CLI writes its own
-executable into one.
+(Code). A Linux CLI writes its own executable into a read-only init
+disk. The macOS CLI writes its embedded aarch64 init to the cache once,
+as `/init` in a newc cpio initramfs, and boots every VM from it through
+VZ's Linux boot loader. A macOS VM has no init disk, so its root disk is
+its first block device. Init in an initramfs mounts devtmpfs itself and
+leaves the initramfs root by bind, move and chroot, since
+`pivot_root` cannot move it.
 
 ## Profiles
 
@@ -1599,7 +1620,8 @@ pinfold. The next `up` naming a disk pinfold created whose box never came
 ready treats it as absent: it removes it and creates it again. Before
 `ready` the guest syncs each new disk's copy. pinfold then fsyncs the
 disk's image, so a disk whose box came ready holds its whole `from` after
-a host power loss. A disk has no
+a host power loss. On macOS each writable disk attaches in VZ's full
+synchronization mode, so a guest flush reaches stable storage. A disk has no
 labels and no owner beyond its attachments. A disk, its file, its
 attachments and its records belong to one state root; another root
 naming the same disk gets its own. On Linux, free extents of at least
@@ -2495,7 +2517,8 @@ Dependencies: `tokio`, `httparse`, `serde`, `serde_json`, `toml`, `nix`
 (with `socket` for vsock, `net` for the proxy's upstream addresses,
 `sched` and `mount` for the VMM jail; Landlock
 through nix's `libc` syscalls), `objc2`, `objc2-foundation`,
-`objc2-virtualization` and `block2` for VZ on macOS,
+`objc2-virtualization`, `block2` and `dispatch2` (the owner's serial
+queue) for VZ on macOS,
 `ring` for host SHA-256 and the box CA's keys and signatures, `sha2` only in the
 guest builder init, and TLS for routes: `rustls` (ring) as the upstream client with
 `rustls-native-certs` for the host's roots, and as the box-side server for routed
