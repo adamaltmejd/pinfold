@@ -236,6 +236,40 @@ pub fn prune_boxes(runtime: &dyn Runtime, boxes: &Boxes) -> Vec<DeadBox> {
     removed
 }
 
+/// What `box prune --unknown NAME` did.
+pub enum Unknown {
+    Absent,
+    /// The owner pid the claim's label names, when it parsed.
+    Pruned(Option<i32>),
+    /// A reason token and its detail; the claim stands.
+    Refused(&'static str, String),
+}
+
+/// Retire box `name` alone, proving release first when its liveness is
+/// unknown (Process interface).
+pub fn prune_unknown(runtime: &dyn Runtime, name: &str) -> io::Result<Unknown> {
+    let Some(lock) = ownership::try_name_lock(name)? else {
+        return Ok(Unknown::Refused(
+            "name-in-use",
+            format!("box {name:?} has a live owner"),
+        ));
+    };
+    let Some(record) = ownership::record(name)? else {
+        return Ok(Unknown::Absent);
+    };
+    #[cfg(target_os = "linux")]
+    if let Err((reason, detail)) = crate::core::runtime::firecracker::release_unknown(&record)? {
+        return Ok(Unknown::Refused(reason, detail));
+    }
+    let owner = record
+        .described
+        .as_ref()
+        .and_then(|described| described.labels.get(OWNER_LABEL))
+        .and_then(|pid| pid.parse().ok());
+    remove_orphan(runtime, name, Some(&record.generation), &lock)?;
+    Ok(Unknown::Pruned(owner))
+}
+
 /// Measured leftovers; removal must reacquire ownership and recheck.
 pub fn leftover_socket_dirs() -> io::Result<Vec<PathBuf>> {
     let mut protected = BTreeSet::new();

@@ -78,7 +78,7 @@ pub fn prepare(
     cancelled(Some(cancel))?;
     let init_disk = state_dir.join("init.ext4");
     write_init_disk(&init_disk)?;
-    let tmp = state_dir.join("tmp.ext4");
+    let tmp = super::tmp_image(state_dir);
     scratch_image(&tmp)?;
     let mut mounts = Vec::new();
     for (index, mount) in plan.mounts.iter().enumerate() {

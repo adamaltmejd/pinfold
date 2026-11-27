@@ -44,6 +44,10 @@ fn disks_persist_and_attach_exclusively() {
     // The writable recovery run and the read-only run after it are the
     // positive controls; the image's growth by the written file is the
     // reclaim's.
+    // Sabotage: return `Ok(None)` from `holder` in
+    // core/runtime/firecracker/mod.rs. `prune --unknown` then retires the
+    // claim while a process holds the disk's image open. Its success once
+    // that process ends is the positive control.
     default_image();
     let env = TestEnv::new("disk-attach");
     let disk = format!("e2e-{}-attach", std::process::id());
@@ -88,8 +92,67 @@ fn disks_persist_and_attach_exclusively() {
         refusal(env.start(&spec(&reader, &disk, true))),
         "disk-in-use"
     );
-    let pruned = run(env.command().args(["box", "prune"]), COMMAND);
-    assert_eq!(pruned.code, 0, "{pruned:?}");
+    let image = env
+        .state_home()
+        .join("pinfold/disks")
+        .join(format!("{disk}.ext4"));
+    #[cfg(not(target_os = "linux"))]
+    {
+        let pruned = run(env.command().args(["box", "prune"]), COMMAND);
+        assert_eq!(pruned.code, 0, "{pruned:?}");
+    }
+    // On Linux the VMM ended with its owner, so a host process holding the
+    // disk's image open stands in for a live one. Overwriting the claim's
+    // VMM identity, the only `vmm` file under the root's box states, makes
+    // its liveness unknown.
+    #[cfg(target_os = "linux")]
+    {
+        let identities: Vec<_> = fs::read_dir(env.state_home().join("pinfold/boxes"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("vmm"))
+            .filter(|path| path.exists())
+            .collect();
+        assert_eq!(identities.len(), 1, "{identities:?}");
+        fs::write(&identities[0], "overwritten\n").unwrap();
+        let label = format!("dev.pinfold.generation={}", dead.run_id());
+        let listed = run(
+            env.command().args(["box", "list", "--label", &label]),
+            COMMAND,
+        );
+        assert_eq!(
+            json_lines(&listed.stdout)[0]["state"],
+            "unknown",
+            "{listed:?}"
+        );
+        let prune_unknown = || {
+            let out = run(
+                env.command()
+                    .args(["box", "prune", "--unknown", writer_name]),
+                COMMAND,
+            );
+            (out.code, json_lines(&out.stdout))
+        };
+        let mut holder = std::process::Command::new("sleep")
+            .arg("600")
+            .stdin(fs::File::open(&image).unwrap())
+            .spawn()
+            .unwrap();
+        let (code, lines) = prune_unknown();
+        assert_eq!(
+            (code, &lines[0]["event"], &lines[0]["reason"]),
+            (1, &json!("refused"), &json!("disk-in-use")),
+            "{lines:?}"
+        );
+        holder.kill().unwrap();
+        holder.wait().unwrap();
+        assert_eq!(
+            prune_unknown(),
+            (
+                0,
+                vec![json!({ "event": "pruned", "box": writer_name, "owner": dead.owner() })]
+            )
+        );
+    }
     assert_eq!(
         refusal(env.start(&spec(&reader, &disk, true))),
         "disk-unclean"
@@ -110,10 +173,6 @@ fn disks_persist_and_attach_exclusively() {
     // On Linux the recovery run writes and deletes a file, then makes the
     // disk's root private. The image at the spec's path keeps the freed
     // blocks allocated until the stop.
-    let image = env
-        .state_home()
-        .join("pinfold/disks")
-        .join(format!("{disk}.ext4"));
     let allocated = || fs::metadata(&image).unwrap().blocks() * 512;
     // Blocks a file reuses were already allocated, so both checks allow a
     // sixteenth of slack.

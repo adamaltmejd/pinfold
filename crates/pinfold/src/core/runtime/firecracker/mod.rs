@@ -299,6 +299,84 @@ fn disk_path(name: &str) -> io::Result<PathBuf> {
     Ok(disks_dir()?.join(format!("{name}.ext4")))
 }
 
+/// The box's `/tmp` image, which its VMM holds open for its whole life.
+fn tmp_image(state_dir: &Path) -> PathBuf {
+    state_dir.join("tmp.ext4")
+}
+
+/// Why `box prune --unknown` leaves a claim: a reason token and its detail.
+pub type Refusal = (&'static str, String);
+
+/// Mark a dead owner's claim of unknown VMM liveness retiring once no
+/// process holds its disk images or `/tmp` image open (Process interface).
+/// A claim of known liveness is left to plain retirement. The caller holds
+/// the name lock, so no VMM of this generation can start meanwhile.
+pub(crate) fn release_unknown(record: &ownership::Record) -> io::Result<Result<(), Refusal>> {
+    if Firecracker::state(record).is_ok() {
+        return Ok(Ok(()));
+    }
+    let mut images = Vec::new();
+    for name in record.disks.iter().map(|disk| disk.name.as_str()) {
+        images.push(disk_path(name)?);
+    }
+    images.push(tmp_image(&record.state_dir));
+    let mut files = Vec::new();
+    for image in &images {
+        match fs::metadata(image) {
+            Ok(metadata) => files.push((metadata.dev(), metadata.ino())),
+            Err(error) => return Ok(Err(("runtime", format!("{}: {error}", image.display())))),
+        }
+    }
+    match holder(&files) {
+        Err(error) => Ok(Err(("runtime", format!("process table: {error}")))),
+        Ok(Some(pid)) => Ok(Err((
+            "disk-in-use",
+            format!("process {pid} holds an image of box {:?} open", record.name),
+        ))),
+        Ok(None) => ownership::mark_retiring(&mut record.clone()).map(Ok),
+    }
+}
+
+/// A process holding a file of `files`, each `(st_dev, st_ino)`, open. A
+/// process whose descriptors this user cannot read is no VMM of its own:
+/// the user owns each VMM's user namespace. Match by inode, never by link
+/// text: a VMM sees its images at jail paths.
+fn holder(files: &[(u64, u64)]) -> io::Result<Option<i32>> {
+    let skip = |error: &io::Error| {
+        matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+        ) || error.raw_os_error() == Some(nix::libc::ESRCH)
+    };
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse().ok())
+        else {
+            continue;
+        };
+        let descriptors = match fs::read_dir(entry.path().join("fd")) {
+            Ok(descriptors) => descriptors,
+            Err(error) if skip(&error) => continue,
+            Err(error) => return Err(error),
+        };
+        for descriptor in descriptors {
+            let held = descriptor.and_then(|descriptor| fs::metadata(descriptor.path()));
+            match held {
+                Ok(metadata) if files.contains(&(metadata.dev(), metadata.ino())) => {
+                    return Ok(Some(pid));
+                }
+                Ok(_) => {}
+                Err(error) if skip(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// The file that names a box's VMM: its pid and start time, so a reused
 /// pid is never taken for it.
 fn vmm_file(state_dir: &Path) -> PathBuf {

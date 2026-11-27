@@ -217,7 +217,7 @@ fn publish(record: &Record) -> io::Result<()> {
     File::open(host_dir()?)?.sync_all()
 }
 
-fn mark_retiring(record: &mut Record) -> io::Result<()> {
+pub(crate) fn mark_retiring(record: &mut Record) -> io::Result<()> {
     record.retiring = true;
     publish(record)
 }

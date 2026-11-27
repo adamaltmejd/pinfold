@@ -245,7 +245,7 @@ pinfold box exec BOX [--tty] -- argv…
 pinfold box stat BOX
 pinfold box down BOX
 pinfold box list --label KEY[=VALUE]…
-pinfold box prune
+pinfold box prune [--unknown BOX]
 pinfold box inspect RUN
 pinfold box events RUN [--limit N] [--after CURSOR]";
 
@@ -544,10 +544,33 @@ fn list(args: &[String]) -> io::Result<i32> {
 }
 
 fn prune(args: &[String]) -> io::Result<i32> {
-    if !args.is_empty() {
-        return Err(usage("box prune", "prune takes no arguments"));
-    }
     let runtime = runtime();
+    match args {
+        [] => {}
+        [flag, name] if flag == "--unknown" => {
+            let line = match clean::prune_unknown(runtime, name)? {
+                clean::Unknown::Absent => return Ok(0),
+                clean::Unknown::Pruned(owner) => {
+                    serde_json::json!({ "event": "pruned", "box": name, "owner": owner })
+                }
+                clean::Unknown::Refused(reason, detail) => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "refused",
+                            "box": name,
+                            "reason": reason,
+                            "detail": detail,
+                        })
+                    );
+                    return Ok(1);
+                }
+            };
+            println!("{line}");
+            return Ok(0);
+        }
+        _ => return Err(usage("box prune", "prune takes only --unknown BOX")),
+    }
     let boxes = match clean::boxes(runtime) {
         Ok(boxes) => boxes,
         Err(error) => {
