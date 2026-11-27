@@ -36,8 +36,8 @@
 //!   work cgroup's memory current and peak, pids current and max, and OOM
 //!   kills, each a present u8 and a u64.
 //! - Control (host dials guest [`CONTROL_PORT`], PID 1): UNMOUNT kills the
-//!   work cgroup, syncs, trims each writable attachment and unmounts every
-//!   attachment, answered CLEAN or FAILED (text).
+//!   work cgroup, syncs and trims each writable attachment and unmounts
+//!   every attachment, answered CLEAN or FAILED (text).
 
 use super::exec_wire::{ENV, EXEC, FAILED, STDERR, read_frame, write_frame};
 
@@ -724,15 +724,20 @@ fn serve_control(
     }
 }
 
-/// End box work, so nothing keeps a disk busy, then sync and unmount every
-/// attachment, the nested ones first. Trimming each writable disk first
-/// returns its freed blocks to the host as holes in the image.
+/// End box work, so nothing keeps a disk busy, then sync each writable
+/// disk and unmount every attachment, the nested ones first. Trimming each
+/// writable disk first returns its freed blocks to the host as holes in
+/// the image.
 fn unmount(request: &Request, trims: Vec<OwnedFd>) -> io::Result<()> {
     // The host waits 30 s for the answer. Trims start only in the first
     // 20, so the unmounts keep the rest.
     let started = Instant::now();
     stop_work(Some(started + Duration::from_secs(10)))?;
-    nix::unistd::sync();
+    // Not a global sync: that would also write back `/tmp`'s dirty pages,
+    // which can take the whole deadline.
+    for disk in &trims {
+        nix::unistd::syncfs(disk)?;
+    }
     for disk in &trims {
         trim(disk, started + Duration::from_secs(20));
     }
