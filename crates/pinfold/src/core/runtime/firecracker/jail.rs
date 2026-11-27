@@ -55,7 +55,8 @@ pub struct Jail<'a> {
     pub root_disk: &'a Path,
     pub init_disk: &'a Path,
     /// The box's drives after the root and init disks, each with whether
-    /// the VM writes it: the box's disks, and its mounts' images.
+    /// the VM writes it: the box's disks, its mounts' images and its `/tmp`
+    /// image.
     pub disks: &'a [(PathBuf, bool)],
     /// The directory that holds the vsock socket and its host listeners.
     pub vsock: &'a File,

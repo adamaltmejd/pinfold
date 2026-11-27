@@ -843,14 +843,18 @@ fn credentials_stay_on_the_host() {
             .join(&name);
         assert!(dir.is_dir(), "{} is missing", dir.display());
         let mut roots = vec![dir];
+        // Its disks' volumes and its `/tmp` volume (Always applied).
+        let tmp = format!("pinfold-tmp.{name}");
         let own: Vec<(String, PathBuf)> = volumes()
             .into_iter()
             .filter(|(volume, _)| {
-                !volumes_before.contains_key(volume) && volume.contains(&format!("-pin-{id}-"))
+                !volumes_before.contains_key(volume)
+                    && (volume.contains(&format!("-pin-{id}-")) || *volume == tmp)
             })
             .collect();
         assert!(
-            own.iter().any(|(volume, _)| volume.ends_with("-home")),
+            own.iter().any(|(volume, _)| volume.ends_with("-home"))
+                && own.iter().any(|(volume, _)| *volume == tmp),
             "the box's new volumes: {own:?}"
         );
         roots.extend(own.into_iter().map(|(_, source)| source));

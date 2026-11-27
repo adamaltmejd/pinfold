@@ -109,7 +109,7 @@ pub fn run(args: &[String]) -> ! {
         Some("exec") => exec(&args[1..]),
         Some("session-exec") => exit_with("session-exec", session_exec()),
         Some("setup") => exit_with("setup", setup(&args[1..])),
-        Some("proxy-socket") => exit_with("proxy-socket", proxy_socket(&args[1..])),
+        Some("root-start") => exit_with("root-start", root_start(&args[1..])),
         Some("receive") => exit_with("receive", receive(&args[1..])),
         Some("send") => exit_with("send", export::run(&args[1..])),
         Some("rex-dial") => exit_with("rex-dial", rex_dial()),
@@ -405,15 +405,93 @@ fn exit_with(verb: &str, result: io::Result<()>) -> ! {
 
 const SETUP_USAGE: &str = "usage: pinfold init setup [--own UID:GID DIR]... [--user UID:GID [--fill ROOT]... [--mkdir ROOT RELATIVE]...]";
 
-fn proxy_socket(args: &[String]) -> io::Result<()> {
-    if !args.is_empty() {
-        return Err(io::Error::other("usage: pinfold init proxy-socket"));
+/// Apple's transient root operation at start (Lifecycle step 6): ready
+/// `/tmp`, then, with `--proxy-socket`, make the forwarded proxy socket
+/// connectable by the box user.
+fn root_start(args: &[String]) -> io::Result<()> {
+    let proxy = match args {
+        [] => false,
+        [flag] if flag == "--proxy-socket" => true,
+        _ => {
+            return Err(io::Error::other(
+                "usage: pinfold init root-start [--proxy-socket]",
+            ));
+        }
+    };
+    std::env::set_current_dir("/")?;
+    nix::sys::prctl::set_no_new_privs()?;
+    ready_tmp().map_err(|error| io::Error::other(format!("/tmp: {error}")))?;
+    if proxy {
+        proxy_socket()?;
     }
+    Ok(())
+}
+
+/// Make the runtime's fresh scratch volume at `/tmp` the box's `/tmp`:
+/// remove its empty `lost+found` and set mode 1777. An image symlink can
+/// alias a share or disk to `/tmp`, so everything is checked through one
+/// descriptor before anything changes: an ext4 mount root owned 0:0 with
+/// mode 0755 (shares are virtiofs; disk roots are the box user's), whose
+/// only entry is `lost+found`, a root-owned directory. `rmdir` itself
+/// refuses a non-empty one.
+fn ready_tmp() -> io::Result<()> {
+    use nix::fcntl::{AtFlags, OFlag};
+    use nix::sys::stat::{Mode, SFlag};
+    let tmp = nix::fcntl::open(
+        "/tmp",
+        OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        Mode::empty(),
+    )?;
+    if nix::sys::statfs::fstatfs(&tmp)?.filesystem_type() != nix::sys::statfs::EXT4_SUPER_MAGIC {
+        return Err(io::Error::other("not ext4"));
+    }
+    // SAFETY: statx is plain data, and statx writes only into it.
+    let mut statx: nix::libc::statx = unsafe { std::mem::zeroed() };
+    // SAFETY: as above, with an empty C string as the path.
+    if unsafe {
+        nix::libc::statx(
+            tmp.as_raw_fd(),
+            c"".as_ptr(),
+            nix::libc::AT_EMPTY_PATH,
+            nix::libc::STATX_BASIC_STATS,
+            &mut statx,
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let mount_root = nix::libc::STATX_ATTR_MOUNT_ROOT as u64;
+    if statx.stx_attributes_mask & mount_root == 0 || statx.stx_attributes & mount_root == 0 {
+        return Err(io::Error::other("not a mount root"));
+    }
+    let stat = nix::sys::stat::fstat(&tmp)?;
+    if (stat.st_uid, stat.st_gid, stat.st_mode & 0o7777) != (0, 0, 0o755) {
+        return Err(io::Error::other(
+            "not a root-owned directory with mode 0755",
+        ));
+    }
+    // The proc fd link names the checked inode, not the path.
+    let entries = fs::read_dir(format!("/proc/self/fd/{}", tmp.as_raw_fd()))?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<io::Result<Vec<_>>>()?;
+    let lost = nix::sys::stat::fstatat(&tmp, "lost+found", AtFlags::AT_SYMLINK_NOFOLLOW)?;
+    if entries != ["lost+found"]
+        || lost.st_uid != 0
+        || SFlag::from_bits_truncate(lost.st_mode) & SFlag::S_IFMT != SFlag::S_IFDIR
+    {
+        return Err(io::Error::other(
+            "its only entry is not a root-owned lost+found",
+        ));
+    }
+    nix::unistd::unlinkat(&tmp, "lost+found", nix::unistd::UnlinkatFlags::RemoveDir)?;
+    nix::sys::stat::fchmod(&tmp, Mode::from_bits_truncate(0o1777))?;
+    Ok(())
+}
+
+fn proxy_socket() -> io::Result<()> {
     use nix::fcntl::OFlag;
     use nix::sys::stat::{Mode, SFlag};
 
-    std::env::set_current_dir("/")?;
-    nix::sys::prctl::set_no_new_privs()?;
     // Image symlinks can alias declared destinations. Inspect kernel
     // mount data before opening any part of the fixed socket directory.
     let mounts = fs::read_to_string("/proc/self/mountinfo")?;

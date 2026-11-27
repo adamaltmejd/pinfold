@@ -912,6 +912,7 @@ async fn run_job(
             let mut request = vec![0; 8];
             request.push(u8::from(phase.egress()));
             put(&mut request, b"vdb");
+            put(&mut request, b""); // A build keeps a tmpfs /tmp.
             let mut attachments = vec![
                 (b"vdc".as_slice(), b"/work".as_slice(), true),
                 (b"vdd".as_slice(), b"/input".as_slice(), false),

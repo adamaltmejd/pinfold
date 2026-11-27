@@ -55,6 +55,30 @@ fn losing_the_owner_fails_closed() {
         listed[0]
     );
 
+    // Control: the box reads back a file it wrote in its `/tmp`, and on
+    // Apple the runtime lists a volume carrying the box's generation, as
+    // the runtime's own record of the box labels it.
+    // Sabotage: skip `ready_tmp` in init/pid1.rs's `root_start` (Apple),
+    // or the `set_permissions` on `/tmp` in init/firecracker.rs's
+    // `prepare` (Linux). The box user's write is then refused.
+    let scratch = env.exec(
+        &name,
+        &[
+            "sh",
+            "-c",
+            "echo scratch > /tmp/e2e-owner && cat /tmp/e2e-owner",
+        ],
+    );
+    assert_eq!(
+        (scratch.code, scratch.stdout.as_str()),
+        (0, "scratch\n"),
+        "/tmp: {scratch:?}"
+    );
+    #[cfg(target_os = "macos")]
+    let generation = apple_generation(&name);
+    #[cfg(target_os = "macos")]
+    assert_eq!(volumes_labeled(&generation), 1, "volumes of {generation}");
+
     let hold = hold_maintenance();
     let leftover = up.kill_owner();
 
@@ -112,6 +136,15 @@ fn losing_the_owner_fails_closed() {
     );
     #[cfg(target_os = "macos")]
     assert!(!apple_lists(&name), "the runtime still lists {name}");
+    // The prune ran from a state root other than the box's.
+    // Sabotage: drop `remove_tmp` from Apple's `down` in
+    // core/runtime/apple.rs. The volume then outlives the prune.
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        volumes_labeled(&generation),
+        0,
+        "volumes of {generation} after the prune"
+    );
     assert!(other.listed(leftover.run_id()).is_empty());
     drop(hold);
     drop(leftover);
@@ -152,6 +185,38 @@ fn apple_lists(name: &str) -> bool {
         .expect("a list")
         .iter()
         .any(|container| container["configuration"]["id"] == name)
+}
+
+/// Box `name`'s `dev.pinfold.generation` label, as the runtime records it.
+#[cfg(target_os = "macos")]
+fn apple_generation(name: &str) -> String {
+    let out = run(Command::new("container").args(["inspect", name]), COMMAND);
+    assert_eq!(out.code, 0, "container inspect: {out:?}");
+    let inspected: serde_json::Value =
+        serde_json::from_str(&out.stdout).expect("container inspect JSON");
+    inspected[0]["configuration"]["labels"]["dev.pinfold.generation"]
+        .as_str()
+        .expect("a generation label")
+        .to_string()
+}
+
+/// How many volumes Apple's runtime lists whose labels carry
+/// `dev.pinfold.generation` `generation`.
+#[cfg(target_os = "macos")]
+fn volumes_labeled(generation: &str) -> usize {
+    let out = run(
+        Command::new("container").args(["volume", "list", "--format", "json"]),
+        COMMAND,
+    );
+    assert_eq!(out.code, 0, "container volume list: {out:?}");
+    let listed: serde_json::Value =
+        serde_json::from_str(&out.stdout).expect("container volume list JSON");
+    listed
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter(|volume| volume["configuration"]["labels"]["dev.pinfold.generation"] == generation)
+        .count()
 }
 
 /// SIGKILL of a detached project owner while a session runs: the client

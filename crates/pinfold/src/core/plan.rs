@@ -1339,12 +1339,13 @@ impl Plan {
                     guest.display()
                 )));
             }
-            if HIDING_PATHS
-                .iter()
-                .any(|path| normalized == Path::new(path))
+            if normalized.starts_with("/tmp")
+                || HIDING_PATHS
+                    .iter()
+                    .any(|path| normalized == Path::new(path))
             {
                 return Err(invalid(format!(
-                    "guest path {} is /, /tmp, /etc or /etc/resolv.conf, which would hide the box's tmpfs /tmp or empty /etc/resolv.conf",
+                    "guest path {} is at or below /tmp, or is /, /etc or /etc/resolv.conf, which would hide or fill the box's /tmp or empty /etc/resolv.conf",
                     guest.display()
                 )));
             }
@@ -1356,11 +1357,11 @@ impl Plan {
             }
         }
         // The pinned x86_64 VMM supports 17 VirtIO devices. Init, root and
-        // vsock take three.
-        if cfg!(target_os = "linux") && guests.len() > MAX_ATTACHMENTS {
+        // vsock take three. `/tmp`'s scratch image takes one more.
+        let attachments = guests.len() + 1;
+        if cfg!(target_os = "linux") && attachments > MAX_ATTACHMENTS {
             return Err(invalid(format!(
-                "a box attaches at most {MAX_ATTACHMENTS} disks and mounts, pinfold's own mounts included; this one has {}",
-                guests.len()
+                "a box attaches at most {MAX_ATTACHMENTS} disks and mounts, pinfold's own mounts and /tmp included; this one has {attachments}"
             )));
         }
         Ok(())
@@ -1407,8 +1408,9 @@ fn host_directory(what: &str, path: &Path) -> Result<(), String> {
 const KERNEL_PATHS: [&str; 3] = ["/proc", "/sys", "/dev"];
 
 /// Guest paths no mount or disk may name exactly: one there would cover
-/// an Always applied tmpfs `/tmp` or empty `/etc/resolv.conf`.
-const HIDING_PATHS: [&str; 4] = ["/", "/tmp", "/etc", "/etc/resolv.conf"];
+/// Always applied's `/tmp` or empty `/etc/resolv.conf`. One below `/tmp`
+/// is refused too.
+const HIDING_PATHS: [&str; 3] = ["/", "/etc", "/etc/resolv.conf"];
 
 /// Resolve guest components lexically, without consulting the host filesystem.
 pub(crate) fn guest_path(path: &Path) -> PathBuf {

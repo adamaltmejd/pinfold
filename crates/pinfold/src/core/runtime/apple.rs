@@ -87,6 +87,41 @@ fn volume(name: &str) -> io::Result<String> {
     Ok(format!("{}-{name}", dirs::state_root_key()?))
 }
 
+/// The volume behind box `name`'s `/tmp` (Always applied). Box names are
+/// host-wide, so no state root key: prune can run from any root.
+fn tmp_volume(name: &str) -> String {
+    format!("pinfold-tmp.{name}")
+}
+
+/// Make box `name`'s `/tmp` volume new, carrying the box's labels.
+fn create_tmp(plan: &Plan) -> io::Result<()> {
+    let volume = tmp_volume(&plan.name);
+    // A leftover of a crashed start; absent is the usual case.
+    let _ = output(&["container", "volume", "rm", &volume]);
+    let labels: Vec<String> = plan
+        .labels
+        .iter()
+        .flat_map(|(key, value)| ["--label".to_string(), format!("{key}={value}")])
+        .collect();
+    let mut argv = vec!["container", "volume", "create", "-s", "64G"];
+    argv.extend(labels.iter().map(String::as_str));
+    argv.push(&volume);
+    output(&argv).map(drop)
+}
+
+/// Remove box `name`'s `/tmp` volume once its box is gone. Only the
+/// runtime's explicit not-found reply proves it absent.
+fn remove_tmp(name: &str) -> io::Result<()> {
+    let volume = tmp_volume(name);
+    let Err(error) = output(&["container", "volume", "rm", &volume]) else {
+        return Ok(());
+    };
+    match super::captured(&["container", "volume", "inspect", &volume]) {
+        Ok(Err(stderr)) if stderr == format!("Error: volume not found: {volume}") => Ok(()),
+        _ => Err(error),
+    }
+}
+
 /// Start the attached `container run` process that owns the box: stdin and
 /// stdout piped. When `proxy_socket` is set, carry that host unix socket
 /// into the box, where init relays to it.
@@ -110,7 +145,7 @@ pub fn up(
         .args(["run", "-i", "--name", &plan.name])
         .args(["--network", "none", "--cap-drop", "ALL"])
         .args(["--kernel-arg", "sysctl.user.max_user_namespaces=0"])
-        .args(["--read-only", "--tmpfs", "/tmp"])
+        .arg("--read-only")
         // Apple creates the image's WORKDIR at creation, which could land
         // on a fresh disk; `/` always exists.
         .args(["--workdir", "/"])
@@ -192,6 +227,10 @@ pub fn up(
         }
         command.arg("--mount").arg(value);
     }
+    command.arg("--mount").arg(format!(
+        "type=volume,source={},target=/tmp",
+        tmp_volume(&plan.name)
+    ));
     // Only `--volume` takes a file; `--mount` takes directories alone.
     if let Some(bundle) = bundle {
         let mut value = bundle.as_os_str().to_owned();
@@ -210,13 +249,18 @@ pub fn up(
         )
         .arg("init")
         .args(proxy_socket.map(|_| GUEST_PROXY_SOCKET));
+    create_tmp(plan)?;
     command
         .spawn_guarded()
         .map(|mut child| {
             let stderr = child.stderr.take();
             Client(child, stderr, None, None, None, env)
         })
-        .map_err(|error| spawn_error("container", error))
+        .map_err(|error| {
+            // No client means no removal follows.
+            let _ = remove_tmp(&plan.name);
+            spawn_error("container", error)
+        })
 }
 
 /// The image's CA bundle with the box CA `ca` appended, written in
@@ -768,9 +812,7 @@ impl Runtime for Apple {
         // Init can report ready before Apple records the box running.
         // Wait even without egress, before the caller's first exec.
         let actual = wait_until_running(name, cancel)?;
-        if proxy_socket.is_some() {
-            make_proxy_connectable(name, init)?;
-        }
+        root_start(name, init, proxy_socket.is_some())?;
         if let Some(seeding) = seeding {
             copy_in(name, init, seeding, cancel)?;
         }
@@ -790,14 +832,14 @@ impl Runtime for Apple {
         let _ = output(&["container", "stop", name]);
         // stderr is captured: an absent box fails `rm` with the runtime's
         // not-found text, which is noise once the box is gone.
-        let Err(error) = output(&["container", "rm", name]) else {
-            return Ok(());
-        };
         // A targeted native absence is removal evidence; display omission is not.
-        if container(name)?.is_none() {
-            return Ok(());
+        if let Err(error) = output(&["container", "rm", name])
+            && container(name)?.is_some()
+        {
+            return Err(error);
         }
-        Err(error)
+        // The runtime refuses to remove a volume while a box holds it.
+        remove_tmp(name)
     }
 
     /// The limits Apple reports, and null for what the VM cannot answer
@@ -1083,19 +1125,21 @@ fn wait_until_running(name: &str, cancel: &AtomicBool) -> io::Result<BoxInfo> {
     }
 }
 
-/// Make the forwarded proxy socket in box `name` connectable by the box
-/// user: it arrives root-owned. The one transient root exec.
-fn make_proxy_connectable(name: &str, init: &Path) -> io::Result<()> {
+/// The one transient root exec: ready box `name`'s `/tmp`, which arrives
+/// root-owned with `lost+found`, and with `proxy` make the forwarded proxy
+/// socket connectable by the box user: it arrives root-owned too.
+fn root_start(name: &str, init: &Path, proxy: bool) -> io::Result<()> {
     let result = std::process::Command::new("container")
         .args(["exec", "--user", "0:0", "--workdir", "/", name])
         .arg(init)
-        .args(["init", "proxy-socket"])
+        .args(["init", "root-start"])
+        .args(proxy.then_some("--proxy-socket"))
         .stdin(Stdio::null())
         .output_guarded()
         .map_err(|error| spawn_error("container", error))?;
     if !result.status.success() {
         return Err(io::Error::other(format!(
-            "proxy socket permissions: {}",
+            "root start: {}",
             String::from_utf8_lossy(&result.stderr).trim()
         )));
     }

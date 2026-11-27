@@ -203,6 +203,11 @@ pub fn remove_orphan(
     }
     if let Some(record) = ownership::record(name)? {
         if Some(record.generation.as_str()) == generation {
+            // A removal that failed after the box went, such as Apple's
+            // `/tmp` volume, kept the record; finish it before the record goes.
+            if !removed {
+                runtime.down(name)?;
+            }
             ownership::remove_record(name, &record.generation)?;
         }
     } else {

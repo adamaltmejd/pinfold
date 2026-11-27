@@ -33,6 +33,8 @@ const GUEST_CID: u32 = 3;
 /// The VM size when the spec names none, Apple's defaults.
 const DEFAULT_VCPUS: u32 = 4;
 const DEFAULT_MIB: u64 = 1024;
+/// The `/tmp` scratch image's size (Always applied).
+const TMP_BYTES: u64 = 64 << 30;
 
 /// The VM's memory for a validated spec `memory`.
 pub fn memory_mib(memory: Option<&str>) -> u64 {
@@ -50,6 +52,8 @@ pub struct Prepared {
     vmm: artifacts::Vmm,
     root_disk: PathBuf,
     init_disk: PathBuf,
+    /// The `/tmp` scratch image.
+    tmp: PathBuf,
     /// Each mount's read-only image and its guest path.
     mounts: Vec<(PathBuf, PathBuf)>,
     /// The image's `Env`, the defaults under the spec's.
@@ -58,7 +62,7 @@ pub struct Prepared {
 }
 
 /// Install the VMM and make the root disk from `image_id`, this start's
-/// init disk and the mounts' images.
+/// init disk, `/tmp` scratch image and the mounts' images.
 pub fn prepare(
     plan: &Plan,
     state_dir: &Path,
@@ -74,6 +78,8 @@ pub fn prepare(
     cancelled(Some(cancel))?;
     let init_disk = state_dir.join("init.ext4");
     write_init_disk(&init_disk)?;
+    let tmp = state_dir.join("tmp.ext4");
+    scratch_image(&tmp)?;
     let mut mounts = Vec::new();
     for (index, mount) in plan.mounts.iter().enumerate() {
         cancelled(Some(cancel))?;
@@ -87,6 +93,7 @@ pub fn prepare(
         vmm,
         root_disk,
         init_disk,
+        tmp,
         mounts,
         generated: generated.to_vec(),
         image_env: image_env
@@ -113,6 +120,23 @@ pub(crate) fn write_init_disk(disk: &Path) -> io::Result<()> {
     })();
     let _ = fs::remove_dir_all(&tree);
     made
+}
+
+/// Make a new, empty, sparse ext4 image at `disk`. No journal: the
+/// contents go with the box, and one would allocate on every start.
+fn scratch_image(disk: &Path) -> io::Result<()> {
+    fs::File::create(disk)?.set_len(TMP_BYTES)?;
+    output(&[
+        &super::preflight::mkfs_ext4()?.to_string_lossy(),
+        "-q",
+        "-F",
+        "-m",
+        "0",
+        "-O",
+        "^has_journal",
+        &disk.to_string_lossy(),
+    ])
+    .map(drop)
 }
 
 /// Copy the host directory `host` into a new read-only ext4 image at
@@ -196,8 +220,8 @@ impl Vm {
         listener.set_nonblocking(true)?;
         let listener = UnixListener::from_std(listener)?;
 
-        // vda is the init disk, vdb the root disk, then the box's disks and
-        // the mounts' images in this order.
+        // vda is the init disk, vdb the root disk, then the box's disks,
+        // the mounts' images and the `/tmp` image in this order.
         let mut drives: Vec<(PathBuf, bool)> = Vec::new();
         let mut attachments = Vec::new();
         for disk in &plan.disks {
@@ -216,6 +240,7 @@ impl Vm {
             let deferred = prepared.generated.contains(&guest);
             attachments.push((guest, false, false, deferred));
         }
+        drives.push((prepared.tmp, true));
         let device = |index: usize| format!("vd{}", char::from(b'a' + index as u8));
 
         let config = config(plan, &drives);
@@ -228,6 +253,7 @@ impl Vm {
         request.extend(gid.as_raw().to_be_bytes());
         request.push(u8::from(proxy_socket.is_some()));
         put(&mut request, device(1).as_bytes());
+        put(&mut request, device(drives.len() + 1).as_bytes());
         request.extend((attachments.len() as u32).to_be_bytes());
         for (index, (guest, writable, fresh, deferred)) in attachments.iter().enumerate() {
             put(&mut request, device(index + 2).as_bytes());
