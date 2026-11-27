@@ -104,13 +104,18 @@ impl Runtime for Firecracker {
         let Some(record) = ownership::record(name)? else {
             return Ok(());
         };
+        let mut waited = false;
         while Self::running(&record)? == Some(true) {
+            waited = true;
             let deadline = *BUDGET
                 .get_or_init(|| std::time::Instant::now() + std::time::Duration::from_secs(5));
             if crate::core::process::is_cancelled() || std::time::Instant::now() >= deadline {
                 return Err(io::Error::other("the orphan VMM is still running"));
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if waited && crate::core::process::is_cancelled() {
+            return Err(io::Error::other("cancelled while the orphan VMM ended"));
         }
         Ok(())
     }
