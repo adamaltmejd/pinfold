@@ -95,11 +95,45 @@ fn tmp_volume(name: &str) -> String {
     format!("pinfold-tmp.{}", &crate::core::sha256_hex(name)[..32])
 }
 
+/// Whether volume `volume` is absent (`None`), or present and pinfold's:
+/// it carries the owner label, as a pinfold box does. Only the runtime's
+/// explicit not-found reply proves it absent.
+fn tmp_volume_ours(volume: &str) -> io::Result<Option<bool>> {
+    let argv = ["container", "volume", "inspect", volume];
+    match super::captured(&argv)? {
+        Ok(stdout) => {
+            let listed: Vec<ListedVolume> = parse_json("container volume inspect", &stdout)?;
+            match listed.as_slice() {
+                [listed] if listed.configuration.name == volume => Ok(Some(
+                    listed.configuration.labels.contains_key(clean::OWNER_LABEL),
+                )),
+                _ => Err(io::Error::other(
+                    "container volume inspect returned an unmatched target",
+                )),
+            }
+        }
+        Err(stderr) if stderr == format!("Error: volume not found: {volume}") => Ok(None),
+        Err(stderr) => Err(stopped_service(io::Error::other(format!(
+            "{}: {stderr}",
+            argv.join(" ")
+        )))),
+    }
+}
+
 /// Make box `name`'s `/tmp` volume new, carrying the box's labels.
 fn create_tmp(plan: &Plan) -> io::Result<()> {
     let volume = tmp_volume(&plan.name);
-    // A leftover of a crashed start; absent is the usual case.
-    let _ = output(&["container", "volume", "rm", &volume]);
+    match tmp_volume_ours(&volume)? {
+        None => {}
+        // A leftover of a crashed start.
+        Some(true) => output(&["container", "volume", "rm", &volume]).map(drop)?,
+        Some(false) => {
+            return Err(io::Error::other(format!(
+                "volume {volume} is in the way of box {}'s /tmp and is not pinfold's; remove it",
+                plan.name
+            )));
+        }
+    }
     let labels: Vec<String> = plan
         .labels
         .iter()
@@ -111,15 +145,18 @@ fn create_tmp(plan: &Plan) -> io::Result<()> {
     output(&argv).map(drop)
 }
 
-/// Remove box `name`'s `/tmp` volume once its box is gone. Only the
-/// runtime's explicit not-found reply proves it absent.
+/// Remove box `name`'s `/tmp` volume once its box is gone. A volume of
+/// that name that is not pinfold's is left alone.
 fn remove_tmp(name: &str) -> io::Result<()> {
     let volume = tmp_volume(name);
+    if tmp_volume_ours(&volume)? != Some(true) {
+        return Ok(());
+    }
     let Err(error) = output(&["container", "volume", "rm", &volume]) else {
         return Ok(());
     };
-    match super::captured(&["container", "volume", "inspect", &volume]) {
-        Ok(Err(stderr)) if stderr == format!("Error: volume not found: {volume}") => Ok(()),
+    match tmp_volume_ours(&volume) {
+        Ok(None) => Ok(()),
         _ => Err(error),
     }
 }
@@ -1321,4 +1358,6 @@ struct ListedVolumeConfiguration {
     size: u64,
     /// The volume's image on the host.
     source: String,
+    #[serde(default)]
+    labels: BTreeMap<String, String>,
 }
