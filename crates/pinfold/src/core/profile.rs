@@ -36,6 +36,7 @@ const HOME: &[(&str, &[u8])] = &[
     bundled!("default/home", ".codex/AGENTS.md"),
     bundled!("default/home", ".pi/agent/settings.json"),
     bundled!("default/home", ".claude/settings.json"),
+    bundled!("default/home", ".claude.json"),
     bundled!("default/home", ".codex/config.toml"),
     bundled!("default/home", ".codex/app-server-daemon/settings.json"),
 ];
