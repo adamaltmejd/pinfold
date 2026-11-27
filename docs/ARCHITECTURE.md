@@ -934,8 +934,10 @@ process. Getting further needs a host kernel bug.
   before classifying: a stopped VM is `exited`, detail `stopped`; an
   errored one is `exited`, detail `error`; a running one is a guest
   restart, `exited`, detail `restarted`, and the owner then stops it. In
-  any other state the owner waits for one of these three, then applies
-  the same rule. Either event before `ready` follows the
+  any other state the owner waits up to 10 s for one of these three, then
+  applies the same rule. If none comes, it requests a stop; while VM exit
+  is unconfirmed, the claim and its disks stay held and the box ends as
+  `exited`, detail `error`. Either event before `ready` follows the
   `failed` contract (Process interface).
 - **Both:** the host listens for init's boot connection only until the
   box is ready, and closes that listener then. No other host port has a
