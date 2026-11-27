@@ -250,7 +250,8 @@ sysctl rather than the failing call.
 4. Run the box with no network interface and the socket carried in
    (Transport). PID 1 is `pinfold init`. On Linux each mount reaches the
    guest as a read-only ext4 image written from the host directory at this
-   start, so a host change after it never appears in the box.
+   start, so a host change after it never appears in the box. The box's
+   `/tmp` scratch disk (Always applied) is made new here.
 5. `pinfold init` relays `127.0.0.1:3128` to the socket and reports ready
    (on Linux its exec service does the relay, exec and ready report). On
    Linux it mounts the disks first; on Apple the runtime does. On Linux
@@ -260,11 +261,13 @@ sysctl rather than the failing call.
    later. On Linux PID 1 then puts box work in Always applied's state. Before
    ready, the box copies the profile's missing home seeds as the box user.
 6. Apple only: wait until the runtime lists the box running, including
-   without egress. When egress is present, one transient root invocation of
-   the supplied init changes only the fixed forwarded socket's permissions;
-   it executes no image program and inspects no share content. The operation
-   uses a fixed cwd, no environment lookup and no share traversal, and
-   validates the socket without following a symlink.
+   without egress. One transient root invocation of the supplied init then
+   readies `/tmp` (Always applied) and, when egress is present, changes the
+   fixed forwarded socket's permissions; it changes nothing else, executes
+   no image program and inspects no share content. The operation uses a
+   fixed cwd, no environment lookup and no share traversal, and validates
+   `/tmp` as the scratch volume's mount root and the socket, both without
+   following a symlink.
 7. `exec` work runs with `HTTPS_PROXY` and `http_proxy` set to
    `http://127.0.0.1:3128`, and `NO_PROXY` and `no_proxy` set to
    `localhost,127.0.0.1,::1`.
@@ -561,7 +564,7 @@ The box spec `up` reads from stdin:
 - A mount's kind is `readonly` by default, or `share`. A share exposes an existing
   canonical host directory writable on Apple. Linux refuses a share
   as `spec` before maintenance, artifact preparation, credential resolution,
-  claims or resource creation. A box writes to its disks, tmpfs and share mounts.
+  claims or resource creation. A box writes to its disks, `/tmp` and share mounts.
   Read-only mounts show the host directory as of `up`; a later host change
   may or may not appear.
 - A share mounts the whole directory writable, `.git` included. Share
@@ -592,7 +595,7 @@ The box spec `up` reads from stdin:
   inside it whatever the spec's order; two at one lexical guest path, with
   `.` and `..` resolved, are refused as `spec` before preparation.
 - On Linux a box attaches at most 14 disks and mounts, pinfold's own
-  (the profile's `share/` and each generated configuration directory) included;
+  (`/tmp`, the profile's `share/` and each generated configuration directory) included;
   more are refused as `spec`.
 - A disk `name` is validated like a profile name and is named once per
   spec. `size` is a whole number
@@ -608,7 +611,7 @@ The box spec `up` reads from stdin:
 - A mount or disk guest path at or below `/proc`, `/sys` or `/dev`, after
   resolving `.` and `..`, is refused as `spec`, naming it: the guest
   kernel's filesystems hold the box's controls. So is one at `/`, `/tmp`,
-  `/etc` or `/etc/resolv.conf`, which would hide Always applied's tmpfs
+  `/etc` or `/etc/resolv.conf`, which would hide Always applied's
   `/tmp` or empty `/etc/resolv.conf`.
 - A mount or disk path holding `,` or an ASCII control character is
   refused as `spec`, naming the path.
@@ -718,7 +721,18 @@ run ...` (or `events`); it may never have existed or have been removed
 
 ### Always applied
 
-- No network interface but loopback, a read-only root, a tmpfs `/tmp`.
+- No network interface but loopback, a read-only root.
+- `/tmp` is a scratch disk made new at each start (Lifecycle step 4): a
+  sparse 64 GiB ext4 filesystem, owned by root, mode 1777 and empty, with
+  no `lost+found`, before box work starts. On Linux it is mounted `nodev`. It
+  is not a Disk (Disks): it has no name, claim, clean mark, `disk` command
+  or run record entry. On Linux it is `tmp.ext4` in the generation's state
+  directory, made by `mkfs.ext4` without a journal, readied by PID 1 at
+  step 5, and removed with that directory. On Apple it is the volume
+  `<state root key>.<box name>.tmp`, which no disk name can produce. Step 4
+  removes a leftover of that name before creating it, step 6 readies it,
+  and removing the box (step 8, a failed `up`, `box prune`) removes it.
+  Neither runtime trims or syncs it at stop.
 - All box work runs as the host uid:gid with an empty capability bounding
   set and `no_new_privs`.
 - `NODE_USE_ENV_PROXY=1`.
@@ -774,8 +788,9 @@ before it execs Firecracker:
 - new user, mount, PID, network, IPC and UTS namespaces; only the host uid
   and gid map, each to itself;
 - `pivot_root` into an empty tmpfs holding only the Firecracker binary,
-  the guest kernel, the root and init disks, the box's disks and the
-  mounts' images (read-only binds, but for the box's writable disks),
+  the guest kernel, the root and init disks, the box's disks, its `/tmp`
+  image and the mounts' images (read-only binds, but for the box's
+  writable disks and `/tmp` image),
   `/dev/kvm`, the vsock socket directory and the VM configuration file
   (Firecracker runs with `--no-api`); the old root is detached. Session and shutdown
   control sockets and the generation marker stay outside the VMM's allowed
@@ -789,7 +804,7 @@ before it execs Firecracker:
   stay unhandled. It allows only: read and execute on the binary; read on
   the kernel, the root and init disks, the mounts' images, the box's
   read-only disks and the configuration; read and write on the box's
-  writable disks; read, write and ioctl on `/dev/kvm`; making
+  writable disks and `/tmp` image; read, write and ioctl on `/dev/kvm`; making
   and connecting to sockets (ABI 9's `RESOLVE_UNIX`), removing files and
   reading the directory in the vsock socket directory.
 
@@ -2394,7 +2409,7 @@ cut rows.
 | 1 | **No network but loopback.** The box has no interface but loopback. Its only way out is its own proxy; without `egress` it has none. | In a box with a route, only `lo` exists and the documentation address `192.0.2.1` is unreachable. A box without `egress` connects to the proxy's port and is refused. On Linux, vsock connections to CID 2 on every port from 1 to 4096 are reset at once, not timed out: all of them in the box without `egress`, all but 3128 in the box with a route. Control: the same image with a route reaches the host fixture through the proxy; on Linux, in that box, CID 2 port 3128 reaches the proxy. |
 | 2 | **Only allowlisted hosts get through.** The proxy lets out only allowlisted names, never an IP literal or a name resolving to a refused address (Egress proxy). A route reaches exactly its one host service, and its log line names the method, the path without its query and the upstream status. The proxy answers `Expect: 100-continue` itself and refuses any other expectation. A refusal's response names the reason its log line records. | `localhost` and the host's own address are put on the allowlist and requested; each gets a 403, logged `loopback` and `ip literal`. A CONNECT to an allowlisted name whose ClientHello SNI names another host is accepted, then refused and logged `sni mismatch`. `example.com` gets a 403 logged `not allowlisted`, over CONNECT and plain HTTP. For each of these 403s, the `Proxy-Status` `details` curl shows in the box equals the logged reason. Control: in the same box, `api.github.com` answers, and a route reaches the host fixture with the Host header rewritten; its log line names the method, the path without its query and the upstream status. A POST to the route with `Expect: 100-continue`, from a curl that waits longer for `100 Continue` than its own bound, reaches a second host fixture that answers 200 only to the body the box sent, and that fixture receives no `Expect`; one with another expectation gets 417 logged `expectation unsupported`, whose `Proxy-Status` `details` equals that reason, and reaches no fixture. |
 | 5 | **Nothing can gain privileges.** Box work runs as the host uid with no capabilities and cannot regain privileges, in a VM with its own kernel. | In a box on the built-in `default` image, a grandchild of an exec'd command (fork then exec) has the host uid, `CapBnd` 0 and `NoNewPrivs` 1, and its `unshare -U` fails with `ENOSPC`. Box work can reach no image-provided setuid or setgid file: there is none in any directory it can enter, and each directory it cannot enter refuses it. The box's root is not writable. On Linux, PID 1 keeps only `CAP_SYS_ADMIN`, and the exec service is the host uid with every capability set empty. Control: a plain child runs in the same box, and the grandchild's `unshare(0)` succeeds. Two boxes report different `/proc/sys/kernel/random/boot_id` values, and on Linux each differs from the host's, so each box boots its own kernel. |
-| 8 | **Losing the owner fails closed.** If the owner dies, the box loses its way out, and the leftover can be removed. | SIGKILL of `box up`. On Apple the guest survives: `box exec` runs a script in it that prints a marker and then requests an allowlisted host; the marker appears and the request gets no upstream response. On Linux the VM ends with its owner. Another state root sees the owner dead, and `box prune` in a state root whose daily pass is due removes the leftover; the name is reusable. SIGKILL of a detached project owner while a session runs makes the client exit 125, and on Linux leaves no host process below the owner, the VMM included. Control: before the kill, another state root lists the owner alive, and on Apple the same in-box request succeeds. |
+| 8 | **Losing the owner fails closed.** If the owner dies, the box loses its way out, and the leftover can be removed. | SIGKILL of `box up`. On Apple the guest survives: `box exec` runs a script in it that prints a marker and then requests an allowlisted host; the marker appears and the request gets no upstream response. On Linux the VM ends with its owner. Another state root sees the owner dead, and `box prune` in a state root whose daily pass is due removes the leftover, on Apple its `/tmp` volume included; the name is reusable, and a file the killed box wrote in `/tmp` is absent from the new box's empty `/tmp`. SIGKILL of a detached project owner while a session runs makes the client exit 125, and on Linux leaves no host process below the owner, the VMM included. Control: before the kill, another state root lists the owner alive, the box reads back its `/tmp` file, and on Apple the same in-box request succeeds and the `/tmp` volume exists. |
 | 10 | **Disk-project branches and tags cross only through the Git remote.** A fetch writes box branches only under `refs/remotes/box/*` and adds only new tags; it never moves or deletes the host's own branches or tags, except as the threat model lists. A push lands only in the box's `refs/remotes/host/*` and its tags. Crossing carries no hook or configuration. | (a) A box that writes its own listing names a branch at a host-only commit. `git fetch box` fails naming that branch, no ref under `refs/remotes/box/` changes, and `.git/objects` is unchanged. So does a bundle whose pack also carries an unreachable tag of a tag of a missing commit, failing naming that commit; and, with the host a partial clone of a local promisor, a listing that names the branch at a commit only the promisor holds and a bundle naming it as a prerequisite. (b) Separately, a valid listing carries a tag named like a host tag at another object. After `git fetch --force --tags --prune --prune-tags box`, every host tag is where it was. The box then commits hooks under every client-side name, `core.hooksPath`, `.husky/` and `.githooks/`; the host fetches, merges and checks out twice, and nothing planted runs. With `push.followTags`, `git push box main` lands main only in the box's `refs/remotes/host/main` and its annotated tags as box tags, and changes no box working-tree file; after it and after a repeat, the host's `refs/remotes/box/main` is the box's own main. A fresh start leaves the project disk empty and the host's `.git/config` byte-identical; the first push creates the box repository. Control: a host hook runs, and a legitimate branch and new tag land under `refs/remotes/box/*` and `refs/tags/*`. |
 | 11 | **Disks persist and attach exclusively.** A disk outlives its box. One box at a time writes it, and a disk left unclean is not read until a writable run recovers it. On Linux, free extents of at least 1 MiB inside a disk are returned to the host by the next stop. | Two writable `up`s race for one new disk: exactly one runs, and the other is refused `disk-in-use`. After the writer's owner is SIGKILLed, a read-only attachment is refused `disk-in-use` while the dead box's claim stands; once `box prune` retires it, the same attachment is refused `disk-unclean` until a writable run ends. `disk rm` of an attached disk is refused `disk-in-use`. On Linux, the writable run that recovers the disk writes a 256 MiB file, deletes it and makes the disk's root mode 0700; the image's allocated bytes on the host are still at least 240 MiB above the start, and after the stop at least 240 MiB below that. Control: a file one box writes is read by the next box that attaches the disk and, on Linux after that trim, by the read-only box; the image grew by at least 240 MiB when the file was written. |
 | 15 | **Cleanup removes only what pinfold made, and never a live project.** `clean` never removes a live project's state or disks, or host files; `clean --idle` without `--all-projects` removes only the current folder's project; and `clean --dry-run` removes nothing. | Linux only. A kept project with a live box and no clients, beside an idle project, and an artifact version no pin names. `clean --dry-run` from a state root whose daily pass is due keeps that version. `clean --idle 0s` from the live project's folder keeps the idle project's state and disks. Then `clean --idle 0s --all-projects` keeps the live project's: a write still reads back through its box. The idle project's checkout tree and configuration file are unchanged. Control: `clean --idle 0s` from the idle project's own folder removes its state and disks and the unpinned version. |

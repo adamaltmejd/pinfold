@@ -448,13 +448,14 @@ mounts = [{ host = ".", kind = "share" }, { host = "~/notes/dataset", guest = "/
 On macOS a folder with `kind = "share"` is also writable by the box,
 such as an outbox you open in Finder while the box runs.
 
-For disposable Rust build outputs in guest memory:
+For disposable Rust build outputs:
 
 ```sh
 PINFOLD_ENV_CARGO_TARGET_DIR=/tmp/pinfold-target pinfold -- pi
 ```
 
-`/tmp` is in guest memory and goes with the box. Save deliverables in the
+`/tmp` is a 64 GiB scratch disk, empty at each box start and removed
+with the box. Save deliverables in the
 project’s actual cwd; commit them for disk-project crossing.
 
 ### GitHub access
