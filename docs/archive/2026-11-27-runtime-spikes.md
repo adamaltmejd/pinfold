@@ -40,7 +40,7 @@ runs unless stated.
 ## 2. Balloon controller under VZ
 
 This is a prototype of the study's design. The guest sent
-`MemAvailable` and PSI every second. The workload was repeated 2–4 GiB
+`MemAvailable` and PSI every second. The workload was repeated 2 GiB
 allocate, hold and free cycles in a 6 GiB guest.
 
 - **Footprint between cycles, VZ process** [M]:
@@ -48,10 +48,9 @@ allocate, hold and free cycles in a 6 GiB guest.
     in cycle 4 at 11 GiB of host swapouts;
   - controller held active: 1.1–2.3 GiB.
 - **Reclaim is incomplete** [M]:
-  - after a clean shrink, 0.41 GiB stays above the target with a 4 KiB
-    guest;
-  - in the run that followed host pressure, up to 1.85 GiB stayed above
-    it.
+  - after a clean shrink, 0.30–0.41 GiB stays above the target;
+  - in a run with injected pressure-level flips, up to 1.85 GiB stayed
+    above it.
   - A 16 KiB-page guest left 1.65 GiB in one matched pair. Matching page
     sizes did not fix it in that trial. Where the gap sits, host or
     guest, is unexplained [I].
@@ -87,8 +86,8 @@ allocate, hold and free cycles in a 6 GiB guest.
   `empty_disk`, `scratch_image`, `mount_image`, `input_disk`) need
   `-F -m 0`, with or without a journal. The populated sites also need
   `-N` and `-d` [S].
-- **Evidence:** this spike kept its images, not its logs. The checks
-  below are the agent's report.
+- **Evidence:** this spike kept eight of its nine images and none of its
+  logs. The checks and timings below are the agent's report.
 - **`ferrosys` 0.8.0** (MIT OR Apache-2.0):
   - covers all five unpatched [I];
   - its feature lines match mke2fs 1.47.2;
@@ -107,14 +106,14 @@ allocate, hold and free cycles in a 6 GiB guest.
   identity. No kernel mount was tried.
 - **Speed and space:**
   - 64 GiB empty: 9–27 ms, with 8.66 MiB of extents without a journal
-    and 10.67 MiB with one [M for the extents];
+    and 10.67 MiB with one measured from the kept sparse archives;
   - the populated tree: 0.4–0.9 s, against mke2fs's 5–7 s on the x64
     VM.
 
 ## 4. Firecracker free page reporting
 
 Runs used pinfold's pinned Firecracker 1.18.0 and kernel 6.18.57, with
-sha256s verified against vmm.toml. They ran on the dev VM, outside
+sha256s checked against vmm.toml by the agent. They ran on the dev VM, outside
 pinfold's jail. Three interleaved runs per arm.
 
 **Host RSS, MiB** [M]:
@@ -185,6 +184,10 @@ pinfold's jail. Three interleaved runs per arm.
   - Memory return, the reason for the move, works only in part on a
     synthetic workload. A controller brings the footprint between cycles
     down from about 3.8 GiB to 1.1–2.3 GiB.
-  - It leaves 0.41–1.85 GiB above target, and it slows bursts.
-- **Before a spec proposal:** VZ's page-release path is the open
-  question. Then the controller trigger and margin need a second run.
+  - It leaves 0.30–1.85 GiB above target, and it slows bursts.
+- **Before a spec proposal:**
+  - VZ's page-release path is the open question.
+  - The controller trigger and margin need a second run, on the
+    registry-research-toolkit release build.
+  - Still unverified: a `ferrosys` image mounted by a guest, pinfold's
+    real proxy, and the builder's confinement on the Mac.
