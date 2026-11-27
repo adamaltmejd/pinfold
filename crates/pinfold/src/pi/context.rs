@@ -99,7 +99,10 @@ impl Context {
             return Ok(());
         };
         if mount != ProjectMount::Share {
-            return Err(worktree_error());
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "worktree: a disk project's box has no copy of this worktree; run pinfold from the main checkout",
+            ));
         }
         let root = &self.root;
         let relative_worktree = worktree.strip_prefix(root).map_err(|_| worktree_error())?;
